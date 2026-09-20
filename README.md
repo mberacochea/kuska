@@ -5,7 +5,10 @@ benchmarking and testing agents across parallel projects, with a human
 coordinator assigning work and a web UI for planning, status and markdown
 export.
 
-Implements *Multi-Agent Coordination System - Build Plan.md*.
+Target audio -> me :).
+
+This has been `vibe-coded`, I've read the code but have not written any of it (maybe a few lines).
+It is more of an experiment than anything else, but if someone finds this useful let me know.
 
 ## Quick start
 
