@@ -257,10 +257,17 @@ def test_web(project: Path) -> None:
     check("full body available to expand", "a" * 400 in detail)
     check("log does not poll over the form", 'hx-trigger="every 3s"' not in detail, detail[:0])
 
-    print("live polling features")
+    print("live polling features (replaced with reload button)")
     # Test the polling container structure
     table_html = c.get("/").get_data(as_text=True)
-    check("tasks container has polling", 'hx-get="/tasks/table"' in table_html or "tasks" in table_html)
+    # The live reload trigger should be gone
+    check("live reload trigger removed", 'hx-trigger="every 5s"' not in table_html)
+    # The "live" indicator should be gone
+    check("live indicator removed", ">live<" not in table_html)
+    # The reload button should be present
+    check("reload button present", 'id="reload-tasks-btn"' in table_html)
+    check("reload button has aria label", 'aria-label="Reload task table"' in table_html)
+    check("reload button text correct", "Reload" in table_html)
     # Test individual fragment endpoints
     rows = c.get("/agents/rows").get_data(as_text=True)
     check("agents rows fragment renders", "<table>" in rows)
@@ -269,6 +276,16 @@ def test_web(project: Path) -> None:
     # Test get_tasks_table endpoint
     tasks_table_html = c.get("/tasks/table").get_data(as_text=True)
     check("tasks table fragment exists", "task-" in tasks_table_html or "<table>" in tasks_table_html)
+
+    print("reload button functionality")
+    # Verify the reload button works with filters
+    c.post("/tasks", data={"title": "Test for reload", "description": "Test reload functionality", "assigned_to": "dev-agent"})
+    reload_test_html = c.get("/?status=todo").get_data(as_text=True)
+    check("reload button present with filters", 'id="reload-tasks-btn"' in reload_test_html)
+    check("filters preserved with reload button", 'id="task-filters-container"' in reload_test_html)
+    # Simulate a reload by calling the filtered endpoint
+    filtered_html = c.get("/tasks/filtered?status=todo").get_data(as_text=True)
+    check("filtered endpoint works for reload", "Test for reload" in filtered_html)
 
     print("docs page")
     html = c.get("/docs").get_data(as_text=True)

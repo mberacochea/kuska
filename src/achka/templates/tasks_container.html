@@ -1,8 +1,8 @@
-<div id="tasks-container" hx-get="/tasks/table" hx-trigger="every 5s" hx-swap="outerHTML">
+<div id="tasks-container">
   <div class="task-header-row">
-    <span class="task-refresh-indicator" title="Auto-refreshing every 5 seconds">
-      <span class="refresh-dot"></span> live
-    </span>
+    <button type="button" id="reload-tasks-btn" class="reload-tasks-btn" aria-label="Reload task table">
+      ↻ Reload
+    </button>
   </div>
 
   <!-- Task Filters -->
@@ -126,6 +126,13 @@ document.getElementById('task-search')?.addEventListener('keyup', function(e) {
 document.getElementById('task-status')?.addEventListener('change', triggerFilter);
 document.getElementById('task-agent')?.addEventListener('change', triggerFilter);
 document.getElementById('filter-reset-btn')?.addEventListener('click', resetFilters);
+
+// Setup reload button listener
+document.getElementById('reload-tasks-btn')?.addEventListener('click', function() {
+  const params = getFilterParams();
+  const url = '/tasks/filtered' + (params.toString() ? '?' + params.toString() : '');
+  htmx.ajax('GET', url, {target: '#tasks', swap: 'outerHTML'});
+});
 
 // Keyboard accessibility: Escape clears search
 document.addEventListener('keydown', function(e) {
