@@ -1,0 +1,27 @@
+<tr id="task-{{ t.id }}">
+  <td class="num muted">{{ t.id }}</td>
+  <td>
+    <a href="#" hx-get="/tasks/{{ t.id }}/detail" hx-target="#task-{{ t.id }}"
+       hx-swap="outerHTML">{{ t.title }}</a>
+  </td>
+  <td>
+    <select name="assigned_to" hx-post="/tasks/{{ t.id }}" hx-target="#task-{{ t.id }}" hx-swap="outerHTML">
+      <option value="">unassigned</option>
+      {% for a in agents %}<option value="{{ a.name }}" {{ 'selected' if a.name == t.assigned_to }}>{{ a.name }}</option>{% endfor %}
+    </select>
+  </td>
+  <td>
+    <select name="status" class="s s-{{ t.status }}" hx-post="/tasks/{{ t.id }}"
+            hx-target="#task-{{ t.id }}" hx-swap="outerHTML">
+      {% for s in statuses %}<option value="{{ s }}" {{ 'selected' if s == t.status }}>{{ s }}</option>{% endfor %}
+    </select>
+  </td>
+  <td class="small">
+    {% for d in blocking.get(t.id, []) %}
+      <span class="chip s-{{ d.status }}" title="{{ d.title }}">#{{ d.id }} {{ d.status }}</span>
+    {% else %}<span class="muted">-</span>{% endfor %}
+  </td>
+  <td class="muted small">{{ ago(t.updated_at) }}</td>
+  <td><button class="link" hx-post="/tasks/{{ t.id }}/delete" hx-target="#tasks" hx-swap="outerHTML"
+              hx-confirm="Delete task {{ t.id }}?">delete</button></td>
+</tr>

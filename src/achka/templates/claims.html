@@ -1,0 +1,11 @@
+<div id="claims" class="log" hx-get="/agents/claims" hx-trigger="every 5s" hx-swap="outerHTML">
+{% for c in claims %}
+  <div class="ev">
+    <span class="what">{{ c.path }}</span>
+    <span class="muted">{{ c.agent }}{% if c.task_id %} - task {{ c.task_id }}{% endif %}
+      {%- if c.note %} - {{ c.note }}{% endif %} - {{ ago(c.claimed_at) }}</span>
+  </div>
+{% else %}
+  <div class="muted">Nothing claimed - no agent is editing a file right now.</div>
+{% endfor %}
+</div>

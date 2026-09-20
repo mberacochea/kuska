@@ -1,0 +1,34 @@
+<div id="agent-editor">
+<h2>{{ name }} - settings <span class="muted">(.agents/config.toml)</span>
+  <a href="#" class="link" hx-get="/agents/close" hx-target="#agent-editor" hx-swap="outerHTML">close</a></h2>
+<form hx-post="/agents/{{ name }}" hx-target="#agent-rows" hx-swap="outerHTML">
+  <div class="fields">
+  {% for f in fields %}
+    <label>{{ f.label }}
+      {% if f.type == 'choice' %}
+      <select name="{{ f.key }}">
+        {% for c in f.choices %}
+        <option value="{{ c }}" {{ 'selected' if c == value(f) }}>{{ c or '(default)' }}</option>
+        {% endfor %}
+      </select>
+      {% else %}
+      <input type="text" name="{{ f.key }}" value="{{ value(f) }}"
+             {% if f.type == 'number' %}inputmode="decimal"{% endif %}>
+      {% endif %}
+      <span class="hint">{{ f.help }}</span>
+    </label>
+  {% endfor %}
+  </div>
+  <button class="primary" type="submit">Save settings</button>
+  <button type="button" class="link" hx-post="/agents/{{ name }}/delete"
+          hx-target="#agent-rows" hx-swap="outerHTML"
+          hx-confirm="Remove {{ name }}? Its tasks become unassigned and its prompt file stays on disk.">
+    remove agent</button>
+</form>
+
+<h2>{{ name }} - prompt <span class="muted">(.agents/prompts/{{ name }}.md)</span></h2>
+<form hx-post="/agents/{{ name }}/context" hx-target="#toast" hx-swap="innerHTML">
+  <textarea name="content" style="min-height:16rem">{{ content }}</textarea>
+  <button class="primary" type="submit">Save prompt</button>
+</form>
+</div>

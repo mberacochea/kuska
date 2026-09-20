@@ -1,0 +1,11 @@
+<div id="activity" class="log" hx-get="/agents/activity" hx-trigger="every 3s" hx-swap="outerHTML">
+{% for e in events %}
+  <div class="ev k-{{ e.kind }}"><span class="g">{{ glyph(e.kind) }}</span>
+    <span class="muted small">{{ ago(e.ts) }}</span>
+    <span class="what">{{ e.agent }}{% if e.task_id %} #{{ e.task_id }}{% endif %} {{ e.label or e.kind }}</span>
+    <span class="body">{{ brief(e.body) }}</span>
+  </div>
+{% else %}
+  <div class="muted">Nothing yet - agents narrate their work here while they run.</div>
+{% endfor %}
+</div>

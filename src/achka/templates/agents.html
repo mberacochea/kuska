@@ -1,0 +1,41 @@
+{% extends "layout.html" %}
+{% block body %}
+<h2>Agents</h2>
+{{ agent_rows|safe }}
+<form class="row-form" hx-post="/agents" hx-target="#agent-rows" hx-swap="outerHTML"
+      hx-on::after-request="this.reset()">
+  <input type="text" name="name" placeholder="New agent name" required>
+  <select name="backend">
+    {% for b in backends %}<option value="{{ b }}">{{ b }}</option>{% endfor %}
+  </select>
+  <input type="text" name="model" placeholder="Model (optional)">
+  <input type="text" name="role" placeholder="Role (optional)">
+  <button class="primary" type="submit">Add agent</button>
+</form>
+<!-- outside #agent-rows on purpose: that div refetches itself every few
+     seconds, and anything nested in it (an open editor, with whatever has
+     been typed into it) would be thrown away on the next poll -->
+<div id="agent-editor"></div>
+
+<h2>Files being worked on <span class="muted">- advisory claims, released when a run ends</span></h2>
+{{ claims|safe }}
+
+<h2>Live activity</h2>
+{{ activity|safe }}
+
+<h2>Spend</h2>
+<table>
+<thead><tr>
+  <th>Agent</th><th class="num">Turns</th><th class="num">Input tok</th>
+  <th class="num">Output tok</th><th class="num">Cost</th>
+</tr></thead>
+<tbody>
+{% for u in usage %}
+<tr><td>{{ u.agent }}</td><td class="num">{{ u.turns }}</td><td class="num">{{ u.input_tokens }}</td>
+    <td class="num">{{ u.output_tokens }}</td><td class="num">${{ '%.4f'|format(u.cost_usd) }}</td></tr>
+{% else %}
+<tr><td colspan="5" class="muted">Nothing logged yet.</td></tr>
+{% endfor %}
+</tbody>
+</table>
+{% endblock %}

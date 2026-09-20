@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+*.egg-info/
+
+# per-project agent state and its export
+.agents/project.db*
+.agents-export/

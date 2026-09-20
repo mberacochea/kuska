@@ -1,0 +1,29 @@
+{% extends "layout.html" %}
+{% block body %}
+<h2>Data <span class="muted">- every table, row by row</span></h2>
+<nav style="margin-bottom:.8rem">
+{% for name, t in tables.items() %}
+  <a href="/data/{{ name }}" class="{{ 'on' if name == table }}">{{ t.label }}</a>
+{% endfor %}
+</nav>
+{% if note %}<div class="muted small" style="margin-bottom:.6rem">{{ note }}</div>{% endif %}
+{% if table %}
+{{ rows|safe }}
+<h2>Insert</h2>
+<form hx-post="/data/{{ table }}" hx-target="#rows" hx-swap="outerHTML" hx-on::after-request="this.reset()">
+  <div class="fields">
+  {% for column in insertable %}
+    <label>{{ column }}
+      {% if types[column] == 'longtext' %}
+      <textarea name="{{ column }}" style="min-height:4rem"></textarea>
+      {% else %}
+      <input type="text" name="{{ column }}">
+      {% endif %}
+    </label>
+  {% endfor %}
+  </div>
+  <button class="primary" type="submit">Insert row</button>
+</form>
+<div id="row-editor"></div>
+{% endif %}
+{% endblock %}

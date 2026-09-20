@@ -1,0 +1,10 @@
+<table id="tasks">
+<thead><tr>
+  <th class="num">#</th><th>Title</th><th>Assigned</th><th>Status</th>
+  <th>Waiting on</th><th>Updated</th><th></th>
+</tr></thead>
+<tbody>
+{% for t in tasks %}{{ render_row(t)|safe }}{% endfor %}
+{% if not tasks %}<tr><td colspan="7" class="muted">No tasks yet.</td></tr>{% endif %}
+</tbody>
+</table>

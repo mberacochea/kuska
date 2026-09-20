@@ -1,0 +1,86 @@
+<tr id="task-{{ t.id }}">
+  <td class="num muted">{{ t.id }}</td>
+  <td colspan="6">
+    <div style="display:flex; gap:.7rem; align-items:baseline; flex-wrap:wrap">
+      <a href="#" hx-get="/tasks/{{ t.id }}/row" hx-target="#task-{{ t.id }}" hx-swap="outerHTML">
+        <strong>{{ t.title }}</strong></a>
+      <span class="chip s-{{ t.status }}">{{ t.status }}</span>
+      <a href="#" class="link" hx-get="/tasks/{{ t.id }}/row" hx-target="#task-{{ t.id }}"
+         hx-swap="outerHTML">collapse</a>
+    </div>
+
+    {% if t.status == 'needs_approval' %}
+    <div class="card" style="margin:.7rem 0; border-color:var(--info)">
+      <strong>Waiting for your approval.</strong>
+      <span class="muted small">Nothing that depends on this task can run until it is resolved.</span>
+      <div style="margin-top:.5rem; display:flex; gap:.5rem; flex-wrap:wrap">
+        <button class="primary" hx-post="/tasks/{{ t.id }}/approve"
+                hx-target="#task-{{ t.id }}" hx-swap="outerHTML">Approve (mark done)</button>
+        <button hx-post="/tasks/{{ t.id }}/send-back" hx-target="#task-{{ t.id }}" hx-swap="outerHTML">
+          Send back (re-queue)</button>
+      </div>
+    </div>
+    {% endif %}
+
+    {% if edit %}
+    <form hx-post="/tasks/{{ t.id }}" hx-target="#task-{{ t.id }}" hx-swap="outerHTML" style="margin:.6rem 0">
+      <input type="text" name="title" value="{{ t.title }}" style="width:100%; margin-bottom:.4rem">
+      <textarea name="description" placeholder="Task description - this is what the agent is given. Markdown.">{{ t.description }}</textarea>
+      <button class="primary" type="submit">Save</button>
+      <a href="#" class="link" hx-get="/tasks/{{ t.id }}/detail" hx-target="#task-{{ t.id }}" hx-swap="outerHTML">cancel</a>
+    </form>
+    {% else %}
+    <div class="md" style="margin:.6rem 0">{{ description_html|safe }}</div>
+    <a href="#" class="link" hx-get="/tasks/{{ t.id }}/detail?edit=1" hx-target="#task-{{ t.id }}"
+       hx-swap="outerHTML">edit</a>
+    {% if t.status != 'todo' and t.status != 'needs_approval' %}
+    <button class="link" hx-post="/tasks/{{ t.id }}/requeue" hx-target="#task-{{ t.id }}" hx-swap="outerHTML">
+      Re-queue</button>
+    {% endif %}
+    {% endif %}
+
+    <h2 class="small">Depends on</h2>
+    {% for d in dependencies %}
+    <div class="small">
+      <span class="chip s-{{ d.status }}">{{ d.status }}</span>
+      #{{ d.id }} {{ d.title }}
+      <button class="link" hx-post="/tasks/{{ t.id }}/deps/{{ d.id }}/delete"
+              hx-target="#task-{{ t.id }}" hx-swap="outerHTML">remove</button>
+    </div>
+    {% else %}<div class="muted small">Nothing - this task can run on its own.</div>{% endfor %}
+    {% if candidates %}
+    <form class="row-form" hx-post="/tasks/{{ t.id }}/deps" hx-target="#task-{{ t.id }}" hx-swap="outerHTML">
+      <select name="depends_on">
+        {% for c in candidates %}<option value="{{ c.id }}">#{{ c.id }} {{ c.title }}</option>{% endfor %}
+      </select>
+      <button type="submit">Add dependency</button>
+    </form>
+    {% endif %}
+    {% if dependents %}
+    <div class="small muted">Waiting on this one:
+      {% for d in dependents %}#{{ d.id }} {{ d.title }}{{ ", " if not loop.last }}{% endfor %}</div>
+    {% endif %}
+
+    <h2 class="small">Thread</h2>
+    {% for m in messages %}
+      <div class="card" style="margin:.5rem 0">
+        <div class="small muted">
+          <strong>{{ m.sender }} &rarr; {{ m.recipient }}</strong> - {{ m.msg_type }} - {{ ago(m.ts) }}
+          {%- if m.cost_usd %} - ${{ '%.4f'|format(m.cost_usd) }} ({{ m.input_tokens or 0 }}/{{ m.output_tokens or 0 }} tok){% endif %}
+        </div>
+        <div class="md">{{ md(m.payload)|safe }}</div>
+      </div>
+    {% else %}
+      <div class="muted small">No messages yet.</div>
+    {% endfor %}
+    <form class="row-form" hx-post="/tasks/{{ t.id }}/message" hx-target="#task-{{ t.id }}" hx-swap="outerHTML">
+      <input type="text" name="payload" placeholder="Reply to the assigned agent" required>
+      <button type="submit">Send</button>
+    </form>
+
+    <h2 class="small">Activity
+      <a href="#" class="link" hx-get="/tasks/{{ t.id }}/detail" hx-target="#task-{{ t.id }}"
+         hx-swap="outerHTML">refresh</a></h2>
+    {{ activity|safe }}
+  </td>
+</tr>

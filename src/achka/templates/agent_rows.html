@@ -1,0 +1,20 @@
+<div id="agent-rows" hx-get="/agents/rows" hx-trigger="every 5s" hx-swap="outerHTML">
+<table>
+<thead><tr><th>Name</th><th>Backend</th><th>Model</th><th>Role</th><th>Status</th><th class="num">Task</th><th>Heartbeat</th></tr></thead>
+<tbody>
+{% for a in agents %}
+<tr>
+  <td><a href="#" hx-get="/agents/{{ a.name }}/context" hx-target="#agent-editor" hx-swap="outerHTML">{{ a.name }}</a></td>
+  <td>{{ a.backend }}</td>
+  <td>{{ models.get(a.name) or '-' }}</td>
+  <td>{{ a.role }}</td>
+  <td><span class="dot {{ a.status }}"></span>{{ a.status }}</td>
+  <td class="num">{{ a.current_task_id or '-' }}</td>
+  <td class="muted small">{{ ago(a.last_heartbeat) }}</td>
+</tr>
+{% else %}
+<tr><td colspan="7" class="muted">No agents yet - add one below.</td></tr>
+{% endfor %}
+</tbody>
+</table>
+</div>

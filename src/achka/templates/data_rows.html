@@ -1,0 +1,32 @@
+<div id="rows">
+<table>
+<thead><tr>{% for column, _ in fields %}<th>{{ column }}</th>{% endfor %}<th></th></tr></thead>
+<tbody>
+{% for row in rows %}
+<tr>
+  {% for column, kind in fields %}
+  <td class="{{ 'small' if kind == 'longtext' }}">
+    {% if column == pk %}
+      <a href="#" hx-get="/data/{{ table }}/row?pk={{ row[pk] }}" hx-target="#row-editor" hx-swap="outerHTML">{{ row[column] }}</a>
+    {% elif kind == 'ts' %}<span class="muted small">{{ ago(row[column]) }}</span>
+    {% else %}{{ brief(row[column]) }}{% endif %}
+  </td>
+  {% endfor %}
+  <td><button class="link" hx-post="/data/{{ table }}/delete?pk={{ row[pk] }}" hx-target="#rows"
+              hx-swap="outerHTML" hx-confirm="Delete {{ table }} row {{ row[pk] }}?">delete</button></td>
+</tr>
+{% else %}
+<tr><td colspan="{{ fields|length + 1 }}" class="muted">No rows.</td></tr>
+{% endfor %}
+</tbody>
+</table>
+<div class="muted small" style="margin:.5rem 0">
+  {{ offset + 1 if total else 0 }}-{{ [offset + limit, total]|min }} of {{ total }}
+  {% if offset %}
+  <a href="#" hx-get="/data/{{ table }}/rows?offset={{ [offset - limit, 0]|max }}" hx-target="#rows" hx-swap="outerHTML">newer</a>
+  {% endif %}
+  {% if offset + limit < total %}
+  <a href="#" hx-get="/data/{{ table }}/rows?offset={{ offset + limit }}" hx-target="#rows" hx-swap="outerHTML">older</a>
+  {% endif %}
+</div>
+</div>

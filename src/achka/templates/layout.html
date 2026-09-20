@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ project_name }} - achka</title>
+<script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.4/dist/htmx.min.js"></script>
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+<header>
+  <h1>{{ project_name }}</h1>
+  <nav>
+    <a href="/" class="{{ 'on' if page == 'project' }}">Project</a>
+    <a href="/agents" class="{{ 'on' if page == 'agents' }}">Agents</a>
+    <a href="/docs" class="{{ 'on' if page == 'docs' }}">Docs</a>
+    <a href="/data" class="{{ 'on' if page == 'data' }}">Data</a>
+  </nav>
+  {% if projects|length > 1 %}
+  <form hx-post="/switch" hx-target="body" hx-swap="innerHTML" style="margin-left:auto">
+    <select name="project" onchange="this.form.requestSubmit()">
+      {% for name in projects %}<option value="{{ name }}" {{ 'selected' if name == project_name }}>{{ name }}</option>{% endfor %}
+    </select>
+  </form>
+  {% endif %}
+</header>
+<main>{% block body %}{% endblock %}</main>
+<div id="toast"></div>
+</body>
+</html>

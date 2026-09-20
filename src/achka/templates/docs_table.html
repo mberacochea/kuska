@@ -1,0 +1,18 @@
+<div id="docs">
+<table>
+<thead><tr><th>Key</th><th>Updated by</th><th>Updated</th><th></th></tr></thead>
+<tbody>
+{% for d in docs %}
+<tr>
+  <td><a href="#" hx-get="/docs/{{ d.key }}" hx-target="#doc-editor" hx-swap="outerHTML">{{ d.key }}</a></td>
+  <td>{{ d.updated_by or '-' }}</td>
+  <td class="muted small">{{ ago(d.updated_at) }}</td>
+  <td><button class="link" hx-post="/docs/{{ d.key }}/delete" hx-target="#docs" hx-swap="outerHTML"
+              hx-confirm="Delete doc '{{ d.key }}'?">delete</button></td>
+</tr>
+{% else %}
+<tr><td colspan="4" class="muted">No docs yet.</td></tr>
+{% endfor %}
+</tbody>
+</table>
+</div>

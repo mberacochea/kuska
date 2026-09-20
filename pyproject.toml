@@ -1,0 +1,28 @@
+[project]
+name = "achka"
+version = "0.1.0"
+description = "SQLite-backed coordination for multiple coding, benchmarking and testing agents"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "claude-agent-sdk>=0.2.157",
+    "flask>=3.1.3",
+    "mcp>=2.2.0",
+    "mistune>=3.3.4",      # markdown rendering for agent prose
+    "peewee>=4.5.1",       # models and queries
+    # early beta, no API stability guarantee - pinned exactly, on purpose
+    "openai-codex==0.154.0",
+]
+
+[project.scripts]
+achka = "achka.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/achka"]
+
+[dependency-groups]
+dev = ["pyinstaller>=6.11"]

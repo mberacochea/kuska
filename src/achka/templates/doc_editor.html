@@ -1,0 +1,12 @@
+<div id="doc-editor">
+<h2>{{ key }}
+  <a href="#" class="link" hx-get="/docs/close" hx-target="#doc-editor" hx-swap="outerHTML">close</a></h2>
+<form hx-post="/docs/{{ key }}" hx-target="#docs" hx-swap="outerHTML">
+  <textarea name="content" style="min-height:16rem">{{ content }}</textarea>
+  <button class="primary" type="submit">Save</button>
+  <span class="muted small">last saved by {{ updated_by or 'nobody' }}</span>
+</form>
+{% if content %}
+<div class="card md" style="margin-top:.7rem">{{ content_html|safe }}</div>
+{% endif %}
+</div>

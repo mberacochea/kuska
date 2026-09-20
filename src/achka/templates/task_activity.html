@@ -1,0 +1,16 @@
+<div class="log">
+{% for e in events %}
+  <details class="ev k-{{ e.kind }}">
+    <summary><span class="g">{{ glyph(e.kind) }}</span>
+      <span class="muted small">{{ ago(e.ts) }}</span>
+      <span class="what">{{ e.agent }} {{ e.label or e.kind }}</span>
+      <span class="body">{{ brief(e.body) }}</span></summary>
+    <div class="detail">
+      {% if e.kind in prose_kinds %}<div class="md">{{ md(e.body)|safe }}</div>
+      {% else %}<pre class="raw">{{ e.body }}</pre>{% endif %}
+    </div>
+  </details>
+{% else %}
+  <div class="muted small">No activity logged for this task yet.</div>
+{% endfor %}
+</div>

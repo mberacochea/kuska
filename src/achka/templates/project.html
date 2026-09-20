@@ -1,0 +1,32 @@
+{% extends "layout.html" %}
+{% block body %}
+<h2>Description</h2>
+<form hx-post="/description" hx-target="#toast" hx-swap="innerHTML">
+  <textarea name="content" hx-post="/description" hx-trigger="blur"
+            hx-target="#toast" hx-swap="innerHTML"
+            placeholder="What this project is, and what the agents should know about it. Markdown.">{{ description }}</textarea>
+</form>
+{% if description %}
+<details class="card" style="margin-top:.6rem">
+  <summary class="muted small">rendered</summary>
+  <div class="md">{{ description_html|safe }}</div>
+</details>
+{% endif %}
+
+<h2>Tasks</h2>
+<form class="row-form" hx-post="/tasks" hx-target="#tasks" hx-swap="outerHTML"
+      hx-on::after-request="this.reset()">
+  <input type="text" name="title" placeholder="New task title" required>
+  <input type="text" name="description" placeholder="Details (optional)">
+  <select name="assigned_to">
+    <option value="">unassigned</option>
+    {% for a in agents %}<option value="{{ a.name }}">{{ a.name }}</option>{% endfor %}
+  </select>
+  <button class="primary" type="submit">Add task</button>
+</form>
+{{ tasks_table|safe }}
+
+<h2>Export</h2>
+<button hx-post="/export" hx-target="#toast" hx-swap="innerHTML">Export markdown</button>
+<span class="muted small">writes .agents-export/</span>
+{% endblock %}
