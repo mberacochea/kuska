@@ -1,10 +1,10 @@
-# Achka MCP Tools API Documentation
+# Kuska MCP Tools API Documentation
 
-A comprehensive guide to the 10 MCP tools that enable agent-to-agent and agent-to-human coordination in the achka multi-agent system.
+A comprehensive guide to the 10 MCP tools that enable agent-to-agent and agent-to-human coordination in the kuska multi-agent system.
 
 ## Overview
 
-The achka MCP tools are a shared API for agents to:
+The kuska MCP tools are a shared API for agents to:
 - **Claim and manage work**: atomically reserve tasks, report results
 - **Communicate**: send messages to other agents or the human coordinator
 - **Coordinate**: claim files to avoid conflicts, release them when done
@@ -16,7 +16,7 @@ All tools are:
 - **Audited**: Every call is logged with sender, timestamp, and cost
 - **Available in-process**: Low latency for the Claude daemon and the web app
 
-The tools are implemented in `src/achka/store.py` and exposed via `src/achka/tools.py` for three consumers:
+The tools are implemented in `src/kuska/store.py` and exposed via `src/kuska/tools.py` for three consumers:
 - The Claude daemon (`daemons/claude.py`): in-process via `create_sdk_mcp_server()`
 - The CLI MCP server (`mcp` subcommand): stdio protocol
 - The web app: direct database access
@@ -548,7 +548,7 @@ null
 // Response (docs exist)
 {
   "key": "architecture",
-  "content": "# System Architecture\n\nThe achka system is organized into:\n\n1. **Store**: SQLite database for tasks, agents, messages, file claims\n2. **Tools**: MCP tool set for agent coordination\n3. **Daemon**: Thin Claude-backed agent runner\n4. **Web**: Task and message UI\n\n..."
+  "content": "# System Architecture\n\nThe kuska system is organized into:\n\n1. **Store**: SQLite database for tasks, agents, messages, file claims\n2. **Tools**: MCP tool set for agent coordination\n3. **Daemon**: Thin Claude-backed agent runner\n4. **Web**: Task and message UI\n\n..."
 }
 
 // Response (key not found)
@@ -591,7 +591,7 @@ null
 // Write architecture docs
 {
   "key": "architecture",
-  "content": "# System Architecture\n\nThe achka system is organized into:\n\n1. **Store**: SQLite database...\n2. **Tools**: MCP tool set...\n..."
+  "content": "# System Architecture\n\nThe kuska system is organized into:\n\n1. **Store**: SQLite database...\n2. **Tools**: MCP tool set...\n..."
 }
 
 // Response
@@ -815,7 +815,7 @@ You complete a task but it must be reviewed before dependent tasks run.
 - Group related docs: `"database_schema"`, `"database_migrations"`
 - Use simple names: avoid prefixes unless there is naming ambiguity
 
-### Common keys used in achka:
+### Common keys used in kuska:
 - `"architecture"` – System design and module structure
 - `"code_overview"` – High-level code tour (for new agents)
 - `"conventions"` – Code style, naming, patterns
