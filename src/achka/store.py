@@ -404,11 +404,11 @@ def run_events(db: SqliteDatabase, run_id: str) -> list[dict]:
 
 @bound
 def recent_events(db: SqliteDatabase, agent: str | None = None, limit: int = 50) -> list[dict]:
-    """Newest last, so it reads like a terminal."""
+    """Get the most recent events (newest first), optionally filtered by agent."""
     query = Event.select().order_by(Event.id.desc()).limit(limit)
     if agent:
         query = query.where(Event.agent == agent)
-    return list(reversed(rows(query)))
+    return rows(query)
 
 
 # --------------------------------------------------------------------------
