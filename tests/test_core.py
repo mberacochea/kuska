@@ -172,7 +172,7 @@ def main() -> None:
         print("tools")
         check("tool set", [s["name"] for s in ac.TOOL_SPECS] == [
             "get_inbox", "send_message", "claim_task", "reply", "docs_get", "docs_set",
-            "claim_files", "release_files", "who_has", "heartbeat"])
+            "claim_files", "release_files", "who_has", "heartbeat", "create_task"])
         ac.call_tool(conn, "dev-agent", "heartbeat", {"status": "working", "task_id": t4})
         check("tool heartbeat", ac.get_agent(conn, "dev-agent")["current_task_id"] == t4)
         ac.call_tool(conn, "dev-agent", "send_message", {"recipient": "bench-agent", "payload": "ping"})
@@ -215,6 +215,23 @@ def main() -> None:
         check("a dead agent holds nothing", ac.active_claims(conn) == [])
         check("so the file is free again", ac.claim_holders(conn, "src/parser.py", agent="bench-agent") == [])
         ac.release_files(conn, "dev-agent")
+
+        print("create_task tool")
+        new_task = ac.call_tool(conn, "dev-agent", "create_task", {
+            "title": "Create async parser",
+            "description": "Make the parser async-friendly",
+            "assigned_to": "dev-agent"
+        })
+        check("create_task returns task", new_task["title"] == "Create async parser")
+        check("create_task creates in db", ac.get_task(conn, new_task["id"]) is not None)
+
+        # Test create_task with dependencies
+        dep_task = ac.call_tool(conn, "dev-agent", "create_task", {
+            "title": "Test async parser",
+            "assigned_to": "bench-agent",
+            "depends_on": [new_task["id"]]
+        })
+        check("create_task with dependencies works", [d["id"] for d in ac.task_dependencies(conn, dep_task["id"])] == [new_task["id"]])
 
         print("export")
         out = project / ".agents-export"

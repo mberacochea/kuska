@@ -14,12 +14,15 @@ from peewee import SqliteDatabase
 
 from .db import AGENT_STATUSES, TASK_STATUSES
 from .store import (
+    add_dependency,
+    add_task,
     claim_files,
     claim_holders,
     claim_task,
     docs_get,
     docs_set,
     get_inbox,
+    get_task,
     heartbeat,
     release_files,
     reply,
@@ -39,6 +42,25 @@ def _obj(props: dict, required: list[str] | None = None) -> dict:
 _STR = {"type": "string"}
 _INT = {"type": "integer"}
 _NUM = {"type": "number"}
+
+
+def _create_task_handler(db, agent, args):
+    """Handler for the create_task tool."""
+    title = args["title"]
+    description = args.get("description", "")
+    assigned_to = args.get("assigned_to")
+    depends_on = args.get("depends_on", [])
+
+    # Create the task
+    task_id = add_task(db, title, description=description, assigned_to=assigned_to)
+
+    # Add dependencies if provided
+    for dep_id in depends_on:
+        add_dependency(db, task_id, dep_id)
+
+    # Fetch and return the created task
+    task = get_task(db, task_id)
+    return task
 
 
 TOOL_SPECS: list[dict] = [
@@ -176,6 +198,24 @@ TOOL_SPECS: list[dict] = [
         "handler": lambda db, agent, a: (
             heartbeat(db, agent, a["status"], a.get("task_id")) or {"ok": True}
         ),
+    },
+    {
+        "name": "create_task",
+        "description": "Create a new task and optionally set up dependencies. Returns the created task record.",
+        "schema": _obj(
+            {
+                "title": {**_STR, "description": "Short task name"},
+                "description": {**_STR, "description": "Optional longer explanation of what to do"},
+                "assigned_to": {**_STR, "description": "Optional agent name to assign this task to"},
+                "depends_on": {
+                    "type": "array",
+                    "items": _INT,
+                    "description": "Optional list of task IDs this task depends on"
+                },
+            },
+            ["title"],
+        ),
+        "handler": lambda db, agent, a: _create_task_handler(db, agent, a),
     },
 ]
 
