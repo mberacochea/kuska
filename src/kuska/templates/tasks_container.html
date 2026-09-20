@@ -1,0 +1,36 @@
+<div id="tasks-container">
+  <div class="task-header-row">
+    <button type="button" id="reload-tasks-btn" class="reload-tasks-btn" aria-label="Reload task table">
+      ↻ Reload
+    </button>
+  </div>
+
+  <!-- Task Filters -->
+  <div class="task-filters" id="task-filters-container">
+    <input type="text" id="task-search" placeholder="Search tasks..." class="task-search"
+           aria-label="Search tasks by title or description">
+
+    <div class="filter-group">
+      <label for="task-status">Status:</label>
+      <select id="task-status" multiple class="task-filter-select" aria-label="Filter by status">
+        {% for s in statuses %}
+        <option value="{{ s }}">{{ s }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="filter-group">
+      <label for="task-agent">Agent:</label>
+      <select id="task-agent" multiple class="task-filter-select" aria-label="Filter by assigned agent">
+        <option value="">Unassigned</option>
+        {% for a in agents %}
+        <option value="{{ a.name }}">{{ a.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <button type="button" class="filter-reset" id="filter-reset-btn" aria-label="Clear all filters">Reset</button>
+  </div>
+
+  {{ tasks_table|safe }}
+</div>

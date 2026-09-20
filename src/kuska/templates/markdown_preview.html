@@ -1,0 +1,11 @@
+<div id="markdown-modal" class="modal-overlay open" hx-on::click="if(event.target.id === 'markdown-modal') htmx.ajax('GET', '/data/close-markdown', {target: '#markdown-modal', swap: 'outerHTML'})">
+  <div class="modal" hx-on::click="event.stopPropagation()">
+    <div class="modal-header">
+      <h3>{{ table }} - {{ field }}</h3>
+      <button class="modal-close" hx-get="/data/close-markdown" hx-target="#markdown-modal" hx-swap="outerHTML">×</button>
+    </div>
+    <div class="modal-content">
+      <div class="md">{{ md(content)|safe }}</div>
+    </div>
+  </div>
+</div>

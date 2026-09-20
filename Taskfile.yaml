@@ -1,0 +1,85 @@
+version: '3'
+
+tasks:
+  init:
+    desc: "Initialize project (.agents/, config.toml, database)"
+    cmds:
+      - uv run kuska init
+
+  serve:
+    desc: "Start the web UI on http://0.0.0.0:5055"
+    cmds:
+      - uv run kuska serve --debug
+
+  daemon:
+    desc: "Run a specific daemon (e.g., task daemon dev-agent)"
+    vars:
+      AGENT: '{{.AGENT | default "dev-agent"}}'
+    cmds:
+      - uv run kuska daemon {{.AGENT}}
+
+  mcp:
+    desc: "Start the MCP server for external clients"
+    cmds:
+      - uv run kuska mcp
+
+  run-all:
+    desc: "Run everything: web server + MCP server + all agents (via single run-all command)"
+    cmds:
+      - uv run kuska run-all
+
+  run-all-agents:
+    desc: "Run web server + MCP server + specific agents (e.g., task run-all-agents AGENTS=dev-agent,codex-1)"
+    vars:
+      AGENTS: '{{.AGENTS | default "dev-agent"}}'
+    cmds:
+      - uv run kuska run-all --agents {{.AGENTS}}
+
+  dev:
+    desc: "Run web UI and all configured agents together (parallel)"
+    cmds:
+      - uv run kuska run-all --agents "*"
+
+  export:
+    desc: "Export project as markdown"
+    cmds:
+      - uv run kuska export
+
+  test:
+    desc: "Run all tests"
+    cmds:
+      - uv run tests/run_all.py
+
+  lint:
+    desc: "Run ruff and fix issues"
+    cmds:
+      - uv run ruff check --fix
+
+  build:
+    desc: "Build PyInstaller binary (dist/kuska)"
+    cmds:
+      - uv run pyinstaller kuska.spec --clean --noconfirm
+
+  build-with-clis:
+    desc: "Build PyInstaller binary with bundled agent SDKs (sets AGENTCTL_BUNDLE_CLIS=1)"
+    env:
+      AGENTCTL_BUNDLE_CLIS: '1'
+    cmds:
+      - uv run pyinstaller kuska.spec --clean --noconfirm
+
+  clean:
+    desc: "Clean build artifacts and cache"
+    cmds:
+      - rm -rf build dist *.spec.bak
+      - find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+      - find . -type d -name .ruff_cache -exec rm -rf {} + 2>/dev/null || true
+
+  logs:
+    desc: "Tail live events for all agents"
+    cmds:
+      - echo "Open http://0.0.0.0:5055 in your browser and check the 'Agents' page for Live Activity"
+
+  help:
+    desc: "Show this help message"
+    cmds:
+      - task -l

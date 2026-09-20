@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Standalone checks for achka - no test framework, just `uv run tests/test_core.py`."""
+"""Standalone checks for kuska - no test framework, just `uv run tests/test_core.py`."""
 
 import shutil
 import sys
@@ -8,7 +8,7 @@ import threading
 import time
 from pathlib import Path
 
-import achka as ac
+import kuska as ac
 
 PASSED = 0
 
@@ -24,7 +24,7 @@ def check(label: str, cond: bool, detail: str = "") -> None:
 
 
 def main() -> None:
-    tmp = Path(tempfile.mkdtemp(prefix="achka-test-"))
+    tmp = Path(tempfile.mkdtemp(prefix="kuska-test-"))
     try:
         project = tmp / "myproject"
         (project / ".agents" / "prompts").mkdir(parents=True)
@@ -153,7 +153,10 @@ def main() -> None:
         check("failed tool is an error", events[4]["kind"] == "error" and events[4]["label"] == "Bash")
         check("grouped by run", len(ac.run_events(conn, mono.run_id)) == 5)
         check("scoped to its task", ac.task_events(conn, t2) == [])
-        check("tail is newest last", ac.recent_events(conn, limit=2)[-1]["kind"] == "error")
+        # newest first: the limit is what makes this a "recent" feed at all -
+        # ORDER BY id DESC LIMIT n takes the n latest events, where ascending
+        # would pin it to the n oldest forever
+        check("tail is newest first", ac.recent_events(conn, limit=2)[0]["kind"] == "error")
         check("tail filters by agent", ac.recent_events(conn, agent="bench-agent") == [])
         check("terminal line is one line", "\n" not in ac.one_line("a\nb\nc") and ac.one_line("x" * 300, 50).endswith("\u2026"))
         try:

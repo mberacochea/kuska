@@ -10,14 +10,15 @@ import asyncio
 import shutil
 import sys
 import tempfile
+import multiprocessing
 import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
 
-import achka as core
-from achka.daemons import claude as daemon_claude
-from achka.daemons import codex as daemon_codex
+import kuska as core
+from kuska.daemons import claude as daemon_claude
+from kuska.daemons import codex as daemon_codex
 
 PASSED = 0
 
@@ -32,6 +33,61 @@ def check(label: str, cond: bool, detail: str = "") -> None:
         sys.exit(1)
 
 
+# --------------------------------------------------------------------------
+# Concurrency workers.
+#
+# These run in separate processes on purpose. store.py binds its models to a
+# database per call (store.bound -> db.bind_ctx(MODELS)), and peewee's model
+# binding is process-global: two threads calling any bound function rebind the
+# same Model classes under each other and end up issuing queries on the wrong
+# connection. A daemon is its own process (`kuska daemon <name>`), so process
+# isolation is what concurrency actually looks like here - and the only way to
+# test the database's guarantees rather than peewee's global state.
+# --------------------------------------------------------------------------
+
+
+def _claim_task_worker(db_path: str, agent_name: str, q) -> None:
+    import kuska as core
+
+    conn = core.connect(db_path)
+    try:
+        q.put((agent_name, core.claim_task(conn, agent_name)))
+    finally:
+        conn.close()
+
+
+def _claim_file_worker(db_path: str, agent_name: str, q) -> None:
+    import kuska as core
+
+    conn = core.connect(db_path)
+    try:
+        result = core.claim_files(
+            conn, agent_name, ["src/parser.py"], task_id=1, note=f"claimed by {agent_name}"
+        )
+        q.put((agent_name, result))
+    finally:
+        conn.close()
+
+
+def run_in_processes(worker, project: Path, agents: tuple[str, ...]) -> dict:
+    """Run worker(db_path, agent, queue) once per agent, concurrently."""
+    ctx = multiprocessing.get_context("spawn")
+    q = ctx.Queue()
+    procs = [
+        ctx.Process(target=worker, args=(str(core.db_path(project)), agent, q))
+        for agent in agents
+    ]
+    for proc in procs:
+        proc.start()
+    results = {}
+    for _ in agents:
+        agent, value = q.get(timeout=60)
+        results[agent] = value
+    for proc in procs:
+        proc.join(timeout=60)
+    return results
+
+
 def make_project(tmp: Path) -> Path:
     project = tmp / "daemonproject"
     (project / ".agents" / "prompts").mkdir(parents=True)
@@ -43,6 +99,18 @@ def make_project(tmp: Path) -> Path:
         "api_key = \"sk-test\"\n"
     )
     return project
+
+
+def usage(tok_in: int, tok_out: int, cache_read: int = 0, rounds: int = 0, cost: float = 0.0) -> dict:
+    """The usage dict a stubbed run_agent hands back, matching the real shape."""
+    return {
+        "input_tokens": tok_in,
+        "output_tokens": tok_out,
+        "cache_read_tokens": cache_read,
+        "cache_write_tokens": 0,
+        "tool_rounds": rounds,
+        "cost_usd": cost,
+    }
 
 
 def run_loop(project: Path, fake_run, max_tasks: int) -> None:
@@ -72,8 +140,8 @@ def check_tools_in_process(project: Path) -> None:
     check("tool errors are returned, not raised", err.get("isError") and "error:" in err["content"][0]["text"], err)
 
     options = daemon_claude.build_options(project, "dev-agent", {"model": "claude-opus-5"}, tools)
-    check("mcp server registered", "achka" in options.mcp_servers)
-    check("tools allow-listed", "mcp__achka__claim_task" in options.allowed_tools)
+    check("mcp server registered", "kuska" in options.mcp_servers)
+    check("tools allow-listed", "mcp__kuska__claim_task" in options.allowed_tools)
     check("prompt file wired", options.system_prompt["path"].endswith("prompts/dev-agent.md"))
     check("runs in project dir", options.cwd == str(project))
     conn.close()
@@ -92,11 +160,11 @@ def check_loop(project: Path) -> None:
         mono.tool_call("Read", {"file_path": "src/parser.py"})
         mono.record("text", "Parser added.")
         if len(seen) == 1:
-            return "Parser added.", 1000, 200, 0.03
+            return "Parser added.", usage(1000, 200, cache_read=9000, rounds=4, cost=0.03)
         # second task: the agent asks another agent, then blocks itself via the tools
         core.send_message(conn, "dev-agent", "codex-1", t2, "question", "which scope?")
         core.reply(conn, "dev-agent", t2, "Asked codex-1, waiting.", status="blocked")
-        return "Asked codex-1, waiting.", 400, 80, 0.01
+        return "Asked codex-1, waiting.", usage(400, 80, cache_read=3000, rounds=2, cost=0.01)
 
     run_loop(project, fake, max_tasks=2)
 
@@ -107,6 +175,8 @@ def check_loop(project: Path) -> None:
     check("one result logged", len(results) == 1, results)
     check("result text logged", results[0]["payload"] == "Parser added.")
     check("cost logged", results[0]["cost_usd"] == 0.03 and results[0]["input_tokens"] == 1000)
+    check("cache reads kept out of fresh input", results[0]["cache_read_tokens"] == 9000, results[0])
+    check("tool rounds recorded", results[0]["tool_rounds"] == 4, results[0])
 
     check("task 2 blocked by the agent", core.get_task(conn, t2)["status"] == "blocked")
     r2 = [m for m in core.task_messages(conn, t2) if m["msg_type"] == "result"]
@@ -124,7 +194,7 @@ def check_loop(project: Path) -> None:
 
     async def fake2(prompt, options, mono):
         seen.append(prompt)
-        return "Scoped to the CLI, done.", 300, 60, 0.005
+        return "Scoped to the CLI, done.", usage(300, 60, cache_read=2000, rounds=1, cost=0.005)
 
     run_loop(project, fake2, max_tasks=1)
     check("re-queued task ran again", core.get_task(conn, t2)["status"] == "done")
@@ -169,10 +239,11 @@ def check_claim_guard(project: Path) -> None:
     core.release_files(db, "bench-agent")
 
     current = {"mono": core.Monologue(db, "dev-agent", 1, quiet=True)}
-    guard = daemon_claude.claim_guard(db, project, "dev-agent", current)
+    reads: dict = {}
+    guard = daemon_claude.claim_guard(db, project, "dev-agent", current, reads)
 
     allowed = asyncio.run(guard("Read", {"file_path": "src/parser.py"}, None))
-    check("reads are never gated", allowed.behavior == "allow")
+    check("a first read is allowed", allowed.behavior == "allow")
     check("reading claims nothing", core.active_claims(db) == [])
 
     allowed = asyncio.run(guard("Edit", {"file_path": "src/parser.py"}, None))
@@ -183,8 +254,9 @@ def check_claim_guard(project: Path) -> None:
     check("editing again is fine", asyncio.run(guard("Write", {"file_path": "src/parser.py"}, None)).behavior == "allow")
 
     other = {"mono": core.Monologue(db, "bench-agent", 2, quiet=True)}
+    other_reads: dict = {}
     denied = asyncio.run(
-        daemon_claude.claim_guard(db, project, "bench-agent", other)("Edit", {"file_path": "src/parser.py"}, None)
+        daemon_claude.claim_guard(db, project, "bench-agent", other, other_reads)("Edit", {"file_path": "src/parser.py"}, None)
     )
     check("the other agent is stopped", denied.behavior == "deny")
     check("told who holds it", "dev-agent" in denied.message and "task 1" in denied.message, denied.message)
@@ -194,18 +266,51 @@ def check_claim_guard(project: Path) -> None:
         e["label"] == "claim conflict" for e in core.task_events(db, 2)))
 
     check("unrelated file still allowed", asyncio.run(
-        daemon_claude.claim_guard(db, project, "bench-agent", other)("Edit", {"file_path": "README.md"}, None)
+        daemon_claude.claim_guard(db, project, "bench-agent", other, other_reads)("Edit", {"file_path": "README.md"}, None)
     ).behavior == "allow")
     check("absolute paths resolve to the same claim", asyncio.run(
-        daemon_claude.claim_guard(db, project, "bench-agent", other)(
+        daemon_claude.claim_guard(db, project, "bench-agent", other, other_reads)(
             "Edit", {"file_path": str(project / "src" / "parser.py")}, None)
     ).behavior == "deny")
 
     core.release_run(db, current["mono"].run_id)
     check("released with the run", core.claim_holders(db, "src/parser.py", agent="bench-agent") == [])
     check("now the other agent may edit it", asyncio.run(
-        daemon_claude.claim_guard(db, project, "bench-agent", other)("Edit", {"file_path": "src/parser.py"}, None)
+        daemon_claude.claim_guard(db, project, "bench-agent", other, other_reads)("Edit", {"file_path": "src/parser.py"}, None)
     ).behavior == "allow")
+
+    print("redundant reads")
+    # unclaimed paths, so the claim checks above cannot interfere
+    fresh: dict = {}
+    dedupe = daemon_claude.claim_guard(db, project, "dev-agent", current, fresh)
+    check("first read allowed", asyncio.run(
+        dedupe("Read", {"file_path": "src/lexer.py"}, None)).behavior == "allow")
+    again = asyncio.run(dedupe("Read", {"file_path": "src/lexer.py"}, None))
+    check("the same file again is refused", again.behavior == "deny")
+    check("told it already has the contents", "already read" in again.message, again.message)
+    check("and pointed at offset/limit and Grep",
+          "offset/limit" in again.message and "Grep" in again.message, again.message)
+    check("the refusal is in the monologue", any(
+        e["label"] == "redundant read" for e in core.task_events(db, 1)))
+    check("a different file is fine", asyncio.run(
+        dedupe("Read", {"file_path": "src/other.py"}, None)).behavior == "allow")
+    check("editing it clears the record", asyncio.run(
+        dedupe("Edit", {"file_path": "src/lexer.py"}, None)).behavior == "allow")
+    check("so re-reading a changed file is allowed", asyncio.run(
+        dedupe("Read", {"file_path": "src/lexer.py"}, None)).behavior == "allow")
+
+    # a whole-file read subsumes every range; distinct ranges do not
+    ranges: dict = {}
+    ranged = daemon_claude.claim_guard(db, project, "dev-agent", current, ranges)
+    check("a ranged read is allowed", asyncio.run(
+        ranged("Read", {"file_path": "src/big.py", "offset": 1, "limit": 50}, None)).behavior == "allow")
+    check("a different range is allowed", asyncio.run(
+        ranged("Read", {"file_path": "src/big.py", "offset": 200, "limit": 50}, None)).behavior == "allow")
+    check("the same range again is refused", asyncio.run(
+        ranged("Read", {"file_path": "src/big.py", "offset": 1, "limit": 50}, None)).behavior == "deny")
+    check("and the whole file is refused after ranges", asyncio.run(
+        ranged("Read", {"file_path": "src/big.py"}, None)).behavior == "deny")
+    core.release_files(db, "dev-agent")  # the Edit above claimed src/lexer.py
 
     print("claims in the next run's prompt")
     core.release_files(db, "bench-agent")
@@ -223,8 +328,8 @@ def check_claim_guard(project: Path) -> None:
 def check_codex_wiring(project: Path) -> None:
     print("codex daemon wiring")
     cfg = core.load_config(project)["agents"]["codex-1"]
-    mcp = daemon_codex.mcp_config(project, "codex-1")["mcp_servers"]["achka"]
-    check("points at achka mcp", mcp["args"][-3:] == ["mcp", "--agent", "codex-1"], mcp)
+    mcp = daemon_codex.mcp_config(project, "codex-1")["mcp_servers"]["kuska"]
+    check("points at kuska mcp", mcp["args"][-3:] == ["mcp", "--agent", "codex-1"], mcp)
     check("scoped to this project", str(project) in mcp["args"], mcp)
 
     usage = SimpleNamespace(last=SimpleNamespace(input_tokens=2_000_000, output_tokens=100_000))
@@ -237,7 +342,7 @@ def check_codex_wiring(project: Path) -> None:
 
 def check_openai_wiring(project: Path) -> None:
     print("openai daemon wiring")
-    from achka.daemons import openai as daemon_openai
+    from kuska.daemons import openai as daemon_openai
 
     cfg = core.load_config(project)["agents"]["openai-1"]
     check("backend registered", cfg["backend"] == "openai")
@@ -253,14 +358,14 @@ def check_openai_wiring(project: Path) -> None:
     check("agent message is text", daemon_codex.describe_item(item) == ("text", "agent_message", "all done"))
     shell = SimpleNamespace(type="command_execution", command="pytest -q")
     check("command is a tool call", daemon_codex.describe_item(shell) == ("tool_use", "shell", "pytest -q"))
-    mcp = SimpleNamespace(type="mcp_tool_call", server="achka", tool="get_inbox", arguments={"a": 1})
+    mcp = SimpleNamespace(type="mcp_tool_call", server="kuska", tool="get_inbox", arguments={"a": 1})
     kind, label, body = daemon_codex.describe_item(mcp)
-    check("mcp call is named", (kind, label) == ("tool_use", "achka.get_inbox") and "\"a\": 1" in body)
+    check("mcp call is named", (kind, label) == ("tool_use", "kuska.get_inbox") and "\"a\": 1" in body)
     unknown = SimpleNamespace(type="something_new", model_dump_json=lambda: '{"type": "something_new"}')
     check("unknown item still logged", daemon_codex.describe_item(unknown)[0] == "tool_use")
 
     print("backend dispatch")
-    from achka.daemons import BACKENDS, run
+    from kuska.daemons import BACKENDS, run
 
     check("three backends registered", set(BACKENDS) == {"claude", "codex", "openai"}, BACKENDS)
     try:
@@ -279,22 +384,7 @@ def check_file_claim_conflicts(project: Path) -> None:
     core.heartbeat(db, "agent-1", "working")
     core.heartbeat(db, "agent-2", "working")
 
-    results = {}
-
-    def claim_file(agent_name):
-        """Try to claim the same file."""
-        result = core.claim_files(db, agent_name, ["src/parser.py"], task_id=1, note=f"claimed by {agent_name}")
-        results[agent_name] = result
-
-    # Thread 1 claims first
-    t1 = threading.Thread(target=claim_file, args=("agent-1",))
-    # Thread 2 claims immediately after
-    t2 = threading.Thread(target=claim_file, args=("agent-2",))
-
-    t1.start()
-    t2.start()
-    t1.join()
-    t2.join()
+    results = run_in_processes(_claim_file_worker, project, ("agent-1", "agent-2"))
 
     # Both calls should succeed (no exception) - claims are advisory
     check("both agents can call claim_files", "agent-1" in results and "agent-2" in results)
@@ -329,24 +419,7 @@ def check_task_claiming_race(project: Path) -> None:
     r2_t1 = core.add_task(db, "Racer2-A", "third", "racer-2")
     r2_t2 = core.add_task(db, "Racer2-B", "fourth", "racer-2")
 
-    results = {}
-    lock = threading.Lock()
-
-    def claim_task_safe(agent_name):
-        """Try to claim a task thread-safely."""
-        task = core.claim_task(db, agent_name)
-        with lock:
-            results[agent_name] = task
-
-    # Both agents claim simultaneously - should succeed with different tasks
-    threads = [
-        threading.Thread(target=claim_task_safe, args=("racer-1",)),
-        threading.Thread(target=claim_task_safe, args=("racer-2",)),
-    ]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    results = run_in_processes(_claim_task_worker, project, ("racer-1", "racer-2"))
 
     check("both agents claimed tasks", results.get("racer-1") is not None and results.get("racer-2") is not None, results)
     if results.get("racer-1") and results.get("racer-2"):
@@ -567,8 +640,178 @@ def check_large_claim_scope(project: Path) -> None:
     db.close()
 
 
+def check_lazy_load_history(project: Path) -> None:
+    """Scenario 7: Message summarization - keep last 5 full, summarize older."""
+    print("lazy-load message history")
+    db = core.connect(core.db_path(project))
+    core.register_agent(db, "history-agent", "claude", "builder")
+    core.heartbeat(db, "history-agent", "working")
+
+    task_id = core.add_task(db, "Multi-turn task", "requires multiple interactions", "history-agent")
+
+    # Create 12 messages to test summarization (7 old + 5 recent)
+    # Sent from agent to human so they won't be in inbox
+    for i in range(1, 13):
+        payload = f"result message {i}" + (" (final)" if i == 12 else "")
+        core.send_message(db, "history-agent", core.HUMAN, task_id, "result", payload)
+
+    # Test 1: Default behavior - summarize old (1-7), keep last 5 full (8-12)
+    task = core.get_task(db, task_id)
+    prompt_limited = core.compose_task_prompt(db, "history-agent", task, limit_history=True)
+
+    check("limited prompt includes task title", "Multi-turn task" in prompt_limited)
+    check("limited prompt has history section", "Earlier on this task" in prompt_limited)
+    check("limited prompt has prior context", "Prior context" in prompt_limited, prompt_limited[:500])
+    check("limited prompt has recent section", "Recent messages" in prompt_limited, prompt_limited[:500])
+    check("limited prompt indicates last 5", "last 5" in prompt_limited)
+
+    # Verify last 5 messages (8-12) are in full format
+    check("limited prompt has last message", "result message 12" in prompt_limited)
+    check("limited prompt has msg 11", "result message 11" in prompt_limited)
+    check("limited prompt has msg 8", "result message 8" in prompt_limited)
+
+    # First message should be in summary (prior context) but not in full format
+    # Full format would be "**history-agent -> human**" (with arrow)
+    lines = prompt_limited.split('\n')
+    full_msg1_count = sum(1 for line in lines if "result message 1" in line and "->" in line)
+    check("msg 1 not in full format", full_msg1_count == 0)
+    # But msg 1 should still be somewhere in the prompt (in summary)
+    check("msg 1 in summary", "result message 1" in prompt_limited)
+
+    # Test 2: Full history via limit_history=False
+    prompt_full = core.compose_task_prompt(db, "history-agent", task, limit_history=False)
+    check("full prompt includes all history", "result message 1" in prompt_full and "result message 12" in prompt_full)
+    check("full prompt doesn't use prior context", "Prior context" not in prompt_full)
+
+    # Test 3: With 5 or fewer messages, all should be in full (no summarization)
+    task_id_short = core.add_task(db, "Short task", "", "history-agent")
+    for i in range(1, 4):
+        core.send_message(db, "history-agent", core.HUMAN, task_id_short, "result", f"short msg {i}")
+
+    task_short = core.get_task(db, task_id_short)
+    prompt_short = core.compose_task_prompt(db, "history-agent", task_short, limit_history=True)
+    check("short prompt no summarization", "Prior context" not in prompt_short)
+    check("short prompt has all messages", "short msg 1" in prompt_short and "short msg 3" in prompt_short)
+
+    db.close()
+
+
+def check_prompt_stays_small(project: Path) -> None:
+    """Scenario 8: The composed prompt stays small however long the thread gets.
+
+    There used to be a max_prompt_tokens setting here that progressively
+    truncated history to fit a budget. It was never reachable: summarization
+    already caps the prompt at a few hundred tokens, and an invocation's cost
+    lives in the agentic loop that follows, not in the prompt that starts it.
+    What this checks now is that the summarization actually holds.
+    """
+    print("composed prompt stays small")
+    db = core.connect(core.db_path(project))
+    core.register_agent(db, "limit-agent", "claude", "builder")
+    core.register_agent(db, "other-agent", "claude", "reviewer")
+    core.heartbeat(db, "limit-agent", "working")
+    core.heartbeat(db, "other-agent", "working")
+
+    task_id = core.add_task(db, "Long-running task", "very long description with lots of content" * 50, "limit-agent")
+
+    long_message = "This is a test message. " * 100  # ~2400 chars
+    for i in range(20):
+        core.send_message(db, "other-agent", "limit-agent", task_id, "note", f"Message {i}: {long_message}")
+
+    check("token count for short text", core.estimate_token_count("hello world") >= 1)
+    check("token count increases with length",
+          core.estimate_token_count("a" * 1000) > core.estimate_token_count("hello world"))
+
+    task = core.get_task(db, task_id)
+    prompt_unlimited = core.compose_task_prompt(db, "limit-agent", task, limit_history=False)
+    check("unlimited prompt includes all history",
+          "Message 0:" in prompt_unlimited and "Message 19:" in prompt_unlimited)
+    check("unlimited prompt is large", core.estimate_token_count(prompt_unlimited) > 1000)
+
+    # 20 long messages, but only the last 5 land in full
+    prompt = core.compose_task_prompt(db, "limit-agent", task)
+    tokens = core.estimate_token_count(prompt)
+    check("summarized prompt still names the task", "Long-running task" in prompt)
+    check("summarized prompt keeps the recent messages in full", "Message 19:" in prompt)
+    check("summarized prompt is a fraction of the full one",
+          tokens < core.estimate_token_count(prompt_unlimited) / 2, f"tokens: {tokens}")
+    check("older messages survive only as one-line previews",
+          sum(1 for line in prompt.split("\n") if "Message 0:" in line and "->" in line) == 0)
+
+    db.close()
+
+
+def check_workflow_context(project: Path) -> None:
+    """Scenario 9: Workflow context passing for multi-agent workflows (Phase 4.1)."""
+    print("workflow context passing (multi-agent)")
+    db = core.connect(core.db_path(project))
+    core.register_agent(db, "planning-agent", "claude", "planner")
+    core.register_agent(db, "dev-agent", "claude", "builder")
+    core.register_agent(db, "review-agent", "claude", "reviewer")
+
+    # Test 1: Store context from planning-agent
+    task_id = core.add_task(db, "Implement feature X", "Complex feature requiring multiple agents", "planning-agent")
+    plan_context = """{
+        "phase": 1,
+        "approach": "Modular architecture with dependency injection",
+        "key_decisions": ["Use abstract base classes", "Implement factory pattern"],
+        "files_to_modify": ["src/core.py", "src/services.py"],
+        "critical_constraints": "Must maintain backward compatibility"
+    }"""
+
+    # Simulate planning-agent finishing and storing context
+    core.docs_set(db, f"task_{task_id}_planning-agent_context", plan_context, updated_by="planning-agent")
+    check("planning context stored", core.docs_get(db, f"task_{task_id}_planning-agent_context") is not None)
+
+    # Test 2: dev-agent retrieves context in prompt
+    task = core.get_task(db, task_id)
+    prompt_with_context = core.compose_task_prompt(db, "dev-agent", task)
+    check("workflow context appears in prompt", "Context from planning-agent" in prompt_with_context)
+    check("context content is included", "Modular architecture" in prompt_with_context)
+    check("key decisions visible", "factory pattern" in prompt_with_context)
+
+    # Test 3: dev-agent can store its own context for review-agent
+    dev_context = """{
+        "implementation_summary": "Implemented factory pattern for services",
+        "files_modified": ["src/core.py", "src/services.py", "tests/test_services.py"],
+        "key_changes": ["Added ServiceFactory class", "Migrated service instantiation"],
+        "test_coverage": "Added 15 new unit tests for factory pattern"
+    }"""
+    core.docs_set(db, f"task_{task_id}_dev-agent_context", dev_context, updated_by="dev-agent")
+    check("dev context stored", core.docs_get(db, f"task_{task_id}_dev-agent_context") is not None)
+
+    # Test 4: review-agent gets both contexts (will retrieve dev context, not planning)
+    prompt_for_review = core.compose_task_prompt(db, "review-agent", task)
+    check("dev context appears in review prompt", "Context from dev-agent" in prompt_for_review)
+    check("review sees dev changes", "ServiceFactory class" in prompt_for_review)
+    check("review sees test coverage", "15 new unit tests" in prompt_for_review)
+
+    # Test 5: Context is included in prompt (explicit check)
+    # This verifies that when both history and context exist, the context is available
+    task_id_2 = core.add_task(db, "Another task", "Testing token savings", "planning-agent")
+    long_message = "This is a detailed message about implementation strategy. " * 30  # ~1500 chars
+    for i in range(10):
+        core.send_message(db, "human", "planning-agent", task_id_2, "note", f"Iteration {i}: {long_message}")
+
+    # Store context
+    ctx = "Brief planning summary: modular architecture with factory pattern."
+    core.docs_set(db, f"task_{task_id_2}_planning-agent_context", ctx, updated_by="planning-agent")
+
+    # Verify context is accessible
+    task2 = core.get_task(db, task_id_2)
+    context_doc = core.docs_get(db, f"task_{task_id_2}_planning-agent_context")
+    check("stored context is retrievable", context_doc == ctx)
+
+    # Verify it appears in prompt
+    prompt_with_ctx = core.compose_task_prompt(db, "dev-agent", task2)
+    check("context section in prompt", "Context from planning-agent" in prompt_with_ctx)
+    check("actual context content in prompt", "modular architecture" in prompt_with_ctx)
+
+    db.close()
+
+
 def main() -> None:
-    tmp = Path(tempfile.mkdtemp(prefix="achka-daemon-"))
+    tmp = Path(tempfile.mkdtemp(prefix="kuska-daemon-"))
     try:
         project = make_project(tmp)
         check_tools_in_process(project)
@@ -584,6 +827,9 @@ def main() -> None:
         check_dependency_satisfaction(project)
         check_approval_workflow_race(project)
         check_large_claim_scope(project)
+        check_lazy_load_history(project)
+        check_prompt_stays_small(project)
+        check_workflow_context(project)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print(f"\n{PASSED} checks passed")

@@ -1,0 +1,362 @@
+{% extends "layout.html" %}
+{% block body %}
+<style>
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 1rem;
+    margin: 1.5rem 0;
+  }
+
+  .stat-card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 1rem;
+    text-align: center;
+  }
+
+  .stat-card h3 {
+    margin: 0 0 0.5rem 0;
+    font-size: 0.9rem;
+    color: var(--muted);
+    font-weight: 600;
+  }
+
+  .stat-value {
+    font-size: 1.8rem;
+    font-weight: 700;
+    color: var(--fg);
+  }
+
+  .stat-percent {
+    font-size: 0.9rem;
+    color: var(--muted);
+    font-weight: 400;
+  }
+
+  .token-summary {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin: 1.5rem 0;
+  }
+
+  .token-summary h3 {
+    margin: 0 0 1rem 0;
+    font-size: 1rem;
+    color: var(--fg);
+    font-weight: 600;
+  }
+
+  .token-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .token-row:last-child {
+    border-bottom: none;
+  }
+
+  .token-label {
+    color: var(--muted);
+    font-weight: 500;
+  }
+
+  .token-value {
+    color: var(--fg);
+    font-family: monospace;
+    font-weight: 600;
+  }
+
+  @media (max-width: 768px) {
+    .stats-grid {
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    }
+
+    .stat-value {
+      font-size: 1.4rem;
+    }
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1.5rem 0;
+  }
+
+  thead {
+    background: var(--shade);
+    border-bottom: 2px solid var(--line);
+  }
+
+  th, td {
+    padding: 0.75rem;
+    text-align: left;
+    border-bottom: 1px solid var(--line);
+  }
+
+  th {
+    font-weight: 600;
+    color: var(--fg);
+    font-size: 0.9rem;
+  }
+
+  td {
+    color: var(--fg);
+  }
+
+  .num {
+    text-align: right;
+    font-family: monospace;
+    font-size: 0.95rem;
+  }
+
+  .dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 0.5rem;
+  }
+
+  .dot.idle { background-color: #888; }
+  .dot.working { background-color: #0f0; }
+  .dot.offline { background-color: #f00; }
+
+  h2 {
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+    font-size: 1.3rem;
+    color: var(--fg);
+  }
+
+  h2:first-child {
+    margin-top: 0;
+  }
+
+  .muted {
+    color: var(--muted);
+    font-style: italic;
+  }
+</style>
+
+<h2>Project Statistics</h2>
+
+<!-- Project Overview -->
+<div class="stats-grid">
+  <div class="stat-card">
+    <h3>Total Tasks</h3>
+    <div class="stat-value">{{ metrics.total_tasks }}</div>
+  </div>
+  <div class="stat-card">
+    <h3>Completed</h3>
+    <div class="stat-value">{{ metrics.completed }} <span class="stat-percent">({{ metrics.completed_pct }}%)</span></div>
+  </div>
+  <div class="stat-card">
+    <h3>In Progress</h3>
+    <div class="stat-value s-in_progress">{{ metrics.in_progress }}</div>
+  </div>
+  <div class="stat-card">
+    <h3>Blocked</h3>
+    <div class="stat-value s-blocked">{{ metrics.blocked }}</div>
+  </div>
+  <div class="stat-card">
+    <h3>Needs Approval</h3>
+    <div class="stat-value s-needs_approval">{{ metrics.needs_approval }}</div>
+  </div>
+  <div class="stat-card">
+    <h3>Todo</h3>
+    <div class="stat-value s-todo">{{ metrics.todo }}</div>
+  </div>
+  <div class="stat-card">
+    <h3>Total Cost</h3>
+    <div class="stat-value">${{ '%.2f'|format(metrics.total_cost) }}</div>
+  </div>
+  <div class="stat-card">
+    <h3>Avg Task Duration</h3>
+    <div class="stat-value">{{ '%.1f'|format(metrics.avg_duration_hours) }}h</div>
+  </div>
+</div>
+
+<!-- Cost & Token Summary -->
+<div class="token-summary">
+  <h3>Cost &amp; Token Usage</h3>
+  <div class="token-row">
+    <span class="token-label">Cost per run</span>
+    <span class="token-value">${{ '%.4f'|format(metrics.cost_per_run) }}</span>
+  </div>
+  <div class="token-row">
+    <span class="token-label">Tool rounds per run</span>
+    <span class="token-value">{{ '%.1f'|format(metrics.rounds_per_run) }}</span>
+  </div>
+  <div class="token-row">
+    <span class="token-label">Cache hit rate</span>
+    <span class="token-value">{{ '%.1f'|format(metrics.cache_hit_rate) }}%</span>
+  </div>
+  <div class="token-row">
+    <span class="token-label">Input Tokens (fresh, full price)</span>
+    <span class="token-value">{{ '{:,}'.format(metrics.total_input_tokens) }}</span>
+  </div>
+  <div class="token-row">
+    <span class="token-label">Input Tokens (cache read, ~10% price)</span>
+    <span class="token-value">{{ '{:,}'.format(metrics.total_cache_read_tokens) }}</span>
+  </div>
+  <div class="token-row">
+    <span class="token-label">Input Tokens (cache write)</span>
+    <span class="token-value">{{ '{:,}'.format(metrics.total_cache_write_tokens) }}</span>
+  </div>
+  <div class="token-row">
+    <span class="token-label">Total Output Tokens</span>
+    <span class="token-value">{{ '{:,}'.format(metrics.total_output_tokens) }}</span>
+  </div>
+  <p class="muted">
+    Cost per run is the figure to optimize. Raw token volume is dominated by
+    cache reads, which are priced around a tenth of fresh input, and by the
+    tool round-trips in a turn - each one re-sends the whole conversation.
+    Runs recorded before the cache-token split report 0 cache tokens and carry
+    their cache reads inside the fresh input column.
+  </p>
+</div>
+
+<!-- Agent Token Usage by Agent -->
+{% if metrics.agent_stats %}
+<h2>Agent Token Usage & Cost</h2>
+<table>
+  <thead>
+    <tr>
+      <th>Agent</th>
+      <th>Backend</th>
+      <th>Status</th>
+      <th class="num">Tasks</th>
+      <th class="num">Turns</th>
+      <th class="num">Tool Rounds</th>
+      <th class="num">Input (fresh)</th>
+      <th class="num">Input (cached)</th>
+      <th class="num">Output Tokens</th>
+      <th class="num">Cost</th>
+      <th class="num">Avg Cost/Turn</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for agent in metrics.agent_stats %}
+    <tr>
+      <td>{{ agent.name }}</td>
+      <td>{{ agent.backend }}</td>
+      <td><span class="dot {{ agent.status }}"></span>{{ agent.status }}</td>
+      <td class="num">{{ agent.total_tasks }}</td>
+      <td class="num">{{ agent.turns }}</td>
+      <td class="num">{{ '{:,}'.format(agent.tool_rounds) }}</td>
+      <td class="num">{{ '{:,}'.format(agent.input_tokens) }}</td>
+      <td class="num">{{ '{:,}'.format(agent.cache_read_tokens) }}</td>
+      <td class="num">{{ '{:,}'.format(agent.output_tokens) }}</td>
+      <td class="num">${{ '%.4f'|format(agent.cost_usd) }}</td>
+      <td class="num">${{ '%.4f'|format(agent.avg_cost) }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="11" class="muted">No agents registered.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<!-- Most Expensive Tasks -->
+{% if metrics.cost_per_task %}
+<h2>Most Expensive Tasks</h2>
+<table>
+  <thead>
+    <tr>
+      <th>Task ID</th>
+      <th>Title</th>
+      <th class="num">Cost</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for item in metrics.cost_per_task %}
+    <tr>
+      <td>#{{ item.task_id }}</td>
+      <td>{{ item.title }}</td>
+      <td class="num">${{ '%.4f'|format(item.cost) }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<!-- Longest-Running Tasks -->
+{% if metrics.longest_tasks %}
+<h2>Longest-Running Tasks</h2>
+<table>
+  <thead>
+    <tr>
+      <th>Task ID</th>
+      <th>Title</th>
+      <th class="num">Duration (hours)</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for task in metrics.longest_tasks %}
+    <tr>
+      <td>#{{ task.id }}</td>
+      <td>{{ task.title }}</td>
+      <td class="num">{{ '%.1f'|format(task.duration_hours) }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<!-- Blocked Tasks -->
+{% if metrics.blocked_tasks %}
+<h2>Blocked Tasks <span class="muted">- {{ metrics.blocked_tasks|length }} task(s)</span></h2>
+<table>
+  <thead>
+    <tr>
+      <th>Task ID</th>
+      <th>Title</th>
+      <th>Assigned To</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for task in metrics.blocked_tasks %}
+    <tr>
+      <td>#{{ task.id }}</td>
+      <td>{{ task.title }}</td>
+      <td>{{ task.assigned_to or '-' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No blocked tasks.</p>
+{% endif %}
+
+<!-- Tasks Waiting for Approval -->
+{% if metrics.approval_tasks %}
+<h2>Tasks Awaiting Approval <span class="muted">- {{ metrics.approval_tasks|length }} task(s)</span></h2>
+<table>
+  <thead>
+    <tr>
+      <th>Task ID</th>
+      <th>Title</th>
+      <th>Assigned To</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for task in metrics.approval_tasks %}
+    <tr>
+      <td>#{{ task.id }}</td>
+      <td>{{ task.title }}</td>
+      <td>{{ task.assigned_to or '-' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No tasks waiting for approval.</p>
+{% endif %}
+
+{% endblock %}

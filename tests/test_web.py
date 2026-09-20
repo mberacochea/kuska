@@ -6,7 +6,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-import achka as ac
+import kuska as ac
 
 PASSED = 0
 
@@ -38,7 +38,7 @@ def test_web(project: Path) -> None:
 
     print("project page")
     html = c.get("/").get_data(as_text=True)
-    check("renders", "<title>webproject - achka</title>" in html)
+    check("renders", "<title>webproject - kuska</title>" in html)
     check("htmx loaded", "htmx.min.js" in html)
     check("empty state", "No tasks yet." in html)
 
@@ -221,13 +221,20 @@ def test_web(project: Path) -> None:
     check("agent registered in db", ac.get_agent(conn, "bench-1")["backend"] == "codex")
     check("prompt file seeded", ac.prompt_path(project, "bench-1").exists())
     check("shows in the table", "bench-1" in added and "gpt-5-codex" in added)
-    check("bad name refused", "not a usable agent name" in c.post("/agents", data={"name": "../etc/passwd"}).get_data(as_text=True))
+    # an agent name becomes a file path (.agents/prompts/<name>.md), so a
+    # traversal attempt must be refused before anything is written
+    traversal = c.post("/agents", data={"name": "../etc/passwd"})
+    check("bad name refused", traversal.status_code == 422)
+    check("bad name explained", "Agent name must start with alphanumeric" in traversal.get_data(as_text=True))
+    check("bad name wrote nothing", not ac.prompt_path(project, "../etc/passwd").exists())
     check("nothing written for a bad name", "../etc/passwd" not in str(ac.load_config(project)["agents"]))
     check("duplicate refused", "already exists" in c.post("/agents", data={"name": "bench-1"}).get_data(as_text=True))
 
     c.post("/agents/bench-1", data={"backend": "codex", "price_in_per_mtok": "1.25", "price_out_per_mtok": "10"})
     check("prices stored as numbers", ac.load_config(project)["agents"]["bench-1"]["price_in_per_mtok"] == 1.25)
-    check("bad price refused", "must be numbers" in c.post("/agents/bench-1", data={"price_in_per_mtok": "cheap"}).get_data(as_text=True))
+    bad_price = c.post("/agents/bench-1", data={"price_in_per_mtok": "cheap"})
+    check("bad price refused", bad_price.status_code == 422)
+    check("bad price explained", "price_in_per_mtok must be a valid number" in bad_price.get_data(as_text=True))
 
     t_id = ac.add_task(conn, "for bench", assigned_to="bench-1")
     removed = c.post("/agents/bench-1/delete").get_data(as_text=True)
@@ -421,7 +428,7 @@ def test_mcp(project: Path) -> None:
     print("mcp stdio server")
     params = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "achka", "--project", str(project), "mcp", "--agent", "codex-1"],
+        args=["-m", "kuska", "--project", str(project), "mcp", "--agent", "codex-1"],
     )
 
     async def run() -> None:
@@ -458,7 +465,7 @@ def test_mcp(project: Path) -> None:
 
 
 def main() -> None:
-    tmp = Path(tempfile.mkdtemp(prefix="achka-web-"))
+    tmp = Path(tempfile.mkdtemp(prefix="kuska-web-"))
     try:
         test_web(make_project(tmp))
         mcp_project = tmp / "mcpproject"

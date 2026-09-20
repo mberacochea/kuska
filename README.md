@@ -1,4 +1,4 @@
-# achka
+# kuska
 
 A lightweight, SQLite-backed system for coordinating multiple coding,
 benchmarking and testing agents across parallel projects, with a human
@@ -9,20 +9,37 @@ Implements *Multi-Agent Coordination System - Build Plan.md*.
 
 ## Quick start
 
+**For development** (using [Taskfile](https://taskfile.dev/)):
 ```bash
 uv sync
-uv run achka init            # create .agents/ here
-uv run achka serve           # web UI on http://0.0.0.0:5055
-uv run achka daemon dev-agent    # run that agent (backend read from config.toml)
+task init        # create .agents/, config.toml, database
+task dev         # run web UI + MCP + all agents (or see docs/DEVELOPMENT.md for more)
+```
+
+**For single-binary / production:**
+```bash
+uv sync
+uv run kuska init            # create .agents/
+uv run kuska run-all         # run web server + MCP + agents
+```
+
+**Manual / step-by-step:**
+```bash
+uv run kuska init            # create .agents/ here
+uv run kuska serve           # web UI on http://0.0.0.0:5055
+uv run kuska daemon dev-agent    # run that agent (backend read from config.toml)
 ```
 
 Everything an agent does is state in `.agents/project.db`; everything a human
 writes is written in the web UI.
 
+See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for full development workflows and troubleshooting.
+
 ## Layout
 
 ```
-src/achka/
+Taskfile.yaml              # development task runner - see task -l
+src/kuska/
   models.py      # peewee models - the schema, and the only place SQL is described
   db.py          # statuses, roles, connections
   store.py       # agents, tasks, dependencies, messages, docs, events
@@ -33,15 +50,17 @@ src/achka/
   tools.py       # the seven shared agent tools, defined once
   mcp_server.py  # those tools over stdio, for Codex and other external clients
   web.py         # Flask + HTMX routes
+  runner.py      # run-all: web server + MCP + daemons in one command
   templates/     # Jinja templates, layout.html plus one file per page/fragment
   static/app.css # the whole stylesheet
   export.py      # markdown export
-  cli.py         # init / serve / daemon / mcp / export
+  cli.py         # init / serve / daemon / mcp / run-all / export
   daemons/
     claude.py    # Claude Agent SDK, tools registered in-process
     codex.py     # openai-codex SDK, tools over the stdio MCP server
-packaging/entry.py + achka.spec   # PyInstaller build
+packaging/entry.py + kuska.spec   # PyInstaller build
 tests/           # plain scripts, no test framework
+docs/DEVELOPMENT.md        # development guide and troubleshooting
 ```
 
 State lives in SQLite through [peewee](https://github.com/coleifer/peewee):
@@ -62,8 +81,8 @@ myproject/
 ```
 
 Running several projects in parallel is several such directories, each with
-its own DB file and its own daemons. `achka init` records each one in
-`~/.achka/projects.toml`, and the web UI's header switches between them.
+its own DB file and its own daemons. `kuska init` records each one in
+`~/.kuska/projects.toml`, and the web UI's header switches between them.
 
 ## Seeing what an agent is doing
 
@@ -87,7 +106,7 @@ long after it scrolled past. This is the agent's monologue, kept separate from
 You can read it back three ways: the **Live activity** tail on the agents
 page, the **Activity** section inside a task's detail panel (every event
 expandable to its full body), and the markdown export, which writes each run
-into the task's file. `achka daemon <name> --quiet` keeps the logging but
+into the task's file. `kuska daemon <name> --quiet` keeps the logging but
 stops the narration on the terminal.
 
 ## Waiting for approval
@@ -173,7 +192,7 @@ Ten tools - `get_inbox`, `send_message`, `claim_task`, `reply`, `docs_get`,
 
 - **Claude** registers them in-process via `create_sdk_mcp_server()` - no
   extra process.
-- **Codex** connects to `achka mcp` over stdio, which serves the same
+- **Codex** connects to `kuska mcp` over stdio, which serves the same
   definitions.
 - **Anything else** can point a generic MCP client at that same command.
 
@@ -211,7 +230,7 @@ SDKs. Adding another option means one entry in `AGENT_FIELDS` in
 ## Building a binary
 
 ```bash
-uv run pyinstaller achka.spec --clean --noconfirm   # -> dist/achka (~38 MB)
+uv run pyinstaller kuska.spec --clean --noconfirm   # -> dist/kuska (~38 MB)
 ```
 
 One binary covers every subcommand, including the daemons. Both agent SDKs

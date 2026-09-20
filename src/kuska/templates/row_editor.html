@@ -1,0 +1,32 @@
+<div id="row-editor">
+<h2>{{ table }} <span class="muted">{{ pk }}={{ pk_value }}</span>
+  <a href="#" class="link" hx-get="/data/close" hx-target="#row-editor" hx-swap="outerHTML">close</a></h2>
+<form hx-post="/data/{{ table }}/row?pk={{ pk_value }}" hx-target="#rows" hx-swap="outerHTML">
+  <div class="fields">
+  {% for column, kind in fields %}
+    {% if column in editable %}
+    <label>{{ column }} <span class="hint">{{ kind }}</span>
+      {% if kind == 'longtext' %}
+      <textarea name="{{ column }}" style="min-height:8rem">{{ row[column] if row[column] is not none }}</textarea>
+      {% if column in markdown_fields and row[column] %}
+      <div style="margin:.6rem 0; display:flex; gap:.5rem; align-items:center">
+        <button type="button" class="link" hx-get="/data/{{ table }}/markdown-preview?pk={{ pk_value }}&field={{ column }}" hx-target="body" hx-swap="beforeend" style="margin:0; padding:.3rem .6rem">View Fullscreen</button>
+        <span class="muted small">or scroll below to see preview</span>
+      </div>
+      <div class="muted small" style="margin-bottom:.4rem">Preview:</div>
+      <div class="md" style="padding:.6rem; background:var(--shade); border-radius:6px; border:1px solid var(--line); font-size:.9rem; max-height:300px; overflow-y:auto">{{ md(row[column])|safe }}</div>
+      {% endif %}
+      {% else %}
+      <input type="text" name="{{ column }}" value="{{ row[column] if row[column] is not none }}">
+      {% endif %}
+    </label>
+    {% else %}
+    <label>{{ column }} <span class="hint">read-only</span>
+      <input type="text" value="{{ row[column] if row[column] is not none }}" disabled>
+    </label>
+    {% endif %}
+  {% endfor %}
+  </div>
+  <button class="primary" type="submit">Save row</button>
+</form>
+</div>

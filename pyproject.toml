@@ -1,5 +1,5 @@
 [project]
-name = "achka"
+name = "kuska"
 version = "0.1.0"
 description = "SQLite-backed coordination for multiple coding, benchmarking and testing agents"
 readme = "README.md"
@@ -16,14 +16,17 @@ dependencies = [
 ]
 
 [project.scripts]
-achka = "achka.cli:main"
+kuska = "kuska.cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/achka"]
+packages = ["src/kuska"]
 
 [dependency-groups]
-dev = ["pyinstaller>=6.11"]
+dev = [
+    "pyinstaller>=6.11",
+    "ruff>=0.16.8",
+]
