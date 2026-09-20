@@ -5,10 +5,12 @@ benchmarking and testing agents across parallel projects, with a human
 coordinator assigning work and a web UI for planning, status and markdown
 export.
 
-Target audio -> me :).
+*kuska* means "together" in [Quechua](https://en.wikipedia.org/wiki/Quechuan_languages).
+
+Target audience = 1 (me :)).
 
 This has been `vibe-coded`, I've read the code but have not written any of it (maybe a few lines).
-It is more of an experiment than anything else, but if someone finds this useful let me know.
+It is an experiment, but if someone finds this useful please let me know.
 
 ## Quick start
 
