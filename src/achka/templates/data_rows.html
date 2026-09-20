@@ -9,6 +9,16 @@
     {% if column == pk %}
       <a href="#" hx-get="/data/{{ table }}/row?pk={{ row[pk] }}" hx-target="#row-editor" hx-swap="outerHTML">{{ row[column] }}</a>
     {% elif kind == 'ts' %}<span class="muted small">{{ ago(row[column]) }}</span>
+    {% elif kind == 'longtext' and column in markdown_fields %}
+      {% if row[column] %}
+      <details style="cursor:pointer">
+        <summary class="link" style="color:var(--muted); text-decoration:underline">View markdown content</summary>
+        <div class="md" style="margin:.6rem 0; padding:.6rem; background:var(--shade); border-radius:6px; border:1px solid var(--line); font-size:.9rem; max-height:200px; overflow-y:auto">{{ md(row[column])|safe }}</div>
+        <a href="#" class="link small" hx-get="/data/{{ table }}/row?pk={{ row[pk] }}" hx-target="#row-editor" hx-swap="outerHTML" style="display:block; margin-top:.4rem">edit</a>
+      </details>
+      {% else %}
+      <span class="muted">-</span>
+      {% endif %}
     {% else %}{{ brief(row[column]) }}{% endif %}
   </td>
   {% endfor %}

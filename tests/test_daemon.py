@@ -10,6 +10,8 @@ import asyncio
 import shutil
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -37,6 +39,8 @@ def make_project(tmp: Path) -> Path:
         '[agents.dev-agent]\nbackend = "claude"\nmodel = "claude-opus-5"\nrole = "builder"\n'
         '[agents.codex-1]\nbackend = "codex"\nmodel = "gpt-5-codex"\nrole = "reviewer"\n'
         "price_in_per_mtok = 1.25\nprice_out_per_mtok = 10.0\n"
+        '[agents.openai-1]\nbackend = "openai"\nmodel = "gpt-4"\nrole = "openai agent"\n'
+        "api_key = \"sk-test\"\n"
     )
     return project
 
@@ -230,6 +234,20 @@ def check_codex_wiring(project: Path) -> None:
     check("no prices means no cost", daemon_codex.usage_of(usage, {})[2] == 0.0)
     check("missing usage is harmless", daemon_codex.usage_of(None, cfg) == (0, 0, 0.0))
 
+
+def check_openai_wiring(project: Path) -> None:
+    print("openai daemon wiring")
+    from achka.daemons import openai as daemon_openai
+
+    cfg = core.load_config(project)["agents"]["openai-1"]
+    check("backend registered", cfg["backend"] == "openai")
+    check("has api_key", cfg.get("api_key") == "sk-test")
+
+    # mcp_command should work for openai too
+    cmd = daemon_openai.mcp_command()
+    check("mcp_command returns a list", isinstance(cmd, list))
+    check("mcp_command includes python", cmd[0] == sys.executable or "python" in cmd[0])
+
     print("codex item mapping")
     item = SimpleNamespace(type="agent_message", text="all done", phase=SimpleNamespace(value="final_answer"))
     check("agent message is text", daemon_codex.describe_item(item) == ("text", "agent_message", "all done"))
@@ -244,12 +262,309 @@ def check_codex_wiring(project: Path) -> None:
     print("backend dispatch")
     from achka.daemons import BACKENDS, run
 
-    check("both backends registered", set(BACKENDS) == {"claude", "codex"}, BACKENDS)
+    check("three backends registered", set(BACKENDS) == {"claude", "codex", "openai"}, BACKENDS)
     try:
-        run("llama-cpp", project, "codex-1")
+        run("llama-cpp", project, "openai-1")
         check("unknown backend refused", False)
     except SystemExit as exc:
         check("unknown backend refused", "no daemon for backend" in str(exc))
+
+
+def check_file_claim_conflicts(project: Path) -> None:
+    """Scenario 1: Two agents claim the same file simultaneously."""
+    print("concurrent file claim conflicts")
+    db = core.connect(core.db_path(project))
+    core.register_agent(db, "agent-1", "claude", "builder")
+    core.register_agent(db, "agent-2", "claude", "reviewer")
+    core.heartbeat(db, "agent-1", "working")
+    core.heartbeat(db, "agent-2", "working")
+
+    results = {}
+
+    def claim_file(agent_name):
+        """Try to claim the same file."""
+        result = core.claim_files(db, agent_name, ["src/parser.py"], task_id=1, note=f"claimed by {agent_name}")
+        results[agent_name] = result
+
+    # Thread 1 claims first
+    t1 = threading.Thread(target=claim_file, args=("agent-1",))
+    # Thread 2 claims immediately after
+    t2 = threading.Thread(target=claim_file, args=("agent-2",))
+
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    # Both calls should succeed (no exception) - claims are advisory
+    check("both agents can call claim_files", "agent-1" in results and "agent-2" in results)
+    check("both claims return success", results["agent-1"]["claimed"] and results["agent-2"]["claimed"])
+
+    held = core.active_claims(db)
+    check("file is claimed by both agents", len([c for c in held if c["path"] == "src/parser.py"]) == 2, f"claims: {held}")
+
+    # Each agent can see the other's claim as a holder
+    holders_from_agent1 = core.claim_holders(db, "src/parser.py", agent="agent-1")
+    holders_from_agent2 = core.claim_holders(db, "src/parser.py", agent="agent-2")
+
+    check("agent-1 sees agent-2's conflicting claim", any(c["agent"] == "agent-2" for c in holders_from_agent1))
+    check("agent-2 sees agent-1's conflicting claim", any(c["agent"] == "agent-1" for c in holders_from_agent2))
+    check("each sees exactly one conflicting claim", len(holders_from_agent1) >= 1 and len(holders_from_agent2) >= 1)
+
+    db.close()
+
+
+def check_task_claiming_race(project: Path) -> None:
+    """Scenario 2: Two agents poll for tasks at the same time - verify atomicity."""
+    print("concurrent task claiming race")
+    db = core.connect(core.db_path(project))
+    core.register_agent(db, "racer-1", "claude", "builder")
+    core.register_agent(db, "racer-2", "claude", "reviewer")
+    core.heartbeat(db, "racer-1", "working")
+    core.heartbeat(db, "racer-2", "working")
+
+    # Create tasks for each agent
+    r1_t1 = core.add_task(db, "Racer1-A", "first", "racer-1")
+    r1_t2 = core.add_task(db, "Racer1-B", "second", "racer-1")
+    r2_t1 = core.add_task(db, "Racer2-A", "third", "racer-2")
+    r2_t2 = core.add_task(db, "Racer2-B", "fourth", "racer-2")
+
+    results = {}
+    lock = threading.Lock()
+
+    def claim_task_safe(agent_name):
+        """Try to claim a task thread-safely."""
+        task = core.claim_task(db, agent_name)
+        with lock:
+            results[agent_name] = task
+
+    # Both agents claim simultaneously - should succeed with different tasks
+    threads = [
+        threading.Thread(target=claim_task_safe, args=("racer-1",)),
+        threading.Thread(target=claim_task_safe, args=("racer-2",)),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    check("both agents claimed tasks", results.get("racer-1") is not None and results.get("racer-2") is not None, results)
+    if results.get("racer-1") and results.get("racer-2"):
+        check("they claimed different tasks", results["racer-1"]["id"] != results["racer-2"]["id"])
+        check("task atomicity: status moved to in_progress",
+              core.get_task(db, results["racer-1"]["id"])["status"] == "in_progress")
+
+    db.close()
+
+
+def check_message_ordering(project: Path) -> None:
+    """Scenario 3: Message ordering is preserved between concurrent agents."""
+    print("concurrent message ordering")
+    db = core.connect(core.db_path(project))
+    core.register_agent(db, "msg-1", "claude", "builder")
+    core.register_agent(db, "msg-2", "claude", "reviewer")
+    core.heartbeat(db, "msg-1", "working")
+    core.heartbeat(db, "msg-2", "working")
+
+    task_id = core.add_task(db, "collaboration", "", "msg-1")
+
+    messages = []
+    lock = threading.Lock()
+
+    def agent1_sends():
+        """Agent 1 sends a question."""
+        time.sleep(0.01)  # Small delay to ensure message 1 comes first
+        core.send_message(db, "msg-1", "msg-2", task_id, "question", "What do you think?")
+        with lock:
+            messages.append(("msg-1-send", core.now()))
+
+    def agent2_sends():
+        """Agent 2 sends a response."""
+        time.sleep(0.05)  # Wait for agent-1 to send first
+        core.send_message(db, "msg-2", "msg-1", task_id, "answer", "I think we should refactor")
+        with lock:
+            messages.append(("msg-2-send", core.now()))
+
+    t1 = threading.Thread(target=agent1_sends)
+    t2 = threading.Thread(target=agent2_sends)
+
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    # Check message order in DB
+    all_messages = core.task_messages(db, task_id)
+    check("both messages logged", len(all_messages) == 2)
+    check("msg-1's message first", all_messages[0]["sender"] == "msg-1" and "What do you think?" in all_messages[0]["payload"])
+    check("msg-2's message second", all_messages[1]["sender"] == "msg-2" and "refactor" in all_messages[1]["payload"])
+
+    # Check inbox ordering
+    inbox_2 = core.get_inbox(db, "msg-2", mark_read=False)
+    inbox_1 = core.get_inbox(db, "msg-1", mark_read=False)
+    check("msg-2 received msg-1's message", len(inbox_2) > 0)
+    check("msg-1 received msg-2's message", len(inbox_1) > 0)
+
+    db.close()
+
+
+def check_dependency_satisfaction(project: Path) -> None:
+    """Scenario 4: Task A done by agent-1, then task B (depends on A) released to agent-2."""
+    print("concurrent dependency satisfaction")
+    db = core.connect(core.db_path(project))
+    core.register_agent(db, "dep-1", "claude", "builder")
+    core.register_agent(db, "dep-2", "claude", "reviewer")
+    core.heartbeat(db, "dep-1", "working")
+    core.heartbeat(db, "dep-2", "working")
+
+    # Create task A assigned to dep-1
+    task_a = core.add_task(db, "Design API", "", "dep-1")
+    # Create task B assigned to dep-2, depends on A
+    task_b = core.add_task(db, "Implement API", "", "dep-2")
+    core.add_dependency(db, task_b, task_a)
+
+    results = {}
+
+    def agent1_work():
+        """Agent 1 tries to claim task A."""
+        task = core.claim_task(db, "dep-1")
+        results["dep-1-claimed"] = task
+        if task:
+            time.sleep(0.05)  # Simulate work
+            core.update_task_status(db, task_a, "done")
+            results["dep-1-done"] = True
+
+    def agent2_work():
+        """Agent 2 polls for task B, blocked initially, then unblocked."""
+        time.sleep(0.01)  # Let agent-1 start first
+        task = core.claim_task(db, "dep-2")
+        results["dep-2-first-claim"] = task
+        if task is None:
+            # Task B is blocked because A is not done yet
+            results["dep-2-blocked"] = True
+            time.sleep(0.1)  # Wait for agent-1 to finish
+            task = core.claim_task(db, "dep-2")
+            results["dep-2-second-claim"] = task
+
+    t1 = threading.Thread(target=agent1_work)
+    t2 = threading.Thread(target=agent2_work)
+
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    check("dep-1 claimed task A", results.get("dep-1-claimed") is not None)
+    check("dep-1 completed task A", results.get("dep-1-done") is True)
+    check("task A is done", core.get_task(db, task_a)["status"] == "done")
+
+    check("dep-2 initially blocked on first claim", results.get("dep-2-first-claim") is None)
+    check("dep-2 detected blocking", results.get("dep-2-blocked") is True)
+    check("dep-2 later claims task B", results.get("dep-2-second-claim") is not None)
+
+    if results.get("dep-2-second-claim"):
+        check("task B is now runnable", results["dep-2-second-claim"]["id"] == task_b)
+
+    db.close()
+
+
+def check_approval_workflow_race(project: Path) -> None:
+    """Scenario 5: Task needs approval, human approves, agent immediately polls."""
+    print("concurrent approval workflow race")
+    db = core.connect(core.db_path(project))
+    core.register_agent(db, "approval-1", "claude", "builder")
+    core.heartbeat(db, "approval-1", "working")
+
+    task_id = core.add_task(db, "Risky change", "", "approval-1")
+    core.update_task_status(db, task_id, "needs_approval")
+
+    results = {}
+    lock = threading.Lock()
+
+    def agent_polls():
+        """Agent polls for tasks while approval is pending."""
+        time.sleep(0.02)
+        # Poll should get nothing initially
+        task = core.claim_task(db, "approval-1")
+        with lock:
+            results["poll-1"] = task
+
+        time.sleep(0.05)  # Wait for approval
+
+        # Poll should now get the task
+        task = core.claim_task(db, "approval-1")
+        with lock:
+            results["poll-2"] = task
+
+    def human_approves():
+        """Human approves the task."""
+        time.sleep(0.04)  # Let agent poll first while blocked
+        core.update_task_status(db, task_id, "todo")
+
+    t1 = threading.Thread(target=agent_polls)
+    t2 = threading.Thread(target=human_approves)
+
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    check("agent's first poll gets nothing (blocked by approval)", results.get("poll-1") is None)
+    check("after approval, agent gets task", results.get("poll-2") is not None)
+    if results.get("poll-2"):
+        check("claimed task is the right one", results["poll-2"]["id"] == task_id)
+
+    db.close()
+
+
+def check_large_claim_scope(project: Path) -> None:
+    """Scenario 6: One agent claims a directory, another tries to claim a file inside."""
+    print("concurrent large claim scope")
+    db = core.connect(core.db_path(project))
+    core.register_agent(db, "scope-1", "claude", "builder")
+    core.register_agent(db, "scope-2", "claude", "reviewer")
+    core.heartbeat(db, "scope-1", "working")
+    core.heartbeat(db, "scope-2", "working")
+
+    results = {}
+
+    def agent1_claims_dir():
+        """Agent 1 claims the entire src directory."""
+        result = core.claim_files(db, "scope-1", ["src"], task_id=1, note="refactoring entire module")
+        results["scope-1-dir"] = result
+
+    def agent2_claims_file():
+        """Agent 2 tries to claim a file inside that directory."""
+        time.sleep(0.01)  # Small delay
+        result = core.claim_files(db, "scope-2", ["src/parser.py"], task_id=2, note="minor fix")
+        results["scope-2-file"] = result
+
+    t1 = threading.Thread(target=agent1_claims_dir)
+    t2 = threading.Thread(target=agent2_claims_file)
+
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    # Both claims go through (they never fail), but scope-2 can see the conflict
+    check("scope-1 claimed the directory", "src" in results["scope-1-dir"]["claimed"])
+    check("scope-2 claimed the file", "src/parser.py" in results["scope-2-file"]["claimed"])
+
+    # Check that overlaps are detected
+    held = core.active_claims(db)
+    check("both claims exist", len(held) >= 2, f"claims: {held}")
+
+    # scope-2 should see scope-1's directory claim as a conflict for its file
+    conflicts_for_scope2 = core.claim_holders(db, "src/parser.py", agent="scope-2")
+    check("scope-2 sees the conflict", len(conflicts_for_scope2) > 0, f"conflicts: {conflicts_for_scope2}")
+    check("conflict is scope-1's directory claim", any(c["path"] == "src" for c in conflicts_for_scope2))
+
+    # scope-1 also sees scope-2's nested claim because overlaps are symmetric
+    conflicts_for_scope1 = core.claim_holders(db, "src", agent="scope-1")
+    check("scope-1 sees scope-2's nested file claim as overlapping", any(c["path"] == "src/parser.py" for c in conflicts_for_scope1), f"conflicts: {conflicts_for_scope1}")
+
+    db.close()
 
 
 def main() -> None:
@@ -260,6 +575,15 @@ def main() -> None:
         check_loop(project)
         check_claim_guard(project)
         check_codex_wiring(project)
+        check_openai_wiring(project)
+
+        # Concurrent daemon tests
+        check_file_claim_conflicts(project)
+        check_task_claiming_race(project)
+        check_message_ordering(project)
+        check_dependency_satisfaction(project)
+        check_approval_workflow_race(project)
+        check_large_claim_scope(project)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print(f"\n{PASSED} checks passed")

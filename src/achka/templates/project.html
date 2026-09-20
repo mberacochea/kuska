@@ -14,17 +14,18 @@
 {% endif %}
 
 <h2>Tasks</h2>
-<form class="row-form" hx-post="/tasks" hx-target="#tasks" hx-swap="outerHTML"
+<form class="row-form" hx-post="/tasks" hx-target="#tasks-container" hx-swap="outerHTML"
       hx-on::after-request="this.reset()">
-  <input type="text" name="title" placeholder="New task title" required>
-  <input type="text" name="description" placeholder="Details (optional)">
-  <select name="assigned_to">
+  <input type="text" name="title" placeholder="New task title" aria-label="Task title" required>
+  <input type="text" name="description" placeholder="Details (optional)" aria-label="Task description">
+  <select name="assigned_to" aria-label="Assign to agent">
     <option value="">unassigned</option>
     {% for a in agents %}<option value="{{ a.name }}">{{ a.name }}</option>{% endfor %}
   </select>
   <button class="primary" type="submit">Add task</button>
 </form>
-{{ tasks_table|safe }}
+<div id="form-errors"></div>
+{{ tasks_container|safe }}
 
 <h2>Export</h2>
 <button hx-post="/export" hx-target="#toast" hx-swap="innerHTML">Export markdown</button>

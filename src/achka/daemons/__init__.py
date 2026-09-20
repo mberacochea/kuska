@@ -7,7 +7,7 @@ loop over the same core functions, with the model call swapped out.
 
 from __future__ import annotations
 
-BACKENDS = {"claude": "achka.daemons.claude", "codex": "achka.daemons.codex"}
+BACKENDS = {"claude": "achka.daemons.claude", "codex": "achka.daemons.codex", "openai": "achka.daemons.openai"}
 
 
 def run(backend: str, project, agent_name: str, poll_interval: float = 2.0, max_tasks=None, quiet: bool = False) -> None:

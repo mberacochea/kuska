@@ -394,6 +394,8 @@ def create_app(project_dir: Path):
             limit=limit,
             ago=_ago,
             brief=lambda value: one_line("" if value is None else str(value), 60),
+            md=md,
+            markdown_fields={"description", "payload", "body", "content"},
         )
 
     # ========== Context Processor ==========
@@ -914,6 +916,8 @@ def create_app(project_dir: Path):
             pk=tbl.pk_name(table),
             pk_value=pk_value,
             row=row,
+            md=md,
+            markdown_fields={"description", "payload", "body", "content"},
         )
 
     @app.post("/data/<table>/row")

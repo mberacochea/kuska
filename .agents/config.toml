@@ -1,0 +1,22 @@
+# agent registry for this project
+# one [agents.<name>] table per agent; the prompt lives in
+# .agents/prompts/<name>.md. Editable here or on the web UI's agents
+# page - saving there rewrites this file and drops any comments.
+
+[agents.dev-agent]
+backend = "claude"
+model = "claude-haiku-4-5-20251001"
+role = "Implements features and fixes bugs"
+
+[agents.planning-agent]
+backend = "claude"
+model = "claude-haiku-4-5-20251001"
+role = "planner"
+permission_mode = "plan"
+
+[agents.review-agent]
+backend = "claude"
+
+[mcp_servers.achka]
+command = "uv"
+args = ["run", "achka", "mcp"]

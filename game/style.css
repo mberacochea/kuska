@@ -1,0 +1,266 @@
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg-primary: #fafafa;
+  --bg-secondary: #f5f5f5;
+  --bg-tertiary: #e8e8e8;
+  --text-primary: #333;
+  --text-secondary: #666;
+  --border-color: #999;
+  --border-light: #ccc;
+  --accent-bg: #fff3cd;
+  --accent-border: #ffc107;
+  --x-color: #0066cc;
+  --o-color: #dd5555;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-primary: #1a1a1a;
+    --bg-secondary: #3a3a3a;
+    --bg-tertiary: #444;
+    --text-primary: #e0e0e0;
+    --text-secondary: #a0a0a0;
+    --border-color: #666;
+    --border-light: #555;
+    --accent-bg: #4d3d00;
+    --accent-border: #b8860b;
+    --x-color: #6eb3ff;
+    --o-color: #ff9999;
+  }
+}
+
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+  padding: 1rem;
+}
+
+.container {
+  max-width: 400px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+h1 {
+  text-align: center;
+  margin: 0;
+  font-size: 2rem;
+  font-weight: 700;
+}
+
+.controls {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+select, button {
+  font-size: 1rem;
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+select {
+  flex: 1;
+  min-width: 120px;
+}
+
+button {
+  flex: 0 1 auto;
+}
+
+button:hover:not(:disabled) {
+  background-color: var(--bg-secondary);
+}
+
+button:active:not(:disabled) {
+  background-color: var(--bg-tertiary);
+}
+
+button:focus-visible {
+  outline: 2px solid var(--text-primary);
+  outline-offset: 2px;
+}
+
+#reset {
+  font-weight: 600;
+}
+
+#status {
+  text-align: center;
+  font-size: 1.1rem;
+  font-weight: 500;
+  min-height: 1.5rem;
+}
+
+#board {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.5rem;
+  width: 100%;
+  aspect-ratio: 1;
+}
+
+@keyframes cellMark {
+  from {
+    transform: scale(0.7);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes cellWin {
+  0% {
+    background-color: var(--bg-primary);
+  }
+  50% {
+    background-color: var(--accent-bg);
+  }
+  100% {
+    background-color: var(--accent-bg);
+  }
+}
+
+.cell {
+  aspect-ratio: 1;
+  border: 2px solid var(--border-color);
+  background-color: var(--bg-primary);
+  font-size: 2rem;
+  font-weight: 700;
+  cursor: pointer;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  color: var(--text-primary);
+  transition: background-color 0.2s;
+}
+
+.cell:hover:not(:disabled) {
+  background-color: var(--bg-secondary);
+}
+
+.cell:active:not(:disabled) {
+  background-color: var(--bg-tertiary);
+}
+
+.cell:focus-visible {
+  outline: 3px solid var(--text-primary);
+  outline-offset: -1px;
+}
+
+.cell:disabled {
+  cursor: not-allowed;
+}
+
+.cell.mark {
+  animation: cellMark 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cell.mark {
+    animation: none;
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.cell.win {
+  background-color: var(--accent-bg);
+  border-color: var(--accent-border);
+  animation: cellWin 0.4s ease-out forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cell.win {
+    animation: none;
+  }
+}
+
+#scoreboard {
+  display: flex;
+  justify-content: space-around;
+  text-align: center;
+  font-size: 1rem;
+  gap: 1rem;
+  align-items: flex-end;
+}
+
+#scoreboard div {
+  flex: 1;
+}
+
+#reset-scores {
+  flex: 0 1 auto;
+  font-size: 0.85rem;
+  padding: 0.4rem 0.8rem;
+  font-weight: 500;
+}
+
+#score-x, #score-o, #score-draw {
+  font-weight: 700;
+  font-size: 1.5rem;
+  display: block;
+}
+
+@media (max-width: 480px) {
+  .container {
+    gap: 1rem;
+  }
+
+  h1 {
+    font-size: 1.5rem;
+  }
+
+  .controls {
+    gap: 0.3rem;
+  }
+
+  select, button {
+    font-size: 0.9rem;
+    padding: 0.4rem 0.8rem;
+  }
+
+  .cell {
+    font-size: 1.5rem;
+  }
+
+  #scoreboard {
+    font-size: 0.9rem;
+    gap: 0.5rem;
+  }
+
+  #score-x, #score-o, #score-draw {
+    font-size: 1.2rem;
+  }
+
+  #reset-scores {
+    font-size: 0.75rem;
+    padding: 0.3rem 0.6rem;
+  }
+}

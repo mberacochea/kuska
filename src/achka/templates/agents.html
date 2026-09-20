@@ -4,12 +4,13 @@
 {{ agent_rows|safe }}
 <form class="row-form" hx-post="/agents" hx-target="#agent-rows" hx-swap="outerHTML"
       hx-on::after-request="this.reset()">
-  <input type="text" name="name" placeholder="New agent name" required>
-  <select name="backend">
+  <input type="text" name="name" placeholder="Agent name" aria-label="Agent name" required>
+  <select name="backend" aria-label="Backend" required>
+    <option value="">Select backend...</option>
     {% for b in backends %}<option value="{{ b }}">{{ b }}</option>{% endfor %}
   </select>
-  <input type="text" name="model" placeholder="Model (optional)">
-  <input type="text" name="role" placeholder="Role (optional)">
+  <input type="text" name="model" placeholder="Model (e.g., claude-opus-5)" aria-label="Model" required>
+  <input type="text" name="role" placeholder="Role (e.g., 'Implements features')" aria-label="Role" required>
   <button class="primary" type="submit">Add agent</button>
 </form>
 <!-- outside #agent-rows on purpose: that div refetches itself every few

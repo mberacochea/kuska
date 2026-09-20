@@ -13,6 +13,7 @@ from peewee import SqliteDatabase
 
 from .models import connect as _connect
 from .models import init_db as _init_db
+from .migration import run_migrations, get_current_version
 
 HUMAN = "human"
 
@@ -35,7 +36,21 @@ def connect(db_path: str | os.PathLike) -> SqliteDatabase:
 
 
 def init_db(database: SqliteDatabase) -> None:
-    """Create any table this version knows about that the file does not have."""
+    """Create any table this version knows about that the file does not have.
+
+    This now uses the migration system to evolve the schema, with Peewee
+    table creation as a fallback for backward compatibility.
+    """
+    # Try to run migrations first - this applies any pending schema changes
+    try:
+        run_migrations(database)
+    except Exception as e:
+        # If migrations fail, log but continue - _init_db will catch fallback cases
+        import sys
+        print(f"Warning: migration failed (will try Peewee fallback): {e}", file=sys.stderr)
+
+    # Peewee table creation as fallback, in case migrations didn't cover everything
+    # (e.g., for databases that existed before migration system was added)
     _init_db(database)
 
 

@@ -30,6 +30,15 @@ role = "Implements features and fixes bugs"
 # price_in_per_mtok = 1.25             # codex reports tokens, not dollars
 # price_out_per_mtok = 10.0
 
+# [agents.openai-1]
+# backend = "openai"
+# model = "gpt-4"
+# role = "OpenAI-backed agent"
+# api_key = "sk-..."                   # or set via OPENAI_API_KEY env var
+# # base_url = "http://localhost:8000/v1"  # for local models or proxies
+# price_in_per_mtok = 0.03             # openai reports cost, but you can override
+# price_out_per_mtok = 0.06
+
 [mcp_servers.achka]
 command = "uv"
 args = ["run", "achka", "mcp"]
@@ -120,7 +129,7 @@ AGENT_FIELDS = [
         "key": "backend",
         "label": "Backend",
         "type": "choice",
-        "choices": ["claude", "codex"],
+        "choices": ["claude", "codex", "openai"],
         "help": "which daemon runs this agent",
     },
     {
@@ -151,10 +160,22 @@ AGENT_FIELDS = [
         "help": "codex only - needed when the CLI is not on PATH",
     },
     {
+        "key": "api_key",
+        "label": "API Key",
+        "type": "text",
+        "help": "openai only - OpenAI API key or similar",
+    },
+    {
+        "key": "base_url",
+        "label": "Base URL",
+        "type": "text",
+        "help": "openai only - for local models or proxies (e.g., http://localhost:8000/v1)",
+    },
+    {
         "key": "price_in_per_mtok",
         "label": "Input $/Mtok",
         "type": "number",
-        "help": "codex reports tokens, not dollars - price them here",
+        "help": "codex/openai - price tokens when the model doesn't report cost",
     },
     {"key": "price_out_per_mtok", "label": "Output $/Mtok", "type": "number", "help": ""},
 ]

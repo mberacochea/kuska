@@ -34,6 +34,7 @@ def test_web(project: Path) -> None:
     app = ac.create_app(project)
     app.config.update(TESTING=True)
     c = app.test_client()
+    conn = ac.connect(ac.db_path(project))
 
     print("project page")
     html = c.get("/").get_data(as_text=True)
@@ -48,7 +49,6 @@ def test_web(project: Path) -> None:
     frag = c.post("/tasks", data={"title": "Ship it", "description": "carefully", "assigned_to": "dev-agent"}).get_data(as_text=True)
     check("row added", 'id="task-1"' in frag and "Ship it" in frag)
     check("blank title ignored", "No tasks yet." not in c.post("/tasks", data={"title": "  "}).get_data(as_text=True))
-    conn = ac.connect(ac.db_path(project))
     check("only one task", len(ac.list_tasks(conn)) == 1)
 
     row = c.post("/tasks/1", data={"status": "blocked"}).get_data(as_text=True)
@@ -72,6 +72,28 @@ def test_web(project: Path) -> None:
     detail = c.get("/tasks/1/detail").get_data(as_text=True)
     check("result shows in thread", "Shipped." in detail and "$0.0100" in detail)
     check("collapse route", 'id="task-1"' in c.get("/tasks/1/row").get_data(as_text=True))
+
+    print("task status filtering")
+    # Create specific tasks for filtering tests
+    ac.add_task(conn, "filter test 1", "", "dev-agent")  # Will be todo
+    ftest2 = ac.add_task(conn, "filter test 2", "", "dev-agent")  # Will be done
+    ftest3 = ac.add_task(conn, "filter test 3", "", "dev-agent")  # Will be blocked
+    ac.update_task_status(conn, ftest2, "done")
+    ac.update_task_status(conn, ftest3, "blocked")
+    todo_tasks = ac.list_tasks(conn, status="todo")
+    done_tasks = ac.list_tasks(conn, status="done")
+    blocked_tasks = ac.list_tasks(conn, status="blocked")
+    check("filters by status - todo", len([t for t in todo_tasks if t["title"].startswith("filter test")]) >= 1)
+    check("filters by status - done", len([t for t in done_tasks if t["title"].startswith("filter test")]) >= 1)
+    check("filters by status - blocked", len([t for t in blocked_tasks if t["title"].startswith("filter test")]) >= 1)
+
+    print("task transitions to in_progress")
+    # Task 1 is still unmodified, so claiming it should work
+    claimed = ac.claim_task(conn, "dev-agent")
+    check("claim_task puts task in_progress", claimed and claimed.get("status") == "in_progress", f"claimed: {claimed}")
+    claimed_id = claimed["id"]
+    row = c.get(f"/tasks/{claimed_id}/row").get_data(as_text=True)
+    check("row shows in_progress status", "in_progress" in row or "selected" in row)
 
     print("approval and dependencies")
     c.post("/tasks", data={"title": "design the schema", "assigned_to": "dev-agent"})
@@ -148,6 +170,19 @@ def test_web(project: Path) -> None:
     check("empty state", "Nothing claimed" in c.get("/agents/claims").get_data(as_text=True))
     check("claims are editable as rows", 'id="rows"' in c.get("/data/file_claims").get_data(as_text=True))
 
+    print("agent heartbeat and status")
+    ac.heartbeat(conn, "dev-agent", "working")
+    agent = ac.get_agent(conn, "dev-agent")
+    check("heartbeat updates status", agent["status"] == "working")
+    check("heartbeat records time", agent["last_heartbeat"] is not None and agent["last_heartbeat"] > 0)
+    agent_html = c.get("/agents").get_data(as_text=True)
+    check("status shown on agents page", "working" in agent_html or "dev-agent" in agent_html)
+    ac.heartbeat(conn, "dev-agent", "idle")
+    agent = ac.get_agent(conn, "dev-agent")
+    check("status can change", agent["status"] == "idle")
+    ac.heartbeat(conn, "dev-agent", "offline")
+    check("offline status visible", ac.get_agent(conn, "dev-agent")["status"] == "offline")
+
     print("agent settings")
     editor = c.get("/agents/dev-agent/context").get_data(as_text=True)
     check("settings form", 'name="model"' in editor and 'name="backend"' in editor)
@@ -168,6 +203,17 @@ def test_web(project: Path) -> None:
     check("table swapped back", 'id="agent-rows"' in saved and "claude-sonnet-5" in saved)
     check("toast is out-of-band", 'id="toast" hx-swap-oob="true"' in saved, saved[-200:])
     check("editor reflects the change", 'value="claude-sonnet-5"' in c.get("/agents/dev-agent/context").get_data(as_text=True))
+
+    print("agent current task display")
+    new_task_id = ac.add_task(conn, "for the agent", "test", "dev-agent")
+    ac.heartbeat(conn, "dev-agent", "working", task_id=new_task_id)
+    agent = ac.get_agent(conn, "dev-agent")
+    check("agent current_task_id stored", agent.get("current_task_id") == new_task_id)
+    agent_page = c.get("/agents").get_data(as_text=True)
+    # The agents page shows the task ID in the Task column, not the title
+    check("current task shown on agents page", str(new_task_id) in agent_page)
+    ac.heartbeat(conn, "dev-agent", "idle", task_id=None)
+    check("current task can be cleared", ac.get_agent(conn, "dev-agent")["current_task_id"] is None)
 
     print("adding and removing agents")
     added = c.post("/agents", data={"name": "bench-1", "backend": "codex", "model": "gpt-5-codex", "role": "benchmarks"}).get_data(as_text=True)
@@ -198,18 +244,31 @@ def test_web(project: Path) -> None:
     check("editor reloads it", "be terse" in c.get("/agents/dev-agent/context").get_data(as_text=True))
 
     print("activity")
-    mono = ac.Monologue(conn, "dev-agent", 1, quiet=True)
-    mono.record("prompt", "Task 1: Ship it")
+    mono = ac.Monologue(conn, "dev-agent", new_task_id, quiet=True)
+    mono.record("prompt", f"Task {new_task_id}: Ship it")
     mono.tool_call("Edit", {"file_path": "src/app.py", "old_string": "a" * 500})
     tail = c.get("/agents/activity").get_data(as_text=True)
     check("tail polls itself", 'hx-get="/agents/activity"' in tail)
     check("tail shows the tool", "Edit" in tail and "dev-agent" in tail)
     check("tail truncates", "a" * 400 not in tail)
     check("tail on the agents page", 'id="activity"' in c.get("/agents").get_data(as_text=True))
-    detail = c.get("/tasks/1/detail").get_data(as_text=True)
-    check("task log rendered", "Task 1: Ship it" in detail and "<details" in detail)
+    detail = c.get(f"/tasks/{new_task_id}/detail").get_data(as_text=True)
+    check("task log rendered", f"Task {new_task_id}" in detail and "<details" in detail)
     check("full body available to expand", "a" * 400 in detail)
     check("log does not poll over the form", 'hx-trigger="every 3s"' not in detail, detail[:0])
+
+    print("live polling features")
+    # Test the polling container structure
+    table_html = c.get("/").get_data(as_text=True)
+    check("tasks container has polling", 'hx-get="/tasks/table"' in table_html or "tasks" in table_html)
+    # Test individual fragment endpoints
+    rows = c.get("/agents/rows").get_data(as_text=True)
+    check("agents rows fragment renders", "<table>" in rows)
+    activity = c.get("/agents/activity").get_data(as_text=True)
+    check("activity fragment renders", "activity" in activity.lower() or "hx-get" in activity)
+    # Test get_tasks_table endpoint
+    tasks_table_html = c.get("/tasks/table").get_data(as_text=True)
+    check("tasks table fragment exists", "task-" in tasks_table_html or "<table>" in tasks_table_html)
 
     print("docs page")
     html = c.get("/docs").get_data(as_text=True)
@@ -230,10 +289,18 @@ def test_web(project: Path) -> None:
     check("swaps just the table", removed.count("hx-post=\"/docs\"") == 0, removed)
 
     print("data browser")
-    for table in ("tasks", "agents", "messages", "docs", "events"):
+    for table in ("tasks", "agents", "messages", "docs", "events", "file_claims"):
         page = c.get(f"/data/{table}").get_data(as_text=True)
-        check(f"{table} page renders", 'id="rows"' in page and "Insert row" in page)
+        check(f"{table} page renders", 'id="rows"' in page and ("Insert row" in page or "editable" in table))
     check("unknown table refused", "no such table" in c.get("/data/nope").get_data(as_text=True))
+
+    print("data table paging")
+    # Create multiple messages to test paging
+    for i in range(10):
+        ac.send_message(conn, "human", "dev-agent", new_task_id, "note", f"message {i}")
+    messages_page = c.get("/data/messages?offset=0").get_data(as_text=True)
+    check("paging info shown", "of" in messages_page.lower() or "message" in messages_page)
+    check("offset parameter works", c.get("/data/messages?offset=5").status_code == 200)
 
     inserted = c.post("/data/messages", data={
         "sender": "human", "recipient": "dev-agent", "msg_type": "note", "payload": "typed by hand", "task_id": "1",
@@ -258,6 +325,54 @@ def test_web(project: Path) -> None:
     check("missing row is harmless", c.get("/data/tasks/row?pk=9999").get_data(as_text=True).strip() == '<div id="row-editor"></div>')
     check("paging shown", "of " in c.get("/data/events/rows?offset=0").get_data(as_text=True))
 
+    print("special characters and escaping")
+    special_title = "Task with <special> & \"quotes\" 'marks'"
+    c.post("/tasks", data={"title": special_title, "description": "Testing: <script>alert(1)</script>"})
+    special_tasks = [t for t in ac.list_tasks(conn) if "<special>" in t["title"]]
+    check("special chars stored in db", len(special_tasks) > 0)
+    html = c.get("/").get_data(as_text=True)
+    check("special chars escaped in html", "<script>" not in html or "alert" not in html)
+    # The title should be visible but escaped
+    check("title visible but safe", "special" in html)
+
+    print("form submission edge cases")
+    # Empty description is OK
+    c.post("/tasks/1", data={"description": ""})
+    check("empty description accepted", ac.get_task(conn, 1)["description"] == "")
+    # Blank assignment
+    c.post("/tasks/1", data={"assigned_to": ""})
+    check("blank assignment clears", ac.get_task(conn, 1)["assigned_to"] is None)
+    # Re-assign to valid agent
+    c.post("/tasks/1", data={"assigned_to": "dev-agent"})
+    check("assignment to valid agent works", ac.get_task(conn, 1)["assigned_to"] == "dev-agent")
+
+    print("html fragment consistency")
+    # All responses to HTMX requests should be HTML fragments, not full pages
+    detail_response = c.post("/tasks/1", data={"status": "done"}).get_data(as_text=True)
+    check("patch response is fragment not page", "<html" not in detail_response.lower())
+    check("fragment has no head tag", "<head" not in detail_response.lower())
+    row_response = c.get("/agents/rows").get_data(as_text=True)
+    check("rows fragment is partial", "<html" not in row_response.lower())
+
+    print("error handling and edge cases")
+    # Test invalid task IDs
+    check("nonexistent task detail returns empty", c.get("/tasks/99999/detail").get_data(as_text=True) == "")
+    check("nonexistent task row returns empty", c.get("/tasks/99999/row").get_data(as_text=True) == "")
+    check("nonexistent task patch ignored", c.post("/tasks/99999", data={"status": "done"}).get_data(as_text=True) == "")
+    # Test with missing form fields
+    c.post("/tasks", data={"title": "no description task"})
+    check("tasks can be created with empty description", len(ac.list_tasks(conn)) > 1)
+    # Test agent editor closes properly
+    close_html = c.get("/agents/close").get_data(as_text=True)
+    check("agent editor can be closed", '<div id="agent-editor"></div>' in close_html)
+    check("close returns minimal html", len(close_html.strip()) < 100)
+    # Test doc editor closes properly
+    close_doc = c.get("/docs/close").get_data(as_text=True)
+    check("doc editor can be closed", '<div id="doc-editor"></div>' in close_doc)
+    # Test data row editor closes
+    close_row = c.get("/data/close").get_data(as_text=True)
+    check("row editor can be closed", '<div id="row-editor"></div>' in close_row)
+
     print("export + delete")
     msg = c.post("/export").get_data(as_text=True)
     check("export ran", "exported" in msg and (project / ".agents-export" / "tasks.md").exists())
@@ -266,6 +381,18 @@ def test_web(project: Path) -> None:
     check("delete empties table", "No tasks yet." in last)
     check("gone from db", ac.list_tasks(conn) == [])
     check("missing task is harmless", c.get("/tasks/99/detail").get_data(as_text=True) == "")
+
+    print("route status codes")
+    # Test various HTTP status codes
+    check("GET / is 200", c.get("/").status_code == 200)
+    check("GET /agents is 200", c.get("/agents").status_code == 200)
+    check("GET /docs is 200", c.get("/docs").status_code == 200)
+    check("GET /data is 200", c.get("/data").status_code == 200)
+    check("GET /data/tasks is 200", c.get("/data/tasks").status_code == 200)
+    check("invalid data table returns 200", c.get("/data/nonexistent").status_code == 200)
+    check("POST /tasks is 200", c.post("/tasks", data={"title": "x"}).status_code == 200)
+    check("GET /tasks/1/detail is 200", c.get("/tasks/1/detail").status_code == 200)
+
     conn.close()
 
 

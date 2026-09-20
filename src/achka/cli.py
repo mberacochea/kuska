@@ -7,6 +7,7 @@ Task and plan authoring lives in the web app, not here:
     achka daemon <name>     # run one agent's daemon (backend from config.toml)
     achka mcp               # MCP stdio server, for Codex / other external clients
     achka export            # one-off markdown export
+    achka migrate           # manage database migrations
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from pathlib import Path
 from . import __version__
 from .db import HUMAN, connect, init_db
 from .export import export_markdown
+from .migration import list_migrations, get_current_version, run_migrations
 from .project import (
     DEFAULT_CONFIG,
     REGISTRY,
@@ -97,6 +99,52 @@ def cmd_export(args: argparse.Namespace) -> None:
         print(path)
 
 
+def cmd_migrate(args: argparse.Namespace) -> None:
+    """Manage database migrations."""
+    project = find_project(args.project)
+    db = connect(db_path(project))
+
+    try:
+        if args.status:
+            # Show current migration status
+            current = get_current_version(db)
+            all_migrations = list_migrations()
+
+            if not all_migrations:
+                print("No migrations found")
+                return
+
+            print(f"Current schema version: {current if current else '(none - no migrations applied)'}")
+            print("\nAvailable migrations:")
+
+            for version, name in all_migrations:
+                status = "✓ applied" if (current and version <= current) else "  pending"
+                print(f"  {status}  {version}: {name}")
+
+        elif args.to:
+            # Migrate to specific version
+            applied = run_migrations(db, target_version=args.to)
+            if applied:
+                print(f"Applied migrations: {', '.join(applied)}")
+                current = get_current_version(db)
+                print(f"Current schema version: {current}")
+            else:
+                print(f"No new migrations to apply (already at or past version {args.to})")
+
+        else:
+            # Apply all pending migrations
+            applied = run_migrations(db)
+            if applied:
+                print(f"Applied migrations: {', '.join(applied)}")
+                current = get_current_version(db)
+                print(f"Current schema version: {current}")
+            else:
+                print("No pending migrations to apply")
+
+    finally:
+        db.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="achka", description=__doc__.splitlines()[0])
     parser.add_argument("--version", action="version", version=f"achka {__version__}")
@@ -135,6 +183,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_export = sub.add_parser("export", help="one-off markdown export")
     p_export.add_argument("--out", help="output directory (default: <project>/.agents-export)")
     p_export.set_defaults(func=cmd_export)
+
+    p_migrate = sub.add_parser("migrate", help="manage database migrations")
+    p_migrate_group = p_migrate.add_mutually_exclusive_group()
+    p_migrate_group.add_argument(
+        "--status", action="store_true", help="show migration status"
+    )
+    p_migrate_group.add_argument(
+        "--to", metavar="VERSION", help="migrate to specific version (e.g., 003)"
+    )
+    p_migrate.set_defaults(func=cmd_migrate)
+
     return parser
 
 

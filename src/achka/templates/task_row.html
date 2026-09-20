@@ -22,6 +22,6 @@
     {% else %}<span class="muted">-</span>{% endfor %}
   </td>
   <td class="muted small">{{ ago(t.updated_at) }}</td>
-  <td><button class="link" hx-post="/tasks/{{ t.id }}/delete" hx-target="#tasks" hx-swap="outerHTML"
+  <td><button class="link" hx-post="/tasks/{{ t.id }}/delete" hx-target="#tasks-container" hx-swap="outerHTML"
               hx-confirm="Delete task {{ t.id }}?">delete</button></td>
 </tr>

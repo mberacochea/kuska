@@ -8,6 +8,12 @@
     <label>{{ column }} <span class="hint">{{ kind }}</span>
       {% if kind == 'longtext' %}
       <textarea name="{{ column }}" style="min-height:8rem">{{ row[column] if row[column] is not none }}</textarea>
+      {% if column in markdown_fields and row[column] %}
+      <div style="margin:.6rem 0">
+        <div class="muted small" style="margin-bottom:.4rem">Preview:</div>
+        <div class="md" style="padding:.6rem; background:var(--shade); border-radius:6px; border:1px solid var(--line); font-size:.9rem">{{ md(row[column])|safe }}</div>
+      </div>
+      {% endif %}
       {% else %}
       <input type="text" name="{{ column }}" value="{{ row[column] if row[column] is not none }}">
       {% endif %}
