@@ -21,6 +21,7 @@ from .store import (
     claim_task,
     docs_get,
     docs_set,
+    full_text_search,
     get_inbox,
     get_task,
     heartbeat,
@@ -61,6 +62,25 @@ def _create_task_handler(db, agent, args):
     # Fetch and return the created task
     task = get_task(db, task_id)
     return task
+
+
+def _search_handler(db, agent, args):
+    """Handler for the search tool."""
+    query = args["query"]
+    tables = args.get("tables")
+    limit = args.get("limit", 20)
+
+    # Clamp limit to valid range (1-100)
+    limit = max(1, min(100, limit))
+
+    # Call full_text_search
+    results = full_text_search(db, query, tables=tables, limit=limit)
+
+    return {
+        "query": query,
+        "count": len(results),
+        "results": results,
+    }
 
 
 TOOL_SPECS: list[dict] = [
@@ -216,6 +236,35 @@ TOOL_SPECS: list[dict] = [
             ["title"],
         ),
         "handler": lambda db, agent, a: _create_task_handler(db, agent, a),
+    },
+    {
+        "name": "search",
+        "description": "Search across all project knowledge: tasks, docs, messages, and activity logs. Returns results with table information so you can rank by source.",
+        "schema": _obj(
+            {
+                "query": {
+                    **_STR,
+                    "description": "Search query. Supports FTS5 syntax: word1 word2 (AND), word1 OR word2, \"phrase search\", -word (NOT). Example: 'architecture' or '\"design pattern\" AND -deprecated'",
+                },
+                "tables": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["docs", "messages", "tasks", "events"],
+                    },
+                    "description": "Tables to search (default: all). Example: ['docs', 'tasks']",
+                },
+                "limit": {
+                    **_INT,
+                    "description": "Max results to return (default 20, max 100)",
+                    "default": 20,
+                    "minimum": 1,
+                    "maximum": 100,
+                },
+            },
+            ["query"],
+        ),
+        "handler": lambda db, agent, a: _search_handler(db, agent, a),
     },
 ]
 

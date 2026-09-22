@@ -1,0 +1,49 @@
+<div class="search-result">
+  <div class="search-result-header">
+    <span class="search-result-icon">
+      {% if result.table == 'docs' %}📄
+      {% elif result.table == 'messages' %}💬
+      {% elif result.table == 'tasks' %}📋
+      {% elif result.table == 'events' %}📊
+      {% else %}📌{% endif %}
+    </span>
+    <span class="search-result-table">{{ result.table }}</span>
+  </div>
+
+  <div class="search-result-content">
+    <div class="search-result-title">
+      {% if result.table == 'tasks' %}
+      <a href="#" hx-get="/tasks/{{ result.id }}/detail" hx-target="#task-detail" hx-swap="outerHTML" class="link">
+        {{ result.title[:60] }}{% if result.title|length > 60 %}...{% endif %}
+      </a>
+      {% elif result.table == 'docs' %}
+      <a href="#" hx-get="/docs/{{ result.id }}" hx-target="#doc-editor" hx-swap="outerHTML" class="link">
+        {{ result.title[:60] }}{% if result.title|length > 60 %}...{% endif %}
+      </a>
+      {% elif result.table == 'events' %}
+      {% if result.metadata and result.metadata.task_id %}
+      <a href="#" hx-get="/tasks/{{ result.metadata.task_id }}/detail" hx-target="#task-detail" hx-swap="outerHTML" class="link">
+        {{ result.title[:60] }}{% if result.title|length > 60 %}...{% endif %}
+      </a>
+      {% else %}
+      <span>{{ result.title[:60] }}{% if result.title|length > 60 %}...{% endif %}</span>
+      {% endif %}
+      {% else %}
+      <span>{{ result.title[:60] }}{% if result.title|length > 60 %}...{% endif %}</span>
+      {% endif %}
+    </div>
+
+    {% if result.snippet %}
+    <div class="search-snippet">
+      {{ result.snippet }}
+    </div>
+    {% endif %}
+
+    <div class="search-result-footer">
+      <div class="search-rank">
+        <div class="search-rank-bar" style="width: {{ result.rank * 100 }}%"></div>
+      </div>
+      <span class="search-rank-value">{{ "%.2f" | format(result.rank) }}</span>
+    </div>
+  </div>
+</div>

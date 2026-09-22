@@ -1230,3 +1230,329 @@ def check_cost_anomaly(
         result["event_id"] = event_id
 
     return result
+
+
+# --------------------------------------------------------------------------
+# full-text search (FTS5)
+# --------------------------------------------------------------------------
+
+
+def _generate_snippet(text: str, query: str, context_chars: int = 100) -> str:
+    """Extract context around query match and highlight matching terms.
+
+    Searches for the query term(s) in the text, extracts surrounding context,
+    and highlights matching terms with <mark> tags. If truncated, adds ellipsis.
+
+    Args:
+        text: Text to extract snippet from.
+        query: Query string (may contain multiple terms).
+        context_chars: Approximate characters of context around match (default 100).
+
+    Returns:
+        str: Snippet with highlighted matches and ellipsis if truncated.
+    """
+    if not text or not query:
+        return text[:context_chars] if text else ""
+
+    # Extract query terms (simple whitespace-based split, ignoring operators)
+    terms = [t.strip('"()').lower() for t in query.split() if t not in ('AND', 'OR', 'NOT')]
+    if not terms:
+        return text[:context_chars]
+
+    # Find first occurrence of any term
+    text_lower = text.lower()
+    first_match_pos = len(text_lower)
+    for term in terms:
+        pos = text_lower.find(term)
+        if pos != -1 and pos < first_match_pos:
+            first_match_pos = pos
+
+    if first_match_pos == len(text_lower):
+        # No match found, return beginning
+        snippet = text[:context_chars]
+        if len(text) > context_chars:
+            snippet += "..."
+        return snippet
+
+    # Extract context around first match
+    start = max(0, first_match_pos - context_chars // 2)
+    end = min(len(text), first_match_pos + context_chars // 2)
+
+    snippet = text[start:end]
+
+    # Add ellipsis if truncated
+    if start > 0:
+        snippet = "..." + snippet
+    if end < len(text):
+        snippet = snippet + "..."
+
+    # Highlight all matching terms with <mark> tags
+    for term in terms:
+        # Case-insensitive replacement with preservation of original case
+        import re
+        snippet = re.sub(
+            rf'\b({re.escape(term)})\b',
+            lambda m: f'<mark>{m.group(1)}</mark>',
+            snippet,
+            flags=re.IGNORECASE,
+        )
+
+    return snippet
+
+
+def _fts_search_table(
+    db: SqliteDatabase,
+    table: str,
+    query: str,
+    limit: int | None = None,
+) -> list[dict]:
+    """Search a single FTS5 table and return results with full context.
+
+    Queries the FTS table with MATCH operator, joins back to source table
+    for complete metadata, and generates snippets using context extraction.
+    Returns all matching results (no limit), allowing the caller to handle
+    pagination across multiple tables.
+
+    Args:
+        db: SqliteDatabase instance for this project.
+        table: Table name ('docs', 'messages', 'tasks', 'events').
+        query: FTS5 query string (supports AND, OR, NOT, "phrase").
+        limit: Optional maximum results per table (for performance tuning).
+
+    Returns:
+        list[dict]: Result dicts with keys: table, id, title, snippet, rank, metadata.
+    """
+    fts_table = f"{table}_fts"
+    results = []
+
+    # Build table-specific query with joins
+    if table == "docs":
+        fts_query = f"""
+            SELECT f.rowid, f.rank, f.content, d.key, d.updated_by, d.updated_at
+            FROM {fts_table} f
+            JOIN docs d ON d.rowid = f.rowid
+            WHERE f.{fts_table} MATCH ?
+            ORDER BY f.rank DESC
+        """
+        if limit:
+            fts_query += f" LIMIT {limit}"
+
+        fts_results = db.execute_sql(fts_query, (query,)).fetchall()
+
+        for row_id, rank, text_content, key, updated_by, updated_at in fts_results:
+            source_record = {
+                "key": key,
+                "content": text_content,
+                "updated_by": updated_by,
+                "updated_at": updated_at,
+            }
+            title = key if key else f"Doc #{row_id}"
+            snippet = _generate_snippet(text_content, query, context_chars=150)
+            metadata = {k: v for k, v in source_record.items() if k not in ["content"]}
+
+            results.append({
+                "table": table,
+                "id": row_id,
+                "title": title,
+                "snippet": snippet,
+                "rank": rank,
+                "metadata": metadata,
+            })
+
+    elif table == "messages":
+        fts_query = f"""
+            SELECT f.rowid, f.rank, f.payload, m.sender, m.recipient, m.task_id, m.msg_type, m.ts, m.input_tokens, m.output_tokens, m.cache_read_tokens, m.cache_write_tokens, m.tool_rounds, m.cost_usd, m.read_at
+            FROM {fts_table} f
+            JOIN messages m ON m.id = f.rowid
+            WHERE f.{fts_table} MATCH ?
+            ORDER BY f.rank DESC
+        """
+        if limit:
+            fts_query += f" LIMIT {limit}"
+
+        fts_results = db.execute_sql(fts_query, (query,)).fetchall()
+
+        for row_id, rank, text_content, sender, recipient, task_id, msg_type, ts, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, tool_rounds, cost_usd, read_at in fts_results:
+            source_record = {
+                "id": row_id,
+                "sender": sender,
+                "recipient": recipient,
+                "task_id": task_id,
+                "msg_type": msg_type,
+                "ts": ts,
+                "payload": text_content,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cache_read_tokens": cache_read_tokens,
+                "cache_write_tokens": cache_write_tokens,
+                "tool_rounds": tool_rounds,
+                "cost_usd": cost_usd,
+                "read_at": read_at,
+            }
+            sender_name = sender if sender else "unknown"
+            first_50 = text_content[:50] if text_content else ""
+            title = f"From {sender_name}: {first_50}"
+            snippet = _generate_snippet(text_content, query, context_chars=150)
+            metadata = {k: v for k, v in source_record.items() if k not in ["payload"]}
+
+            results.append({
+                "table": table,
+                "id": row_id,
+                "title": title,
+                "snippet": snippet,
+                "rank": rank,
+                "metadata": metadata,
+            })
+
+    elif table == "tasks":
+        fts_query = f"""
+            SELECT f.rowid, f.rank, f.title, f.description, t.assigned_to, t.status, t.created_at, t.updated_at
+            FROM {fts_table} f
+            JOIN tasks t ON t.id = f.rowid
+            WHERE f.{fts_table} MATCH ?
+            ORDER BY f.rank DESC
+        """
+        if limit:
+            fts_query += f" LIMIT {limit}"
+
+        fts_results = db.execute_sql(fts_query, (query,)).fetchall()
+
+        for row_id, rank, title_text, description_text, assigned_to, status, created_at, updated_at in fts_results:
+            source_record = {
+                "id": row_id,
+                "title": title_text,
+                "description": description_text,
+                "assigned_to": assigned_to,
+                "status": status,
+                "created_at": created_at,
+                "updated_at": updated_at,
+            }
+            title = title_text if title_text else f"Task #{row_id}"
+            # Generate snippet from title (primary indexed field)
+            text_content = title_text or ""
+            snippet = _generate_snippet(text_content, query, context_chars=150)
+            metadata = {k: v for k, v in source_record.items() if k not in ["title", "description"]}
+
+            results.append({
+                "table": table,
+                "id": row_id,
+                "title": title,
+                "snippet": snippet,
+                "rank": rank,
+                "metadata": metadata,
+            })
+
+    elif table == "events":
+        fts_query = f"""
+            SELECT f.rowid, f.rank, f.body, e.ts, e.agent, e.task_id, e.run_id, e.kind, e.label
+            FROM {fts_table} f
+            JOIN events e ON e.id = f.rowid
+            WHERE f.{fts_table} MATCH ?
+            ORDER BY f.rank DESC
+        """
+        if limit:
+            fts_query += f" LIMIT {limit}"
+
+        fts_results = db.execute_sql(fts_query, (query,)).fetchall()
+
+        for row_id, rank, text_content, ts, agent, task_id, run_id, kind, label in fts_results:
+            source_record = {
+                "id": row_id,
+                "ts": ts,
+                "agent": agent,
+                "task_id": task_id,
+                "run_id": run_id,
+                "kind": kind,
+                "label": label,
+                "body": text_content,
+            }
+            first_50 = text_content[:50] if text_content else ""
+            if task_id:
+                title = f"Task #{task_id}: {first_50}"
+            else:
+                title = f"Event #{row_id}: {first_50}"
+            snippet = _generate_snippet(text_content, query, context_chars=150)
+            metadata = {k: v for k, v in source_record.items() if k not in ["body"]}
+
+            results.append({
+                "table": table,
+                "id": row_id,
+                "title": title,
+                "snippet": snippet,
+                "rank": rank,
+                "metadata": metadata,
+            })
+
+    return results
+
+
+@bound
+def full_text_search(
+    db: SqliteDatabase,
+    query: str,
+    tables: list[str] | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict]:
+    """Search across FTS5 indexes for query terms.
+
+    Main search function supporting FTS5 query syntax (AND, OR, NOT, "phrase").
+    Searches multiple tables simultaneously, combines and ranks results by
+    relevance (BM25 score).
+
+    Args:
+        db: SqliteDatabase instance for this project.
+        query: FTS5 query string (e.g., "agent AND task", '"exact phrase"', "NOT archived").
+        tables: Optional filter by table names (['docs', 'messages', 'tasks', 'events']).
+                If None, searches all tables.
+        limit: Maximum results to return (default 50).
+        offset: Number of results to skip for pagination (default 0).
+
+    Returns:
+        list[dict]: Combined results from all searched tables, ranked by relevance.
+                    Each dict has keys: table, id, title, snippet, rank, metadata.
+
+    Raises:
+        ValueError: If query is too short (less than 2 characters).
+
+    Examples:
+        >>> results = full_text_search(db, "agent AND task", tables=["tasks", "messages"])
+        >>> for result in results:
+        ...     print(f"{result['table']}: {result['title']} (rank: {result['rank']})")
+
+        >>> # Search all tables
+        >>> results = full_text_search(db, '"exact phrase"')
+
+        >>> # Pagination
+        >>> page1 = full_text_search(db, "query", limit=10, offset=0)
+        >>> page2 = full_text_search(db, "query", limit=10, offset=10)
+    """
+    # Validate query length
+    if len(query.strip()) < 2:
+        raise ValueError("Query must be at least 2 characters")
+
+    # Default to all tables if not specified
+    search_tables = tables if tables else ["docs", "messages", "tasks", "events"]
+
+    # Validate table names
+    valid_tables = {"docs", "messages", "tasks", "events"}
+    search_tables = [t for t in search_tables if t in valid_tables]
+    if not search_tables:
+        return []
+
+    # Search each table and collect results
+    # Use a larger per-table limit to ensure we get enough results after combining and ranking
+    # This helps avoid edge cases where offset skips too many results
+    per_table_limit = max(500, limit * len(search_tables))
+
+    all_results = []
+    for table in search_tables:
+        table_results = _fts_search_table(db, table, query, limit=per_table_limit)
+        all_results.extend(table_results)
+
+    # Sort by rank descending across all tables
+    all_results.sort(key=lambda x: x["rank"], reverse=True)
+
+    # Apply offset and limit across combined results
+    end_idx = offset + limit
+    return all_results[offset:end_idx]

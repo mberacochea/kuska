@@ -1,0 +1,55 @@
+{% extends "layout.html" %}
+{% block body %}
+<div id="search-page">
+  <h2>Search Project Knowledge</h2>
+
+  <form class="search-form" hx-get="/search" hx-target="body" hx-swap="innerHTML">
+    <div class="search-input-wrapper">
+      <input type="text" name="q" placeholder="Enter search query..." aria-label="Search query"
+             value="{{ query }}" required class="search-input">
+      <button class="primary" type="submit">Search</button>
+    </div>
+
+    <div class="search-filters">
+      <span class="search-filters-label">Filter by type:</span>
+      <div class="search-filter-checkboxes">
+        {% for table in all_tables %}
+        <label class="search-filter-label">
+          <input type="checkbox" name="tables[]" value="{{ table }}"
+                 {% if table in tables_selected %}checked{% endif %}
+                 class="search-filter-checkbox">
+          <span>
+            {% if table == 'docs' %}📄 Docs
+            {% elif table == 'messages' %}💬 Messages
+            {% elif table == 'tasks' %}📋 Tasks
+            {% elif table == 'events' %}📊 Events
+            {% else %}{{ table }}
+            {% endif %}
+          </span>
+        </label>
+        {% endfor %}
+      </div>
+    </div>
+  </form>
+
+  {% if error_msg %}
+  <div class="field-error" role="alert" aria-live="polite">{{ error_msg }}</div>
+  {% endif %}
+
+  {% if query and not error_msg %}
+  <div style="margin-top: 1.5rem;">
+    {% if results %}
+    <div id="search-results">
+      {% include 'search_results.html' %}
+    </div>
+    {% else %}
+    <p class="muted">No results found for "{{ query }}"</p>
+    {% endif %}
+  </div>
+  {% elif not query %}
+  <div style="margin-top: 2rem; padding: 2rem; background: var(--shade); border-radius: 8px; text-align: center;">
+    <p class="muted">Enter a search query to get started.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
