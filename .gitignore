@@ -6,5 +6,8 @@ dist/
 *.egg-info/
 
 # per-project agent state and its export
+.agents/
 .agents/project.db*
 .agents-export/
+
+.kateproject
