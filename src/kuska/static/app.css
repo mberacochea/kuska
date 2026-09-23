@@ -261,3 +261,177 @@ input.has-error:focus, textarea.has-error:focus, select.has-error:focus {
 .modal-content .md {
   background:transparent; border:none; padding:0;
 }
+
+/* Search UI */
+#search-page {
+  display:flex; flex-direction:column; gap:1.5rem;
+}
+
+.search-form {
+  display:flex; flex-direction:column; gap:1rem; background:var(--card);
+  border:1px solid var(--line); border-radius:8px; padding:1.2rem;
+}
+
+.search-input-wrapper {
+  display:flex; gap:.6rem; align-items:center;
+}
+
+.search-input {
+  flex:1; min-width:15rem; padding:.6rem .8rem; font-size:.95rem;
+  border:1px solid var(--line); border-radius:6px;
+}
+
+.search-input:focus {
+  outline:2px solid var(--accent); outline-offset:1px;
+}
+
+.search-filters {
+  display:flex; flex-direction:column; gap:.4rem;
+}
+
+.search-filters-label {
+  font-size:.85rem; font-weight:600; color:var(--muted); text-transform:uppercase;
+  letter-spacing:.5px;
+}
+
+.search-filter-checkboxes {
+  display:flex; flex-wrap:wrap; gap:1.2rem;
+}
+
+.search-filter-label {
+  display:flex; align-items:center; gap:.5rem; cursor:pointer; font-size:.9rem;
+  user-select:none;
+}
+
+.search-filter-checkbox {
+  cursor:pointer; width:1rem; height:1rem;
+}
+
+.search-results-container {
+  display:flex; flex-direction:column; gap:1.5rem;
+}
+
+.search-results-header {
+  border-bottom:1px solid var(--line); padding-bottom:.5rem;
+}
+
+.search-results-header h3 {
+  margin:0; font-size:1rem; font-weight:600; color:var(--fg);
+}
+
+.search-group {
+  display:flex; flex-direction:column; gap:.8rem; padding:1rem;
+  background:var(--shade); border-radius:8px; border:1px solid var(--line);
+}
+
+.search-group-header {
+  margin:0; font-size:.95rem; font-weight:600; color:var(--fg);
+  padding-bottom:.5rem; border-bottom:1px solid var(--line);
+}
+
+.search-group-results {
+  display:flex; flex-direction:column; gap:.8rem;
+}
+
+.search-result {
+  display:flex; flex-direction:column; gap:.4rem; padding:.8rem;
+  background:var(--card); border:1px solid var(--line); border-radius:6px;
+}
+
+.search-result-header {
+  display:flex; align-items:center; gap:.4rem; font-size:.8rem;
+  font-weight:600; text-transform:uppercase; letter-spacing:.5px;
+  color:var(--muted);
+}
+
+.search-result-icon {
+  font-size:1rem;
+}
+
+.search-result-table {
+  color:var(--muted);
+}
+
+.search-result-content {
+  display:flex; flex-direction:column; gap:.6rem;
+}
+
+.search-result-title {
+  font-weight:600; line-height:1.4;
+}
+
+.search-result-title a {
+  color:var(--fg); text-decoration:none;
+}
+
+.search-result-title a:hover {
+  color:var(--accent); text-decoration:underline;
+}
+
+.search-snippet {
+  font-size:.85rem; color:var(--muted); line-height:1.5;
+  max-height:3em; overflow:hidden; text-overflow:ellipsis;
+}
+
+.search-snippet mark {
+  background:var(--warn); color:var(--fg); padding:0 .2rem;
+  border-radius:2px; font-weight:500;
+}
+
+.search-result-footer {
+  display:flex; align-items:center; gap:.8rem; font-size:.8rem;
+}
+
+.search-rank {
+  flex:1; min-width:6rem; height:.4rem; background:var(--line);
+  border-radius:2px; overflow:hidden;
+}
+
+.search-rank-bar {
+  height:100%; background:var(--accent); border-radius:2px;
+  min-width:2%;
+}
+
+.search-rank-value {
+  color:var(--muted); min-width:2rem; text-align:right; font-variant-numeric:tabular-nums;
+}
+
+.search-pagination {
+  display:flex; align-items:center; gap:1rem; font-size:.85rem;
+  padding-top:.8rem; border-top:1px solid var(--line); margin-top:.8rem;
+}
+
+.search-pagination a {
+  color:var(--accent); text-decoration:none;
+}
+
+.search-pagination a:hover {
+  text-decoration:underline;
+}
+
+/* Responsive search layout */
+@media (max-width:768px) {
+  .search-form {
+    padding:.9rem;
+  }
+
+  .search-input-wrapper {
+    flex-direction:column;
+  }
+
+  .search-input, .search-input-wrapper button {
+    width:100%;
+  }
+
+  .search-filter-checkboxes {
+    gap:.8rem; flex-direction:column;
+  }
+
+  .search-result {
+    padding:.6rem;
+  }
+
+  .search-pagination {
+    flex-wrap:wrap; gap:.6rem;
+  }
+}

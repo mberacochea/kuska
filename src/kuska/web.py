@@ -40,6 +40,7 @@ from .store import (
     docs_get,
     docs_list,
     docs_set,
+    full_text_search,
     get_task,
     list_agents,
     list_tasks,
@@ -1001,6 +1002,118 @@ def create_app(project_dir: Path):
         except PeeweeException as exc:
             return data_rows(table) + _toast(f"not deleted: {exc}")
         return data_rows(table) + _toast("row deleted" if deleted else "nothing to delete")
+
+    # ========== ROUTES: Search ==========
+
+    @app.get("/search")
+    def search_page() -> str:
+        """GET /search - Display search page with results."""
+        from flask import make_response
+
+        query = request.args.get("q", "").strip()
+        page = request.args.get("page", 1, type=int)
+        tables_filter = request.args.getlist("tables[]")
+
+        # Validate page number
+        if page < 1:
+            page = 1
+
+        # All available tables for filtering
+        all_tables = ["docs", "messages", "tasks", "events"]
+        tables_selected = [t for t in tables_filter if t in all_tables] or all_tables
+
+        # Initialize results
+        results = []
+        error_msg = None
+
+        # If query provided, validate and search
+        if query:
+            query_len = len(query)
+            if query_len < 2:
+                error_msg = "Search query must be at least 2 characters"
+            elif query_len > 1000:
+                error_msg = "Search query must be no more than 1000 characters"
+            else:
+                try:
+                    limit = 20
+                    offset = (page - 1) * limit
+                    results = full_text_search(
+                        db(),
+                        query,
+                        tables=tables_selected if tables_selected != all_tables else None,
+                        limit=limit,
+                        offset=offset
+                    )
+                except ValueError as e:
+                    error_msg = str(e)
+                except Exception as e:
+                    error_msg = f"Search failed: {e}"
+
+        return render_template(
+            "search.html",
+            page="search",
+            query=query,
+            results=results,
+            tables_selected=tables_selected,
+            all_tables=all_tables,
+            current_page=page,
+            limit=20,
+            error_msg=error_msg,
+        )
+
+    @app.get("/search/results")
+    def search_results() -> tuple[str, int]:
+        """GET /search/results - AJAX endpoint for search result pagination."""
+        from flask import make_response
+
+        query = request.args.get("q", "").strip()
+        page = request.args.get("page", 1, type=int)
+        tables_filter = request.args.getlist("tables[]")
+
+        # Validate page number
+        if page < 1:
+            page = 1
+
+        # All available tables for filtering
+        all_tables = ["docs", "messages", "tasks", "events"]
+        tables_selected = [t for t in tables_filter if t in all_tables] or all_tables
+
+        # Validate query
+        if not query or len(query.strip()) < 2:
+            response = _field_error_html("search", "Query must be at least 2 characters")
+            return make_response(response, 422)
+
+        if len(query) > 1000:
+            response = _field_error_html("search", "Query must be no more than 1000 characters")
+            return make_response(response, 422)
+
+        # Execute search
+        try:
+            limit = 20
+            offset = (page - 1) * limit
+            results = full_text_search(
+                db(),
+                query,
+                tables=tables_selected if tables_selected != all_tables else None,
+                limit=limit,
+                offset=offset
+            )
+        except ValueError as e:
+            response = _field_error_html("search", str(e))
+            return make_response(response, 422)
+        except Exception as e:
+            response = _field_error_html("search", f"Search failed: {e}")
+            return make_response(response, 422)
+
+        # Render results fragment
+        return render_template(
+            "search_results.html",
+            results=results,
+            query=query,
+            current_page=page,
+            limit=20,
+            tables_selected=tables_selected,
+        ), 200
 
     # ========== ROUTES: Stats Dashboard ==========
 

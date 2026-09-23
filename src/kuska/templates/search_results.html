@@ -1,0 +1,72 @@
+<div id="search-results-table">
+{% if results %}
+<div class="search-results-container">
+  <div class="search-results-header">
+    <h3>{{ results|length }} result{{ 's' if results|length != 1 else '' }} found</h3>
+  </div>
+
+  {% set docs_results = results|selectattr('table', 'equalto', 'docs')|list %}
+  {% set messages_results = results|selectattr('table', 'equalto', 'messages')|list %}
+  {% set tasks_results = results|selectattr('table', 'equalto', 'tasks')|list %}
+  {% set events_results = results|selectattr('table', 'equalto', 'events')|list %}
+
+  {% if docs_results %}
+  <div class="search-group">
+    <h4 class="search-group-header">📄 Docs ({{ docs_results|length }} result{{ 's' if docs_results|length != 1 else '' }})</h4>
+    <div class="search-group-results">
+      {% for result in docs_results %}
+      {% include 'search_result_group.html' %}
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if messages_results %}
+  <div class="search-group">
+    <h4 class="search-group-header">💬 Messages ({{ messages_results|length }} result{{ 's' if messages_results|length != 1 else '' }})</h4>
+    <div class="search-group-results">
+      {% for result in messages_results %}
+      {% include 'search_result_group.html' %}
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if tasks_results %}
+  <div class="search-group">
+    <h4 class="search-group-header">📋 Tasks ({{ tasks_results|length }} result{{ 's' if tasks_results|length != 1 else '' }})</h4>
+    <div class="search-group-results">
+      {% for result in tasks_results %}
+      {% include 'search_result_group.html' %}
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if events_results %}
+  <div class="search-group">
+    <h4 class="search-group-header">📊 Events ({{ events_results|length }} result{{ 's' if events_results|length != 1 else '' }})</h4>
+    <div class="search-group-results">
+      {% for result in events_results %}
+      {% include 'search_result_group.html' %}
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="search-pagination">
+    <span class="muted small">Page {{ current_page }}</span>
+    {% if current_page > 1 %}
+    <a href="#" hx-get="/search/results?q={{ query }}&page={{ current_page - 1 }}{% for t in tables_selected %}&tables[]={{ t }}{% endfor %}"
+       hx-target="#search-results-table" hx-swap="outerHTML" class="link">← Previous</a>
+    {% endif %}
+    {% if results|length >= limit %}
+    <a href="#" hx-get="/search/results?q={{ query }}&page={{ current_page + 1 }}{% for t in tables_selected %}&tables[]={{ t }}{% endfor %}"
+       hx-target="#search-results-table" hx-swap="outerHTML" class="link">Next →</a>
+    {% endif %}
+  </div>
+</div>
+{% else %}
+<p class="muted">No results found.</p>
+{% endif %}
+</div>

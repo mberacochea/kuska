@@ -176,7 +176,7 @@ def main() -> None:
         check("tool set", [s["name"] for s in ac.TOOL_SPECS] == [
             "get_inbox", "send_message", "claim_task", "reply", "docs_get", "docs_set",
             "docs_list", "claim_files", "release_files", "who_has", "heartbeat",
-            "create_task", "list_tasks"])
+            "create_task", "list_tasks", "search"])
         ac.call_tool(conn, "dev-agent", "heartbeat", {"status": "working", "task_id": t4})
         check("tool heartbeat", ac.get_agent(conn, "dev-agent")["current_task_id"] == t4)
         ac.call_tool(conn, "dev-agent", "send_message", {"recipient": "bench-agent", "payload": "ping"})
@@ -254,7 +254,7 @@ def main() -> None:
         print("project discovery")
         nested = project / "src" / "deep"
         nested.mkdir(parents=True)
-        check("finds project upward", ac.find_project(nested) == project)
+        check("finds project upward", ac.find_project(nested) == project.resolve())
         try:
             ac.find_project(tmp)
             check("errors outside a project", False)
