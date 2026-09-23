@@ -175,12 +175,15 @@ def main() -> None:
         print("tools")
         check("tool set", [s["name"] for s in ac.TOOL_SPECS] == [
             "get_inbox", "send_message", "claim_task", "reply", "docs_get", "docs_set",
-            "claim_files", "release_files", "who_has", "heartbeat", "create_task"])
+            "docs_list", "claim_files", "release_files", "who_has", "heartbeat",
+            "create_task", "list_tasks"])
         ac.call_tool(conn, "dev-agent", "heartbeat", {"status": "working", "task_id": t4})
         check("tool heartbeat", ac.get_agent(conn, "dev-agent")["current_task_id"] == t4)
         ac.call_tool(conn, "dev-agent", "send_message", {"recipient": "bench-agent", "payload": "ping"})
         check("tool inbox", ac.call_tool(conn, "bench-agent", "get_inbox", {})[0]["payload"] == "ping")
         check("tool docs", ac.call_tool(conn, "dev-agent", "docs_get", {"key": "architecture"})["content"].endswith("WAL on."))
+        check("tool docs_list", [d["key"] for d in ac.call_tool(conn, "dev-agent", "docs_list", {})] == ["architecture"])
+        check("tool list_tasks", len(ac.call_tool(conn, "dev-agent", "list_tasks", {})) >= 1)
         check("tool result is json", ac.tool_result_text({"a": 1}) == '{"a": 1}')
         try:
             ac.call_tool(conn, "dev-agent", "nope", {})

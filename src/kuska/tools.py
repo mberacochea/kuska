@@ -20,10 +20,12 @@ from .store import (
     claim_holders,
     claim_task,
     docs_get,
+    docs_list,
     docs_set,
     get_inbox,
     get_task,
     heartbeat,
+    list_tasks,
     release_files,
     reply,
     send_message,
@@ -145,6 +147,12 @@ TOOL_SPECS: list[dict] = [
         ),
     },
     {
+        "name": "docs_list",
+        "description": "List all shared project docs, with their content.",
+        "schema": _obj({}),
+        "handler": lambda db, agent, a: docs_list(db),
+    },
+    {
         "name": "claim_files",
         "description": (
             "Say which files you are about to change, before you change them. "
@@ -216,6 +224,20 @@ TOOL_SPECS: list[dict] = [
             ["title"],
         ),
         "handler": lambda db, agent, a: _create_task_handler(db, agent, a),
+    },
+    {
+        "name": "list_tasks",
+        "description": "List all tasks, optionally filtered by status.",
+        "schema": _obj(
+            {
+                "status": {
+                    "type": "string",
+                    "enum": list(TASK_STATUSES),
+                    "description": "Optional status filter",
+                },
+            }
+        ),
+        "handler": lambda db, agent, a: list_tasks(db, status=a.get("status")),
     },
 ]
 

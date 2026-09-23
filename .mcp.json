@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "kuska": {
+      "command": "uv",
+      "args": ["run", "kuska", "mcp", "--agent", "claude"]
+    }
+  }
+}

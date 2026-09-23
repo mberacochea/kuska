@@ -192,8 +192,10 @@ and the cost ledger, and editing `agents` does not write back to
 
 ## Agent tools
 
-Ten tools - `get_inbox`, `send_message`, `claim_task`, `reply`, `docs_get`,
-`docs_set`, `claim_files`, `release_files`, `who_has`, `heartbeat` - defined once in `tools.py` and consumed three ways:
+Thirteen tools - `get_inbox`, `send_message`, `claim_task`, `create_task`,
+`list_tasks`, `reply`, `docs_get`, `docs_set`, `docs_list`, `claim_files`,
+`release_files`, `who_has`, `heartbeat` - defined once in `tools.py` and
+consumed three ways:
 
 - **Claude** registers them in-process via `create_sdk_mcp_server()` - no
   extra process.
