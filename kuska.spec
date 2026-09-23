@@ -45,11 +45,13 @@ if not BUNDLE_CLIS:
 # the daemons are reached through importlib, so PyInstaller cannot see them
 hiddenimports += ["kuska.daemons.claude", "kuska.daemons.codex"]
 
-# Jinja templates and the stylesheet are read from disk at runtime, so they
-# have to travel with the binary, at the same path inside the package
+# Jinja templates, the stylesheet and the `kuska init` templates are read from
+# disk at runtime, so they have to travel with the binary, at the same path
+# inside the package
 datas += [
     ("src/kuska/templates", "kuska/templates"),
     ("src/kuska/static", "kuska/static"),
+    ("src/kuska/defaults", "kuska/defaults"),
 ]
 
 a = Analysis(

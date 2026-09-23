@@ -22,11 +22,11 @@ from .db import HUMAN, connect, init_db
 from .export import export_markdown
 from .migration import get_current_version, run_migrations
 from .project import (
-    DEFAULT_CONFIG,
     REGISTRY,
     agent_config,
     config_path,
     db_path,
+    default_config,
     find_project,
     registry_add,
     sync_agents_from_config,
@@ -40,7 +40,7 @@ def cmd_init(args: argparse.Namespace) -> None:
 
     cfg = config_path(project)
     if not cfg.exists():
-        cfg.write_text(DEFAULT_CONFIG)
+        cfg.write_text(default_config())
         print(f"wrote {cfg}")
 
     db = connect(db_path(project))

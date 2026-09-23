@@ -58,6 +58,7 @@ src/kuska/
   runner.py      # run-all: web server + MCP + daemons in one command
   templates/     # Jinja templates, layout.html plus one file per page/fragment
   static/app.css # the whole stylesheet
+  defaults/      # config.toml and the prompt `kuska init` seeds a project with
   export.py      # markdown export
   cli.py         # init / serve / daemon / mcp / run-all / export
   daemons/
@@ -84,6 +85,10 @@ myproject/
     prompts/dev-agent.md
   .agents-export/     # generated on demand, git-friendly
 ```
+
+Everything under `.agents/` is that project's own state, seeded once from
+`src/kuska/defaults/` and never read back by the core - delete the directory
+and `kuska init` rebuilds it from the shipped templates.
 
 Running several projects in parallel is several such directories, each with
 its own DB file and its own daemons. `kuska init` records each one in
