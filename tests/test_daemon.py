@@ -339,6 +339,25 @@ def check_codex_wiring(project: Path) -> None:
     check("no prices means no cost", daemon_codex.usage_of(usage, {})[2] == 0.0)
     check("missing usage is harmless", daemon_codex.usage_of(None, cfg) == (0, 0, 0.0))
 
+    cached = SimpleNamespace(last=SimpleNamespace(cached_input_tokens=900, cache_write_input_tokens=120))
+    check("cache counts read from turn", daemon_codex.cache_of(cached) == (900, 120))
+    check("missing cache counts are zero", daemon_codex.cache_of(None) == (0, 0))
+
+    from openai_codex import Sandbox
+
+    preset = daemon_codex.sandbox_preset
+    check("config string becomes a preset", preset("workspace-write") is Sandbox.workspace_write)
+    check("underscores accepted", preset("read_only") is Sandbox.read_only)
+    check("wire spelling accepted", preset("danger-full-access") is Sandbox.full_access)
+    check("blank means the codex default", preset("") is None and preset(None) is None)
+    check("a preset passes through", preset(Sandbox.full_access) is Sandbox.full_access)
+    try:
+        preset("wide-open")
+    except ValueError as exc:
+        check("nonsense is rejected loudly", "wide-open" in str(exc), exc)
+    else:
+        check("nonsense is rejected loudly", False)
+
 
 def check_openai_wiring(project: Path) -> None:
     print("openai daemon wiring")

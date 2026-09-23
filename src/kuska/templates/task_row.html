@@ -1,8 +1,10 @@
 <tr id="task-{{ t.id }}">
   <td class="num muted">{{ t.id }}</td>
   <td>
-    <a href="#" hx-get="/tasks/{{ t.id }}/detail" hx-target="#task-{{ t.id }}"
-       hx-swap="outerHTML">{{ t.title }}</a>
+    {# href is the shareable deep link; htmx fetches only the detail panel and
+       swaps it over this row, then points the address bar at that same link. #}
+    <a href="/tasks?open={{ t.id }}" hx-get="/tasks/{{ t.id }}/detail" hx-target="#task-{{ t.id }}"
+       hx-swap="outerHTML" hx-push-url="/tasks?open={{ t.id }}">{{ t.title }}</a>
   </td>
   <td>
     <select name="assigned_to" hx-post="/tasks/{{ t.id }}" hx-target="#task-{{ t.id }}" hx-swap="outerHTML">

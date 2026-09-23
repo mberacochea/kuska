@@ -3,7 +3,7 @@
   <a href="#" class="link" onclick="closePanel('doc-editor'); return false;">close</a></h2>
 <form hx-post="/docs/{{ key }}" hx-target="#docs" hx-swap="outerHTML">
   <div class="form-group">
-    <label for="doc-content-{{ key }}">Content</label>
+    <label for="doc-content-{{ key }}">Content <span class="muted small">(Markdown)</span></label>
     <textarea id="doc-content-{{ key }}" name="content" style="min-height:16rem" aria-label="Doc content">{{ content }}</textarea>
   </div>
   <div style="display:flex; gap:.5rem; margin-top:.9rem; align-items:center">

@@ -172,6 +172,33 @@ def main() -> None:
         check("docs upsert", ac.docs_get(conn, "architecture").endswith("WAL on."))
         check("docs list", [d["key"] for d in ac.docs_list(conn)] == ["architecture"])
 
+        print("docs are markdown")
+        prose = "# Report\n\n## Summary\n\nDid a thing.\n"
+        check("prose untouched", ac.as_markdown(prose) == prose)
+        fenced = '```json\n{"a": 1}\n```'
+        check("fenced json is prose", ac.as_markdown(fenced) == fenced)
+        check("broken json untouched", ac.as_markdown('{"a": ') == '{"a": ')
+        check("bare scalar untouched", ac.as_markdown("17") == "17")
+        check("empty body untouched", ac.as_markdown("") == "")
+        dumped = ac.as_markdown(
+            '{"summary": "did a thing", "files_modified": ["a.py", "b.py"],'
+            ' "breaking_changes": [], "counts": {"tests": 3}}'
+        )
+        check("json keys become headings", "## Summary" in dumped and "## Files modified" in dumped, dumped)
+        check("json lists become bullets", "- a.py\n- b.py" in dumped, dumped)
+        check("empty value marked", "_none_" in dumped, dumped)
+        check("nested dict nests", "### Tests" in dumped, dumped)
+        check("no json punctuation left", '{"' not in dumped and '":' not in dumped, dumped)
+        titled = ac.as_markdown('{"summary": "x"}', title="Task 9: dev-agent report")
+        check("title only when rewritten", titled.startswith("# Task 9: dev-agent report"))
+        check("title not bolted onto prose", ac.as_markdown(prose, title="Ignored") == prose)
+        ac.call_tool(conn, "dev-agent", "docs_set",
+                     {"key": "handover", "content": '{"summary": "via the tool"}'})
+        check("tool docs_set coerces", ac.docs_get(conn, "handover") == "## Summary\n\nvia the tool\n")
+        ac.store_workflow_context(conn, "dev-agent", 7, '{"summary": "handover"}')
+        stored = ac.docs_get(conn, "task_7_dev-agent_context")
+        check("workflow context coerced", stored.startswith("# Task 7: dev-agent report"), stored)
+
         print("tools")
         check("tool set", [s["name"] for s in ac.TOOL_SPECS] == [
             "get_inbox", "send_message", "claim_task", "reply", "docs_get", "docs_set",
@@ -182,7 +209,8 @@ def main() -> None:
         ac.call_tool(conn, "dev-agent", "send_message", {"recipient": "bench-agent", "payload": "ping"})
         check("tool inbox", ac.call_tool(conn, "bench-agent", "get_inbox", {})[0]["payload"] == "ping")
         check("tool docs", ac.call_tool(conn, "dev-agent", "docs_get", {"key": "architecture"})["content"].endswith("WAL on."))
-        check("tool docs_list", [d["key"] for d in ac.call_tool(conn, "dev-agent", "docs_list", {})] == ["architecture"])
+        check("tool docs_list", [d["key"] for d in ac.call_tool(conn, "dev-agent", "docs_list", {})] ==
+              ["architecture", "handover", "task_7_dev-agent_context"])
         check("tool list_tasks", len(ac.call_tool(conn, "dev-agent", "list_tasks", {})) >= 1)
         check("tool result is json", ac.tool_result_text({"a": 1}) == '{"a": 1}')
         try:

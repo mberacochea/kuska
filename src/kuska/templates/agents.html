@@ -16,7 +16,7 @@
 <!-- outside #agent-rows on purpose: that div refetches itself every few
      seconds, and anything nested in it (an open editor, with whatever has
      been typed into it) would be thrown away on the next poll -->
-<div id="agent-editor"></div>
+{{ agent_editor|safe }}
 
 <h2>Files being worked on <span class="muted">- advisory claims, released when a run ends</span></h2>
 {{ claims|safe }}

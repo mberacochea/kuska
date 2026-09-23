@@ -235,6 +235,18 @@ wheels = [
 ]
 
 [[package]]
+name = "flask-htmx"
+version = "0.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "flask" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/4a/b7/1ba8b722ccc12b72b44af949f438a85111ba8db9e39f973dff4a47da068e/flask_htmx-0.4.0.tar.gz", hash = "sha256:2d367fb27c8da99d031a0c566b7e562637139722e2d4e8ec67c7f941addb22fd", size = 5815, upload-time = "2024-09-22T04:14:20.006Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3d/8e/7e75c2210567ba11df9ea7d031eb5b8f45e82f6112cc8be885cb0ce86c7d/flask_htmx-0.4.0-py3-none-any.whl", hash = "sha256:ac0ef976638bc635537a47c4ae622c91aef1e69d8bf52880aa9ae0db089ce7d2", size = 6773, upload-time = "2024-09-22T04:14:18.41Z" },
+]
+
+[[package]]
 name = "h11"
 version = "0.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -441,6 +453,7 @@ source = { editable = "." }
 dependencies = [
     { name = "claude-agent-sdk" },
     { name = "flask" },
+    { name = "flask-htmx" },
     { name = "mcp" },
     { name = "mistune" },
     { name = "openai" },
@@ -458,6 +471,7 @@ dev = [
 requires-dist = [
     { name = "claude-agent-sdk", specifier = ">=0.2.157" },
     { name = "flask", specifier = ">=3.1.3" },
+    { name = "flask-htmx", specifier = ">=0.3.0" },
     { name = "mcp", specifier = ">=2.2.0" },
     { name = "mistune", specifier = ">=3.3.4" },
     { name = "openai", specifier = ">=1.0.0" },

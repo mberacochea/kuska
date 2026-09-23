@@ -27,9 +27,9 @@ def default_config() -> str:
 
 def default_prompt(name: str, role: str) -> str:
     """The system prompt seeded for an agent that has no prompt file yet."""
-    # .replace, not .format: the template is markdown documentation carrying
-    # code samples - json.dumps({...}), f"task_{task_id}_..." - and str.format
-    # reads every one of those braces as a field name.
+    # .replace, not .format: the template is markdown documentation, and any
+    # brace someone later adds to a code sample or a tool signature would be
+    # read by str.format as a field name and blow up seeding a prompt.
     return (
         (DEFAULTS_DIR / "prompt.md")
         .read_text()

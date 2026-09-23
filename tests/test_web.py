@@ -417,6 +417,61 @@ def test_web(project: Path) -> None:
     check("open=<key> lands with that doc's editor open", 'id="doc-content-closetest"' in opened_doc)
     check("open=<missing key> is harmless", 'id="doc-editor"' in c.get("/docs", query_string={"open": "nope"}).get_data(as_text=True))
 
+    print("htmx swaps get fragments, not whole pages")
+    # Regression: deep-link URLs used to answer an htmx swap with the entire
+    # page, so clicking a task nested a second copy of the table inside that
+    # task's own row. A response destined for an element must never carry the
+    # layout with it.
+    HX = {"HX-Request": "true"}
+    doctype = "<!doctype html>"
+
+    task_frag = c.get("/tasks", query_string={"open": t_id}, headers=HX).get_data(as_text=True)
+    check("htmx /tasks?open= is a fragment", doctype not in task_frag.lower())
+    check("htmx /tasks?open= carries no nav", "<nav>" not in task_frag)
+
+    agent_frag = c.get("/agents", query_string={"open": "codex-1"}, headers=HX).get_data(as_text=True)
+    check("htmx /agents?open= is the editor alone", doctype not in agent_frag.lower())
+    check("htmx /agents?open= is the editor", 'id="agent-editor"' in agent_frag and "<nav>" not in agent_frag)
+    check("htmx /agents?open= has no second agent table", "agent-rows" not in agent_frag)
+
+    doc_frag = c.get("/docs", query_string={"open": "closetest"}, headers=HX).get_data(as_text=True)
+    check("htmx /docs?open= is the editor alone", doctype not in doc_frag.lower())
+    check("htmx /docs?open= is the editor", 'id="doc-editor"' in doc_frag and "<nav>" not in doc_frag)
+    check("htmx /docs?open= has no second docs table", "/docs/closetest/delete" not in doc_frag)
+
+    row_frag = c.get("/data/tasks", query_string={"open": t_id}, headers=HX).get_data(as_text=True)
+    check("htmx /data?open= is the row editor alone", doctype not in row_frag.lower())
+    check("htmx /data?open= is the row editor", 'id="row-editor"' in row_frag and 'id="rows"' not in row_frag)
+
+    page_frag = c.get("/data/tasks", query_string={"offset": 0}, headers=HX).get_data(as_text=True)
+    check("htmx /data?offset= is the rows fragment", 'id="rows"' in page_frag and doctype not in page_frag.lower())
+
+    # Back/forward: on a cache miss htmx re-requests the URL and replaces the
+    # whole body, so a history restore has to get the full page back.
+    restore = c.get("/tasks", query_string={"open": t_id},
+                    headers={"HX-Request": "true", "HX-History-Restore-Request": "true"})
+    check("history restore gets the full page", doctype in restore.get_data(as_text=True).lower())
+
+    # A plain browser navigation is unaffected by any of the above.
+    for url, args in (("/tasks", {"open": t_id}), ("/agents", {"open": "codex-1"}),
+                      ("/docs", {"open": "closetest"}), ("/data/tasks", {"open": t_id})):
+        body = c.get(url, query_string=args).get_data(as_text=True)
+        check(f"plain GET {url} is a full page", doctype in body.lower() and "<nav>" in body)
+
+    # The links themselves must aim at a fragment endpoint, not at the page.
+    rows_html = c.get("/tasks").get_data(as_text=True)
+    check("task link fetches the detail fragment", f'hx-get="/tasks/{t_id}/detail"' in rows_html)
+    check("task link still deep-links in href", f'href="/tasks?open={t_id}"' in rows_html)
+    check("task link pushes the deep link", f'hx-push-url="/tasks?open={t_id}"' in rows_html)
+    detail_html = c.get(f"/tasks/{t_id}/detail").get_data(as_text=True)
+    check("collapse swaps the row back", f'hx-get="/tasks/{t_id}/row"' in detail_html)
+    collapsed = c.get(f"/tasks/{t_id}/row").get_data(as_text=True)
+    check("collapse target renders a usable row",
+          collapsed.startswith(f'<tr id="task-{t_id}">') and 'name="status"' in collapsed)
+    check("edit fetches the detail fragment in edit mode", f'hx-get="/tasks/{t_id}/detail?edit=1"' in detail_html)
+    check("no link hx-gets a whole page into a row", f'hx-get="/tasks?open={t_id}"' not in detail_html)
+    check("search form selects its own block", 'hx-select="#search-page"' in c.get("/search").get_data(as_text=True))
+
     print("export + delete")
     msg = c.post("/export").get_data(as_text=True)
     check("export ran", "exported" in msg and (project / ".agents-export" / "tasks.md").exists())

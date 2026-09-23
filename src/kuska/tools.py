@@ -13,6 +13,7 @@ from typing import Any
 from peewee import SqliteDatabase
 
 from .db import AGENT_STATUSES, TASK_STATUSES
+from .markdown import as_markdown
 from .store import (
     add_dependency,
     add_task,
@@ -160,10 +161,14 @@ TOOL_SPECS: list[dict] = [
     },
     {
         "name": "docs_set",
-        "description": "Write a shared project doc. Overwrites the whole value for that key.",
+        "description": (
+            "Write a shared project doc, as Markdown. Overwrites the whole value for "
+            "that key. Docs are reports other agents and humans read: headings, prose "
+            "and bullets - not a JSON dump (JSON content is rewritten into Markdown)."
+        ),
         "schema": _obj({"key": _STR, "content": _STR}, ["key", "content"]),
         "handler": lambda db, agent, a: (
-            docs_set(db, a["key"], a["content"], agent) or {"ok": True}
+            docs_set(db, a["key"], as_markdown(a["content"]), agent) or {"ok": True}
         ),
     },
     {

@@ -11,6 +11,7 @@ import uuid
 
 from peewee import SqliteDatabase
 
+from .markdown import as_markdown
 from .models import MODELS, Message
 from .store import (
     active_claims,
@@ -55,8 +56,8 @@ def get_workflow_context(
 ) -> str:
     """Retrieve shared context from previous agent in workflow chain.
 
-    When an agent finishes with status="needs_approval", it stores
-    structured context via docs_set for the next agent to retrieve.
+    When an agent finishes with status="needs_approval", it stores a
+    Markdown report via docs_set for the next agent to retrieve.
     This reduces token usage by 20-30% by allowing the next agent to
     skip re-parsing message history.
 
@@ -104,7 +105,7 @@ def store_workflow_context(
     task_id: int,
     context: str,
 ) -> None:
-    """Store structured context for the next agent in the workflow.
+    """Store a Markdown handover report for the next agent in the workflow.
 
     Called when an agent completes with status="needs_approval" to pass
     context forward to dependent tasks. This avoids token waste by letting
@@ -113,18 +114,23 @@ def store_workflow_context(
     Context key format: task_{task_id}_{agent_name}_context
     This allows multiple agents to store context for a single task.
 
+    The report is a document: the web UI renders it as Markdown and
+    `export_markdown` folds it into plan.md. A model that hands over a JSON
+    dump anyway gets it rewritten into sections by `as_markdown`.
+
     Args:
         db: SqliteDatabase instance for this project.
         agent_name: Name of the agent storing context.
         task_id: Associated task ID.
-        context: Structured context (markdown, JSON, or any format).
+        context: The handover report, in Markdown.
 
     Examples:
-        >>> plan_context = json.dumps({"phase": 1, "files_to_modify": [...]})
-        >>> store_workflow_context(db, "planning-agent", task_id, plan_context)
+        >>> report = "## Summary\\n\\nSplit the cache token columns.\\n"
+        >>> store_workflow_context(db, "planning-agent", task_id, report)
     """
     doc_key = f"task_{task_id}_{agent_name}_context"
-    docs_set(db, doc_key, context, updated_by=agent_name)
+    title = f"Task {task_id}: {agent_name} report"
+    docs_set(db, doc_key, as_markdown(context, title=title), updated_by=agent_name)
 
 
 def compose_task_prompt(

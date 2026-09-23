@@ -2,11 +2,12 @@
   <td class="num muted">{{ t.id }}</td>
   <td colspan="6">
     <div style="display:flex; gap:.7rem; align-items:baseline; flex-wrap:wrap">
-      <a href="#" hx-get="/tasks/{{ t.id }}/row" hx-target="#task-{{ t.id }}" hx-swap="outerHTML">
+      <a href="/tasks?open={{ t.id }}" hx-get="/tasks/{{ t.id }}/detail" hx-target="#task-{{ t.id }}" hx-swap="outerHTML" hx-push-url="/tasks?open={{ t.id }}">
         <strong>{{ t.title }}</strong></a>
       <span class="chip s-{{ t.status }}">{{ t.status }}</span>
-      <a href="#" class="link" hx-get="/tasks/{{ t.id }}/row" hx-target="#task-{{ t.id }}"
-         hx-swap="outerHTML">collapse</a>
+      {# Collapsing swaps this panel back to its one-line row, so the rest of
+         the table (and any active filter) is left alone. #}
+      <a href="/tasks" class="link" hx-get="/tasks/{{ t.id }}/row" hx-target="#task-{{ t.id }}" hx-swap="outerHTML" hx-push-url="/tasks">collapse</a>
     </div>
 
     {% if t.status == 'needs_approval' %}
@@ -34,13 +35,13 @@
       </div>
       <div style="display:flex; gap:.5rem; margin-top:.6rem">
         <button class="primary" type="submit">Save</button>
-        <a href="#" class="link" hx-get="/tasks/{{ t.id }}/detail" hx-target="#task-{{ t.id }}" hx-swap="outerHTML">cancel</a>
+        <a href="/tasks?open={{ t.id }}" class="link" hx-get="/tasks/{{ t.id }}/detail" hx-target="#task-{{ t.id }}" hx-swap="outerHTML" hx-push-url="/tasks?open={{ t.id }}">cancel</a>
       </div>
     </form>
     {% else %}
     <div class="md" style="margin:.6rem 0">{{ description_html|safe }}</div>
-    <a href="#" class="link" hx-get="/tasks/{{ t.id }}/detail?edit=1" hx-target="#task-{{ t.id }}"
-       hx-swap="outerHTML">edit</a>
+    <a href="/tasks?open={{ t.id }}&amp;edit=1" class="link" hx-get="/tasks/{{ t.id }}/detail?edit=1" hx-target="#task-{{ t.id }}"
+       hx-swap="outerHTML" hx-push-url="/tasks?open={{ t.id }}&amp;edit=1">edit</a>
     {% if t.status != 'todo' and t.status != 'needs_approval' %}
     <button class="link" hx-post="/tasks/{{ t.id }}/requeue" hx-target="#task-{{ t.id }}" hx-swap="outerHTML">
       Re-queue</button>
@@ -87,7 +88,7 @@
     </form>
 
     <h2 class="small">Activity
-      <a href="#" class="link" hx-get="/tasks/{{ t.id }}/detail" hx-target="#task-{{ t.id }}"
+      <a href="/tasks?open={{ t.id }}" class="link" hx-get="/tasks/{{ t.id }}/detail" hx-target="#task-{{ t.id }}"
          hx-swap="outerHTML">refresh</a></h2>
     {{ activity|safe }}
   </td>

@@ -8,7 +8,7 @@ You have access to these MCP tools to coordinate with other agents and manage sh
 
 ### Shared Project Knowledge
 - **`docs_get(key)`** - Read shared project docs by key (e.g., 'plan', 'architecture', 'task_N_planning-agent_context'). Always read relevant docs first before assuming or designing — the planning-agent may have already created a strategy.
-- **`docs_set(key, content)`** - Write shared docs that other agents will read. Use this to pass context forward (e.g., `task_N_dev-agent_context`). **DO NOT** store plans, decisions, or shared knowledge in local folders or home directories — always use `docs_set`.
+- **`docs_set(key, content)`** - Write shared docs that other agents will read. Use this to pass context forward (e.g., `task_N_dev-agent_context`). **Docs are Markdown reports** — headings, prose, bullets — never a JSON dump. **DO NOT** store plans, decisions, or shared knowledge in local folders or home directories — always use `docs_set`.
 
 ### Task & Message Management
 - **`send_message(recipient, payload, msg_type='question'|'blocker'|'note')`** - Send a message to another agent (e.g., 'planning-agent', 'review-agent') or 'human'. Use msg_type='blocker' when you're stuck and need input before proceeding.
@@ -29,26 +29,47 @@ You have access to these MCP tools to coordinate with other agents and manage sh
 
 ## Workflow context passing
 
-When you get context from planning-agent in your prompt:
-- It appears as "## Context from planning-agent" section
+When you get context from a previous agent in your prompt:
+- It appears as a "## Context from <agent>" section
 - This replaces the need to re-read message history
-- Use it as your implementation guide, then pass your own context forward to review-agent:
+- Use it as your working brief, then pass your own report forward to whoever comes next.
 
-```python
-# At the end of your task (before calling reply with "done" status):
-import json
-context = json.dumps({
-    "implementation_summary": "What you built and why",
-    "files_modified": ["src/file1.py", "src/file2.py"],
-    "key_changes": ["Change 1: why it matters", "Change 2: testing notes"],
-    "breaking_changes": [],
-    "test_coverage": "Which tests you added or modified",
-    "known_issues": "Any technical debt or future improvements"
-})
-docs_set(db, f"task_{task_id}_dev-agent_context", context)
+**A handover report is a Markdown document, not a data structure.** It is
+rendered as Markdown in the web UI and folded into `plan.md` on export, so a
+JSON blob there reads as a wall of escaped quotes and `\n`. Write it the way
+you would write it for a colleague: headings, sentences, bullets. Do not wrap
+the whole report in a code fence either.
+
+At the end of your task, before you finish, record your report with `docs_set`
+under the key `task_<task_id>_<your-agent-name>_context`:
+
+```markdown
+# Task 42: short title of what you did
+
+## Summary
+What you built and why, in two or three sentences.
+
+## Files changed
+- `src/file1.py` — what changed here, and why it matters
+- `src/file2.py` — ...
+
+## Key decisions
+- The decision, and the reasoning a reviewer would otherwise have to guess at.
+
+## Tests
+Which tests you added or changed, and how to run them.
+
+## Known issues
+Technical debt, follow-ups, anything the next agent should not be surprised
+by. Write "None." if there is nothing.
 ```
 
-This context will automatically appear in review-agent's prompt, saving them token budget for deeper code analysis.
+Adapt the headings to the work — a planning report or a review report has
+different sections than the one above. What stays fixed is the form: Markdown
+prose someone can read top to bottom.
+
+This report automatically appears in the next agent's prompt, saving them
+token budget for deeper analysis.
 
 ## How you work
 

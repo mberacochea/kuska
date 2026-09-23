@@ -42,6 +42,31 @@ def mcp_config(project: Path, agent_name: str) -> dict:
     }
 
 
+def sandbox_preset(value):
+    """Config gives us a string; the SDK insists on its own Sandbox enum.
+
+    `thread_start(sandbox=...)` rejects anything that is not a `Sandbox`
+    member, so a plain "workspace-write" out of config.toml would fail every
+    turn. Blank (the UI's "leave it to codex" choice) means don't pass one.
+    Underscores and the wire spelling "danger-full-access" are accepted too,
+    since both show up in hand-written configs.
+    """
+    from openai_codex import Sandbox
+
+    if value is None or isinstance(value, Sandbox):
+        return value
+    name = str(value).strip().replace("_", "-")
+    if not name:
+        return None
+    if name == "danger-full-access":
+        name = "full-access"
+    try:
+        return Sandbox(name)
+    except ValueError:
+        allowed = ", ".join(preset.value for preset in Sandbox)
+        raise ValueError(f"unknown sandbox {value!r}; expected one of: {allowed}") from None
+
+
 # how a codex thread item maps onto the monologue's vocabulary; anything not
 # listed is some flavour of tool call, which is what makes this beta-proof
 ITEM_KINDS = {"agent_message": "text", "reasoning": "thinking", "error": "error"}
@@ -82,7 +107,7 @@ def run_agent(codex, project: Path, agent_name: str, cfg: dict, prompt: str, mon
         model=cfg.get("model"),
         config=mcp_config(project, agent_name),
         developer_instructions=core.read_prompt(project, agent_name),
-        sandbox=cfg.get("sandbox"),
+        sandbox=sandbox_preset(cfg.get("sandbox")),
     )
     handle = thread.turn(prompt)
     usage, turn, final_text, last_text = None, None, None, None
@@ -115,6 +140,19 @@ def usage_of(usage, cfg: dict) -> tuple[int, int, float]:
     tok_in = int(getattr(last, "input_tokens", 0) or 0)
     tok_out = int(getattr(last, "output_tokens", 0) or 0)
     return tok_in, tok_out, core.estimate_cost(cfg, tok_in, tok_out)
+
+
+def cache_of(usage) -> tuple[int, int]:
+    """(read, written) cached prompt tokens, for the run's stats line.
+
+    Kept apart from `usage_of` because these are not priced: codex counts
+    cached tokens inside `input_tokens`, so charging them again would
+    double-count the turn.
+    """
+    last = getattr(usage, "last", None)
+    read = int(getattr(last, "cached_input_tokens", 0) or 0)
+    written = int(getattr(last, "cache_write_input_tokens", 0) or 0)
+    return read, written
 
 
 def run_daemon(
@@ -150,17 +188,19 @@ def run_daemon(
                 text, usage = run_agent(codex, project, agent_name, cfg, prompt, mono)
                 text = text.strip()
                 tok_in, tok_out, cost = usage_of(usage, cfg)
+                cache_read, cache_write = cache_of(usage)
             except Exception as exc:
                 mono.record("error", f"run failed: {exc}")
                 core.send_message(db, agent_name, core.HUMAN, task["id"], "blocker", f"run failed: {exc}")
                 core.update_task_status(db, task["id"], "blocked")
                 log(f"[{agent_name}] task {task['id']} failed: {exc}", error=True)
             else:
-                # keyword args: finish_task also takes cache and round counts,
+                # keyword args: finish_task also takes a tool-round count,
                 # which this backend does not report
                 core.finish_task(
                     db, agent_name, task["id"], text, started,
                     input_tokens=tok_in, output_tokens=tok_out, cost_usd=cost,
+                    cache_read_tokens=cache_read, cache_write_tokens=cache_write,
                 )
                 final = (core.get_task(db, task["id"]) or task)["status"]
                 mono.record("result", text, label=f"{final} - ${cost:.4f}, {tok_in}/{tok_out} tok")

@@ -3,7 +3,11 @@
 <div id="search-page">
   <h2>Search Project Knowledge</h2>
 
-  <form class="search-form" hx-get="/search" hx-target="body" hx-swap="innerHTML" hx-push-url="true">
+  {# /search answers with the whole page, so pull just this block out of it and
+     replace this block. Swapping the raw response into <body> duplicated the
+     layout (nav and all) on every search. #}
+  <form class="search-form" hx-get="/search" hx-target="#search-page"
+        hx-select="#search-page" hx-swap="outerHTML" hx-push-url="true">
     <div class="search-input-wrapper">
       <input type="text" name="q" placeholder="Enter search query..." aria-label="Search query"
              value="{{ query }}" required class="search-input">

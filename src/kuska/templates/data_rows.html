@@ -7,14 +7,14 @@
   {% for column, kind in fields %}
   <td class="{{ 'small' if kind == 'longtext' }}">
     {% if column == pk %}
-      <a href="#" hx-get="/data/{{ table }}/row?pk={{ row[pk] }}" hx-target="#row-editor" hx-swap="outerHTML">{{ row[column] }}</a>
+      <a href="/data/{{ table }}?open={{ row[pk] }}" hx-get="/data/{{ table }}?open={{ row[pk] }}" hx-target="#row-editor" hx-swap="outerHTML" hx-push-url="true">{{ row[column] }}</a>
     {% elif kind == 'ts' %}<span class="muted small">{{ ago(row[column]) }}</span>
     {% elif kind == 'longtext' and column in markdown_fields %}
       {% if row[column] %}
       <details style="cursor:pointer">
         <summary class="link" style="color:var(--muted); text-decoration:underline">View markdown content</summary>
         <div class="md" style="margin:.6rem 0; padding:.6rem; background:var(--shade); border-radius:6px; border:1px solid var(--line); font-size:.9rem; max-height:200px; overflow-y:auto">{{ md(row[column])|safe }}</div>
-        <a href="#" class="link small" hx-get="/data/{{ table }}/row?pk={{ row[pk] }}" hx-target="#row-editor" hx-swap="outerHTML" style="display:block; margin-top:.4rem">edit</a>
+        <a href="/data/{{ table }}?open={{ row[pk] }}" class="link small" hx-get="/data/{{ table }}?open={{ row[pk] }}" hx-target="#row-editor" hx-swap="outerHTML" hx-push-url="true" style="display:block; margin-top:.4rem">edit</a>
       </details>
       {% else %}
       <span class="muted">-</span>
@@ -33,10 +33,10 @@
 <div class="muted small" style="margin:.5rem 0">
   {{ offset + 1 if total else 0 }}-{{ [offset + limit, total]|min }} of {{ total }}
   {% if offset %}
-  <a href="#" hx-get="/data/{{ table }}/rows?offset={{ [offset - limit, 0]|max }}" hx-target="#rows" hx-swap="outerHTML">newer</a>
+  <a href="/data/{{ table }}?offset={{ [offset - limit, 0]|max }}" hx-get="/data/{{ table }}?offset={{ [offset - limit, 0]|max }}" hx-target="#rows" hx-swap="outerHTML" hx-push-url="true">newer</a>
   {% endif %}
   {% if offset + limit < total %}
-  <a href="#" hx-get="/data/{{ table }}/rows?offset={{ offset + limit }}" hx-target="#rows" hx-swap="outerHTML">older</a>
+  <a href="/data/{{ table }}?offset={{ offset + limit }}" hx-get="/data/{{ table }}?offset={{ offset + limit }}" hx-target="#rows" hx-swap="outerHTML" hx-push-url="true">older</a>
   {% endif %}
 </div>
 </div>

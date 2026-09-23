@@ -20,6 +20,7 @@ from .db import (
     now,
 )
 from .export import export_markdown
+from .markdown import as_markdown
 from .models import MODELS, Agent, Doc, Event, FileClaim, Message, Task, TaskDep
 from .project import (
     AGENT_FIELD_KEYS,

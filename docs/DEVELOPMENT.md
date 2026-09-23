@@ -146,21 +146,31 @@ Ctrl+C cleanly shuts down all services.
 
 ## Multi-Agent Context Passing (Phase 4.1)
 
-When building multi-agent workflows (planning → dev → review), agents can pass structured context forward to reduce token usage by 20-30%.
+When building multi-agent workflows (planning → dev → review), agents pass a handover report forward to reduce token usage by 20-30%.
+
+**Reports are Markdown, not JSON.** A doc is a document: the web UI renders it
+as Markdown and `export_markdown` folds it into `plan.md`, where a JSON dump
+reads as a wall of escaped quotes. `docs_set` (the agent tool) and
+`store_workflow_context` run their content through `markdown.as_markdown`,
+which rewrites a body that parses whole as JSON into headings and bullets and
+leaves prose untouched — a backstop, not a licence to emit JSON.
 
 ### How it works
 
-1. **Planning Agent** completes with `status="needs_approval"` and stores context:
+1. **Planning Agent** completes with `status="needs_approval"` and stores a report:
 ```python
-import json
-context = json.dumps({
-    "phase": 1,
-    "approach": "Your implementation strategy",
-    "key_decisions": ["Decision 1", "Decision 2"],
-    "files_to_modify": ["src/core.py"],
-    "critical_constraints": "Must maintain backward compatibility"
-})
-docs_set(db, f"task_{task_id}_planning-agent_context", context)
+report = """# Task 42: add the parser
+
+## Approach
+What we are going to do, and why this way.
+
+## Files to modify
+- `src/core.py` — where the new branch goes
+
+## Constraints
+Must stay backward compatible.
+"""
+docs_set(db, f"task_{task_id}_planning-agent_context", report)
 ```
 
 2. **Dev Agent** automatically receives this context in its prompt:
@@ -168,15 +178,21 @@ docs_set(db, f"task_{task_id}_planning-agent_context", context)
    - Skips re-parsing message history
    - Uses the context to guide implementation
 
-3. **Dev Agent** stores its own context for review:
+3. **Dev Agent** stores its own report for review:
 ```python
-dev_context = json.dumps({
-    "implementation_summary": "What you built",
-    "files_modified": ["src/core.py", "tests/test_core.py"],
-    "key_changes": ["Change 1: why it matters"],
-    "test_coverage": "Added 10 new unit tests"
-})
-docs_set(db, f"task_{task_id}_dev-agent_context", dev_context)
+dev_report = """# Task 42: add the parser
+
+## Summary
+What you built, and why.
+
+## Files changed
+- `src/core.py` — the new branch, and what it assumes
+- `tests/test_core.py` — ten checks covering it
+
+## Known issues
+None.
+"""
+docs_set(db, f"task_{task_id}_dev-agent_context", dev_report)
 ```
 
 4. **Review Agent** gets dev context for focused code review:

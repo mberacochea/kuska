@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from flask import Flask, make_response, render_template, request
+from flask_htmx import HTMX
 from markupsafe import escape
 from peewee import IntegrityError, PeeweeException, SqliteDatabase
 
@@ -60,6 +61,9 @@ from .store import (
     update_task_status,
 )
 
+# bound to the app in create_app(); reads the current request's HX-* headers
+htmx = HTMX()
+
 
 def _ago(ts: float | None) -> str:
     if not ts:
@@ -99,6 +103,23 @@ def _field_error_html(field: str, message: str) -> str:
 def _bad_request(fragment: str, field: str, message: str):
     """422 response: the fragment re-rendered as-is, plus a field error for htmx to display."""
     return make_response(fragment + _field_error_html(field, message), 422)
+
+
+def wants_fragment() -> bool:
+    """True when htmx is asking a page route for a fragment to swap into an element.
+
+    A page route serves two audiences: a browser navigating to the URL, which
+    needs the whole document, and htmx swapping part of the page in place,
+    which needs only the fragment its hx-target expects. Handing the full page
+    to an htmx swap is what nests a second copy of a table inside one of its
+    own rows.
+
+    htmx marks its requests with HX-Request, with one exception that matters
+    here: on back/forward it may re-request the URL with
+    HX-History-Restore-Request set, and it then replaces the entire body with
+    whatever comes back. That case wants the full page, so it is excluded.
+    """
+    return bool(htmx) and not htmx.history_restore_request
 
 
 def validate_task_title(title: str, db_handle: SqliteDatabase, task_id: int | None = None) -> str | None:
@@ -206,6 +227,7 @@ def validate_doc_content(content: str) -> str | None:
 
 def create_app(project_dir: Path):
     app = Flask(__name__)  # templates/ and static/ live beside this module
+    htmx.init_app(app)
     state: dict[str, Any] = {}
 
     # ========== State Management ==========
@@ -239,11 +261,11 @@ def create_app(project_dir: Path):
 
     # ========== Helper: Task Rendering ==========
 
-    def render_row(task: dict, expanded: bool = False) -> str:
+    def render_row(task: dict, expanded: bool = False, edit: bool = False) -> str:
         """Render a single task row - collapsed by default, or its full detail
         panel when expanded (used to land a search result open in place)."""
         if expanded:
-            return task_detail_panel(task)
+            return task_detail_panel(task, edit=edit)
         return render_template(
             "task_row.html",
             t=task,
@@ -258,16 +280,18 @@ def create_app(project_dir: Path):
         sort_by: str | None = None,
         sort_dir: str = "asc",
         open_task_id: int | None = None,
+        edit_task_id: bool = False,
     ) -> str:
         """Render the full task table. Defaults to all tasks, unfiltered, unsorted.
 
         open_task_id, if given, renders that one row already expanded - a link
         from elsewhere (e.g. a search result) can land directly on it.
+        edit_task_id, if True, renders the expanded row in edit mode.
         """
         return render_template(
             "tasks_table.html",
             tasks=tasks if tasks is not None else list_tasks(db()),
-            render_row=lambda t: render_row(t, expanded=(t["id"] == open_task_id)),
+            render_row=lambda t: render_row(t, expanded=(t["id"] == open_task_id), edit=(edit_task_id and t["id"] == open_task_id)),
             sort_by=sort_by,
             sort_dir=sort_dir,
         )
@@ -280,6 +304,7 @@ def create_app(project_dir: Path):
         sort_by: str | None = None,
         sort_dir: str = "asc",
         open_task_id: int | None = None,
+        edit_task_id: bool = False,
     ) -> str:
         """Render the task table together with its filter/sort controls.
 
@@ -288,10 +313,12 @@ def create_app(project_dir: Path):
         that knows the current filter/sort state, and re-renders it into the
         form on every response so there is no client-side state to keep in
         sync.
+
+        edit_task_id, if True, renders the expanded task in edit mode.
         """
         return render_template(
             "tasks_container.html",
-            tasks_table=tasks_table(tasks, sort_by, sort_dir, open_task_id),
+            tasks_table=tasks_table(tasks, sort_by, sort_dir, open_task_id, edit_task_id),
             agents=list_agents(db()),
             statuses=TASK_STATUSES,
             search=search,
@@ -453,6 +480,9 @@ def create_app(project_dir: Path):
         points the address bar at this same URL with the same query params,
         those two cases always render identically - there is no separate
         fragment-only endpoint that a reload could land on and get bare HTML.
+
+        ?open=<id> - Opens that task's detail panel
+        ?open=<id>&edit=1 - Opens that task's detail panel in edit mode
         """
         search = request.args.get("search", "").strip()
         status_list = request.args.getlist("status")
@@ -460,10 +490,11 @@ def create_app(project_dir: Path):
         sort_by = request.args.get("sort") or None
         sort_dir = request.args.get("direction", "asc")
         open_task_id = request.args.get("open", type=int)
+        edit_task = request.args.get("edit") == "1"
         filtered = filter_tasks(db(), search, status_list or None, agent_list or None, sort_by, sort_dir)
-        container = tasks_container(filtered, search, status_list, agent_list, sort_by, sort_dir, open_task_id)
+        container = tasks_container(filtered, search, status_list, agent_list, sort_by, sort_dir, open_task_id, edit_task)
 
-        if request.headers.get("HX-Request") == "true":
+        if wants_fragment():
             return container
 
         return render_template(
@@ -673,11 +704,23 @@ def create_app(project_dir: Path):
 
     @app.get("/agents")
     def agents_page() -> str:
-        """GET /agents - Display the agents page with status, activity, and file claims."""
+        """GET /agents - Display the agents page with status, activity, and file claims.
+
+        ?open=<name> pre-opens that agent's editor, so a link from elsewhere
+        (e.g. a search result) can land directly on it. An htmx click on an
+        agent name hits this same URL but only swaps #agent-editor, so it gets
+        the editor on its own; a browser landing on the URL gets the page with
+        the editor already open.
+        """
+        open_name = request.args.get("open", "")
+        agent_editor = editor(open_name) if open_name and any(a["name"] == open_name for a in list_agents(db())) else '<div id="agent-editor"></div>'
+        if open_name and wants_fragment():
+            return agent_editor
         return render_template(
             "agents.html",
             page="agents",
             agent_rows=agent_rows(),
+            agent_editor=agent_editor,
             activity=activity_tail(),
             claims=claims_panel(),
             backends=BACKENDS,
@@ -802,10 +845,14 @@ def create_app(project_dir: Path):
         """GET /docs - Display the shared docs page.
 
         ?open=<key> pre-opens that doc's editor, so a link from elsewhere
-        (e.g. a search result) can land directly on it.
+        (e.g. a search result) can land directly on it. An htmx click on a doc
+        key hits this same URL but only swaps #doc-editor, so it gets the
+        editor on its own.
         """
         open_key = request.args.get("open", "")
         editor = doc_editor(open_key) if open_key and docs_get(db(), open_key) is not None else '<div id="doc-editor"></div>'
+        if open_key and wants_fragment():
+            return editor
         return render_template("docs.html", page="docs", docs_table=docs_table(), doc_editor=editor)
 
     @app.post("/docs")
@@ -860,11 +907,39 @@ def create_app(project_dir: Path):
     @app.get("/data")
     @app.get("/data/<table>")
     def data_page(table: str = "tasks") -> str:
-        """GET /data[/<table>] - Display the generic data table browser/editor."""
+        """GET /data[/<table>] - Display the generic data table browser/editor.
+
+        ?open=<pk> pre-opens that row's editor, so a link from elsewhere
+        (e.g. a search result) can land directly on it.
+        ?offset=<n> pages through the rows.
+
+        Both are also hit by htmx from this page, each swapping a different
+        element: an ?open link swaps #row-editor, a pagination link swaps
+        #rows. Those two get their own fragment; a browser navigation gets the
+        whole page.
+        """
         if table not in tbl.TABLES:
             return render_template("data.html", page="data", tables=tbl.TABLES, table=None,
                                    note=f"no such table: {table}", insertable=[], types={}, rows="")
         spec = tbl.spec(table)
+        open_pk = request.args.get("open", "")
+        row_editor = render_template(
+            "row_editor.html",
+            table=table,
+            fields=tbl.fields(table),
+            editable=spec["editable"],
+            pk=tbl.pk_name(table),
+            pk_value=open_pk,
+            row=tbl.get_row(db(), table, open_pk) if open_pk else None,
+            md=md,
+            markdown_fields={"description", "payload", "body", "content"},
+        ) if open_pk and tbl.get_row(db(), table, open_pk) else '<div id="row-editor"></div>'
+
+        if wants_fragment():
+            if open_pk:
+                return row_editor
+            return data_rows(table, request.args.get("offset", 0, type=int))
+
         return render_template(
             "data.html",
             page="data",
@@ -874,6 +949,7 @@ def create_app(project_dir: Path):
             insertable=spec["insertable"],
             types=tbl.field_types(table),
             rows=data_rows(table, request.args.get("offset", 0, type=int)),
+            row_editor=row_editor,
         )
 
     @app.get("/data/<table>/markdown-preview")
@@ -957,8 +1033,7 @@ def create_app(project_dir: Path):
         tables_filter = request.args.getlist("tables[]")
 
         # Validate page number
-        if page < 1:
-            page = 1
+        page = max(page, 1)
 
         # All available tables for filtering
         all_tables = ["docs", "messages", "tasks", "events"]

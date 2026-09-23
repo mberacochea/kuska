@@ -4,7 +4,7 @@
 <tbody>
 {% for a in agents %}
 <tr>
-  <td><a href="#" hx-get="/agents/{{ a.name }}/context" hx-target="#agent-editor" hx-swap="outerHTML">{{ a.name }}</a></td>
+  <td><a href="/agents?open={{ a.name }}" hx-get="/agents?open={{ a.name }}" hx-target="#agent-editor" hx-swap="outerHTML" hx-push-url="true">{{ a.name }}</a></td>
   <td>{{ a.backend }}</td>
   <td>{{ models.get(a.name) or '-' }}</td>
   <td>{{ a.role }}</td>
