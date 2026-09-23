@@ -191,7 +191,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_init.set_defaults(func=cmd_init)
 
     p_serve = sub.add_parser("serve", help="Flask + HTMX web UI")
-    p_serve.add_argument("--host", default="0.0.0.0")
+    p_serve.add_argument("--host", default="127.0.0.1")
     p_serve.add_argument("--port", type=int, default=5055)
     p_serve.add_argument("--debug", action="store_true")
     p_serve.set_defaults(func=cmd_serve)
@@ -234,7 +234,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--agents",
         help="comma-separated agent names, or '*' for all (default: first configured agent)",
     )
-    p_run_all.add_argument("--host", default="0.0.0.0")
+    p_run_all.add_argument("--host", default="127.0.0.1")
     p_run_all.add_argument("--port", type=int, default=5055)
     p_run_all.add_argument("--poll-interval", type=float, default=2.0)
     p_run_all.set_defaults(func=cmd_run_all)

@@ -1,12 +1,20 @@
+{% macro sort_link(field, label, sort_by, sort_dir) %}
+{% set next_dir = 'desc' if sort_by == field and sort_dir == 'asc' else 'asc' %}
+<a href="#" class="sort-header"
+   hx-get="/tasks" hx-target="#tasks-container" hx-swap="outerHTML" hx-push-url="true"
+   hx-include="#task-filters-container"
+   hx-vals='{"sort": "{{ field }}", "direction": "{{ next_dir }}"}'
+   >{{ label }}{% if sort_by == field %} {{ '▲' if sort_dir == 'asc' else '▼' }}{% endif %}</a>
+{% endmacro %}
 <table id="tasks">
 <thead><tr>
   <th class="num">#</th>
-  <th><a href="#" class="sort-header" data-sort="title">Title</a></th>
-  <th><a href="#" class="sort-header" data-sort="assigned_to">Assigned</a></th>
-  <th><a href="#" class="sort-header" data-sort="status">Status</a></th>
+  <th>{{ sort_link('title', 'Title', sort_by, sort_dir) }}</th>
+  <th>{{ sort_link('assigned_to', 'Assigned', sort_by, sort_dir) }}</th>
+  <th>{{ sort_link('status', 'Status', sort_by, sort_dir) }}</th>
   <th>Waiting on</th>
-  <th><a href="#" class="sort-header" data-sort="created_at">Created</a></th>
-  <th><a href="#" class="sort-header" data-sort="updated_at">Updated</a></th>
+  <th>{{ sort_link('created_at', 'Created', sort_by, sort_dir) }}</th>
+  <th>{{ sort_link('updated_at', 'Updated', sort_by, sort_dir) }}</th>
   <th></th>
 </tr></thead>
 <tbody>
@@ -14,37 +22,3 @@
 {% if not tasks %}<tr><td colspan="8" class="muted">No tasks yet.</td></tr>{% endif %}
 </tbody>
 </table>
-
-<script>
-// Sorting functionality - uses currentSort and getFilterParams from layout.html
-
-function applySorting(field) {
-  // Toggle direction if clicking the same field
-  if (currentSort.field === field) {
-    currentSort.direction = currentSort.direction === 'asc' ? 'desc' : 'asc';
-  } else {
-    currentSort.field = field;
-    currentSort.direction = 'asc';
-  }
-
-  const params = getFilterParams();
-  const url = '/tasks/filtered' + (params.toString() ? '?' + params.toString() : '');
-
-  // Update URL without reload
-  window.history.replaceState({}, '', url);
-
-  // Fetch and update the task table
-  htmx.ajax('GET', url, {target: '#tasks', swap: 'outerHTML'});
-}
-
-// Setup sort header click handlers - add event listeners after a brief delay to ensure tasks_container is loaded
-setTimeout(function() {
-  document.querySelectorAll('.sort-header').forEach(header => {
-    header.addEventListener('click', function(e) {
-      e.preventDefault();
-      const field = this.getAttribute('data-sort');
-      applySorting(field);
-    });
-  });
-}, 100);
-</script>

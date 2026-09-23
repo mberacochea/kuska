@@ -3,7 +3,7 @@
 <div id="search-page">
   <h2>Search Project Knowledge</h2>
 
-  <form class="search-form" hx-get="/search" hx-target="body" hx-swap="innerHTML">
+  <form class="search-form" hx-get="/search" hx-target="body" hx-swap="innerHTML" hx-push-url="true">
     <div class="search-input-wrapper">
       <input type="text" name="q" placeholder="Enter search query..." aria-label="Search query"
              value="{{ query }}" required class="search-input">

@@ -21,7 +21,7 @@ from .project import agent_config, config_path, db_path, find_project
 def run_all(
     project_path: str | Path | None = None,
     agents: list[str] | None = None,
-    host: str = "0.0.0.0",
+    host: str = "127.0.0.1",
     port: int = 5055,
     poll_interval: float = 2.0,
 ) -> None:
@@ -30,7 +30,7 @@ def run_all(
     Args:
         project_path: Project directory (default: nearest .agents/)
         agents: List of agent names to run, or None for all configured agents, or ["*"]
-        host: Web server host (default: 0.0.0.0)
+        host: Web server host (default: 127.0.0.1)
         port: Web server port (default: 5055)
         poll_interval: Daemon poll interval in seconds
     """

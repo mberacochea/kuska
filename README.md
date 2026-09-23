@@ -31,7 +31,7 @@ uv run kuska run-all         # run web server + MCP + agents
 **Manual / step-by-step:**
 ```bash
 uv run kuska init            # create .agents/ here
-uv run kuska serve           # web UI on http://0.0.0.0:5055
+uv run kuska serve           # web UI on http://127.0.0.1:5055
 uv run kuska daemon dev-agent    # run that agent (backend read from config.toml)
 ```
 

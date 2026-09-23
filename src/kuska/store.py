@@ -250,6 +250,63 @@ def list_tasks(db: SqliteDatabase, status: str | None = None) -> list[dict]:
 
 
 @bound
+def filter_tasks(
+    db: SqliteDatabase,
+    search: str = "",
+    status: list[str] | None = None,
+    agent: list[str] | None = None,
+    sort_by: str | None = None,
+    sort_dir: str = "asc",
+) -> list[dict]:
+    """Filter and sort tasks by search query, status, assigned agent, and sort field.
+
+    Args:
+        db: SqliteDatabase instance for this project.
+        search: Case-insensitive substring match against title or description.
+        status: Optional list of statuses to include (default: all).
+        agent: Optional list of assigned agent names to include. An empty
+               string in the list also matches unassigned tasks.
+        sort_by: One of "title", "assigned_to", "status", "created_at",
+                 "updated_at". Defaults to updated_at desc, created_at desc.
+        sort_dir: "asc" or "desc" (only used with sort_by).
+
+    Returns:
+        list[dict]: Matching task records.
+    """
+    query = Task.select()
+
+    search = search.strip()
+    if search:
+        query = query.where(Task.title.contains(search) | Task.description.contains(search))
+
+    if status:
+        query = query.where(Task.status.in_(status))
+
+    if agent:
+        if "" in agent:
+            query = query.where(Task.assigned_to.in_(agent) | Task.assigned_to.is_null())
+        else:
+            query = query.where(Task.assigned_to.in_(agent))
+
+    sort_fields = {
+        "title": fn.LOWER(fn.COALESCE(Task.title, "")),
+        "assigned_to": fn.COALESCE(Task.assigned_to, ""),
+        "status": fn.COALESCE(Task.status, ""),
+        "created_at": fn.COALESCE(Task.created_at, 0),
+        "updated_at": fn.COALESCE(Task.updated_at, 0),
+    }
+    field = sort_fields.get(sort_by)
+    if field is not None:
+        query = query.order_by(field.desc() if sort_dir == "desc" else field.asc())
+    else:
+        query = query.order_by(
+            fn.COALESCE(Task.updated_at, 0).desc(), fn.COALESCE(Task.created_at, 0).desc()
+        )
+
+    return rows(query)
+
+
+@bound
 def get_task(db: SqliteDatabase, task_id: int) -> dict | None:
     """Fetch a single task by ID.
 

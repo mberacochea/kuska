@@ -7,5 +7,5 @@
   <input type="text" name="key" placeholder="Doc key (alphanumeric, -, _)" aria-label="Doc key" required>
   <button class="primary" type="submit">Create</button>
 </form>
-<div id="doc-editor"></div>
+{{ doc_editor|safe }}
 {% endblock %}

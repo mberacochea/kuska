@@ -13,16 +13,16 @@
   <div class="search-result-content">
     <div class="search-result-title">
       {% if result.table == 'tasks' %}
-      <a href="#" hx-get="/tasks/{{ result.id }}/detail" hx-target="#task-detail" hx-swap="outerHTML" class="link">
+      <a href="/tasks?open={{ result.id }}#task-{{ result.id }}" class="link">
         {{ result.title[:60] }}{% if result.title|length > 60 %}...{% endif %}
       </a>
       {% elif result.table == 'docs' %}
-      <a href="#" hx-get="/docs/{{ result.id }}" hx-target="#doc-editor" hx-swap="outerHTML" class="link">
+      <a href="/docs?open={{ result.metadata.key }}#doc-editor" class="link">
         {{ result.title[:60] }}{% if result.title|length > 60 %}...{% endif %}
       </a>
       {% elif result.table == 'events' %}
       {% if result.metadata and result.metadata.task_id %}
-      <a href="#" hx-get="/tasks/{{ result.metadata.task_id }}/detail" hx-target="#task-detail" hx-swap="outerHTML" class="link">
+      <a href="/tasks?open={{ result.metadata.task_id }}#task-{{ result.metadata.task_id }}" class="link">
         {{ result.title[:60] }}{% if result.title|length > 60 %}...{% endif %}
       </a>
       {% else %}

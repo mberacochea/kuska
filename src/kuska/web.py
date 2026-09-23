@@ -7,9 +7,11 @@ build step and no bundler."""
 from __future__ import annotations
 
 import re
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from flask import Flask, make_response, render_template, request
 from markupsafe import escape
 from peewee import IntegrityError, PeeweeException, SqliteDatabase
 
@@ -18,6 +20,7 @@ from .db import HUMAN, TASK_STATUSES, connect, init_db, now
 from .export import _fmt_ts, export_markdown
 from .markdown import PROSE_KINDS
 from .markdown import render as md
+from .models import MODELS, Message
 from .project import (
     AGENT_FIELDS,
     db_path,
@@ -40,6 +43,7 @@ from .store import (
     docs_get,
     docs_list,
     docs_set,
+    filter_tasks,
     full_text_search,
     get_task,
     list_agents,
@@ -90,6 +94,11 @@ def _error_response(field: str, message: str) -> dict[str, Any]:
 def _field_error_html(field: str, message: str) -> str:
     """Return HTML for a form field error."""
     return f'<div class="field-error" role="alert" aria-live="polite" data-field="{escape(field)}">{escape(message)}</div>'
+
+
+def _bad_request(fragment: str, field: str, message: str):
+    """422 response: the fragment re-rendered as-is, plus a field error for htmx to display."""
+    return make_response(fragment + _field_error_html(field, message), 422)
 
 
 def validate_task_title(title: str, db_handle: SqliteDatabase, task_id: int | None = None) -> str | None:
@@ -196,9 +205,6 @@ def validate_doc_content(content: str) -> str | None:
 
 
 def create_app(project_dir: Path):
-    from flask import Flask, render_template, request
-    from markupsafe import escape
-
     app = Flask(__name__)  # templates/ and static/ live beside this module
     state: dict[str, Any] = {}
 
@@ -233,8 +239,11 @@ def create_app(project_dir: Path):
 
     # ========== Helper: Task Rendering ==========
 
-    def render_row(task: dict) -> str:
-        """Render a single task row for the task table."""
+    def render_row(task: dict, expanded: bool = False) -> str:
+        """Render a single task row - collapsed by default, or its full detail
+        panel when expanded (used to land a search result open in place)."""
+        if expanded:
+            return task_detail_panel(task)
         return render_template(
             "task_row.html",
             t=task,
@@ -244,63 +253,53 @@ def create_app(project_dir: Path):
             ago=_ago,
         )
 
-    def tasks_table() -> str:
-        """Render the full task table with all tasks."""
-        return render_template("tasks_table.html", tasks=list_tasks(db()), render_row=render_row)
+    def tasks_table(
+        tasks: list[dict] | None = None,
+        sort_by: str | None = None,
+        sort_dir: str = "asc",
+        open_task_id: int | None = None,
+    ) -> str:
+        """Render the full task table. Defaults to all tasks, unfiltered, unsorted.
 
-    def tasks_container() -> str:
-        """Render the task table with polling container."""
+        open_task_id, if given, renders that one row already expanded - a link
+        from elsewhere (e.g. a search result) can land directly on it.
+        """
         return render_template(
-            "tasks_container.html",
-            tasks_table=tasks_table(),
-            agents=list_agents(db()),
-            statuses=TASK_STATUSES,
+            "tasks_table.html",
+            tasks=tasks if tasks is not None else list_tasks(db()),
+            render_row=lambda t: render_row(t, expanded=(t["id"] == open_task_id)),
+            sort_by=sort_by,
+            sort_dir=sort_dir,
         )
 
-    def filter_tasks(search: str = "", status: list[str] | None = None, agent: list[str] | None = None,
-                     sort_by: str | None = None, sort_dir: str = "asc") -> list[dict]:
-        """Filter and sort tasks by search query, status, assigned agent, and sort field."""
-        tasks = list_tasks(db())
+    def tasks_container(
+        tasks: list[dict] | None = None,
+        search: str = "",
+        status_list: list[str] | None = None,
+        agent_list: list[str] | None = None,
+        sort_by: str | None = None,
+        sort_dir: str = "asc",
+        open_task_id: int | None = None,
+    ) -> str:
+        """Render the task table together with its filter/sort controls.
 
-        # Filter by search term (case-insensitive, matches title or description)
-        if search.strip():
-            search_lower = search.lower()
-            tasks = [
-                t for t in tasks
-                if search_lower in t.get("title", "").lower()
-                or search_lower in t.get("description", "").lower()
-            ]
-
-        # Filter by status (if provided, default is all)
-        if status:
-            tasks = [t for t in tasks if t["status"] in status]
-
-        # Filter by assigned agent (if provided, default is all)
-        if agent:
-            # Include both assigned and unassigned if empty string is in agent list
-            if "" in agent:
-                tasks = [t for t in tasks if t.get("assigned_to") in agent or t.get("assigned_to") is None]
-            else:
-                tasks = [t for t in tasks if t.get("assigned_to") in agent]
-
-        # Apply sorting
-        if sort_by:
-            reverse = sort_dir == "desc"
-            if sort_by == "title":
-                tasks = sorted(tasks, key=lambda t: (t.get("title") or "").lower(), reverse=reverse)
-            elif sort_by == "assigned_to":
-                tasks = sorted(tasks, key=lambda t: t.get("assigned_to") or "", reverse=reverse)
-            elif sort_by == "status":
-                tasks = sorted(tasks, key=lambda t: t.get("status") or "", reverse=reverse)
-            elif sort_by == "created_at":
-                tasks = sorted(tasks, key=lambda t: t.get("created_at") or 0, reverse=reverse)
-            elif sort_by == "updated_at":
-                tasks = sorted(tasks, key=lambda t: t.get("updated_at") or 0, reverse=reverse)
-        else:
-            # Default sort: by updated_at descending (most recent first), then by created_at descending
-            tasks = sorted(tasks, key=lambda t: (t.get("updated_at") or 0, t.get("created_at") or 0), reverse=True)
-
-        return tasks
+        The controls are plain htmx-driven form fields that GET /tasks
+        themselves (see tasks_container.html) - the server is the only place
+        that knows the current filter/sort state, and re-renders it into the
+        form on every response so there is no client-side state to keep in
+        sync.
+        """
+        return render_template(
+            "tasks_container.html",
+            tasks_table=tasks_table(tasks, sort_by, sort_dir, open_task_id),
+            agents=list_agents(db()),
+            statuses=TASK_STATUSES,
+            search=search,
+            status_list=status_list or [],
+            agent_list=agent_list or [],
+            sort_by=sort_by or "",
+            sort_dir=sort_dir,
+        )
 
     def dependency_candidates(task: dict) -> list[dict]:
         """Return tasks that this task could depend on (excluding itself and existing deps)."""
@@ -444,13 +443,35 @@ def create_app(project_dir: Path):
 
     @app.get("/tasks")
     def tasks_page() -> str:
-        """GET /tasks - Display the dedicated tasks page with filtering and sorting."""
+        """GET /tasks - the tasks page, and also the target of every filter,
+        sort, and reload control on it.
+
+        Those controls hx-get this same URL. htmx marks its own requests with
+        the HX-Request header, so a plain browser navigation (first load,
+        reload, back/forward) gets the full page, while an htmx-issued request
+        gets just the tasks-container fragment to swap in. Since hx-push-url
+        points the address bar at this same URL with the same query params,
+        those two cases always render identically - there is no separate
+        fragment-only endpoint that a reload could land on and get bare HTML.
+        """
+        search = request.args.get("search", "").strip()
+        status_list = request.args.getlist("status")
+        agent_list = request.args.getlist("agent")
+        sort_by = request.args.get("sort") or None
+        sort_dir = request.args.get("direction", "asc")
+        open_task_id = request.args.get("open", type=int)
+        filtered = filter_tasks(db(), search, status_list or None, agent_list or None, sort_by, sort_dir)
+        container = tasks_container(filtered, search, status_list, agent_list, sort_by, sort_dir, open_task_id)
+
+        if request.headers.get("HX-Request") == "true":
+            return container
+
         return render_template(
             "tasks.html",
             page="tasks",
             agents=list_agents(db()),
             statuses=TASK_STATUSES,
-            tasks_container=tasks_container(),
+            tasks_container=container,
         )
 
     @app.post("/description")
@@ -479,8 +500,6 @@ def create_app(project_dir: Path):
     @app.post("/tasks")
     def create_task() -> tuple[str, int]:
         """POST /tasks - Create a new task."""
-        from flask import make_response
-
         title = request.form.get("title", "").strip()
         description = request.form.get("description", "").strip()
         assigned_to = request.form.get("assigned_to") or None
@@ -488,34 +507,28 @@ def create_app(project_dir: Path):
         # Validate title
         title_error = validate_task_title(title, db())
         if title_error:
-            response = tasks_container() + _field_error_html("title", title_error)
-            return make_response(response, 422)
+            return _bad_request(tasks_container(), "title", title_error)
 
         # Validate description
         desc_error = validate_task_description(description)
         if desc_error:
-            response = tasks_container() + _field_error_html("description", desc_error)
-            return make_response(response, 422)
+            return _bad_request(tasks_container(), "description", desc_error)
 
         # Validate assigned_to
         agent_error = validate_task_assigned_to(assigned_to, db())
         if agent_error:
-            response = tasks_container() + _field_error_html("assigned_to", agent_error)
-            return make_response(response, 422)
+            return _bad_request(tasks_container(), "assigned_to", agent_error)
 
         try:
             add_task(db(), title, description, assigned_to)
         except (ValueError, IntegrityError) as exc:
-            response = tasks_container() + _field_error_html("form", f"Failed to create task: {exc}")
-            return make_response(response, 422)
+            return _bad_request(tasks_container(), "form", f"Failed to create task: {exc}")
 
         return tasks_container(), 200
 
     @app.post("/tasks/<int:task_id>")
     def patch_task(task_id: int) -> tuple[str, int]:
         """POST /tasks/<id> - Update task fields (title, description, assigned_to, status)."""
-        from flask import make_response
-
         task = get_task(db(), task_id)
         if not task:
             return "", 404
@@ -526,29 +539,25 @@ def create_app(project_dir: Path):
         if "title" in fields:
             title_error = validate_task_title(fields["title"], db(), task_id)
             if title_error:
-                response = task_detail_panel(task, edit=True) + _field_error_html("title", title_error)
-                return make_response(response, 422)
+                return _bad_request(task_detail_panel(task, edit=True), "title", title_error)
 
         # Validate description if provided
         if "description" in fields:
             desc_error = validate_task_description(fields["description"])
             if desc_error:
-                response = task_detail_panel(task, edit=True) + _field_error_html("description", desc_error)
-                return make_response(response, 422)
+                return _bad_request(task_detail_panel(task, edit=True), "description", desc_error)
 
         # Validate assigned_to if provided
         if "assigned_to" in fields:
             assigned_to = fields["assigned_to"] or None
             agent_error = validate_task_assigned_to(assigned_to, db())
             if agent_error:
-                response = task_detail_panel(task, edit=True) + _field_error_html("assigned_to", agent_error)
-                return make_response(response, 422)
+                return _bad_request(task_detail_panel(task, edit=True), "assigned_to", agent_error)
 
         try:
             update_task(db(), task_id, **fields)
         except (ValueError, IntegrityError) as exc:
-            response = task_detail_panel(task, edit=True) + _field_error_html("form", f"Failed to update task: {exc}")
-            return make_response(response, 422)
+            return _bad_request(task_detail_panel(task, edit=True), "form", f"Failed to update task: {exc}")
 
         task = get_task(db(), task_id)
         if not task:
@@ -583,8 +592,6 @@ def create_app(project_dir: Path):
     @app.post("/tasks/<int:task_id>/deps")
     def add_task_dependency(task_id: int) -> tuple[str, int]:
         """POST /tasks/<id>/deps - Add a task dependency."""
-        from flask import make_response
-
         task = get_task(db(), task_id)
         if not task:
             return "", 404
@@ -592,39 +599,33 @@ def create_app(project_dir: Path):
         try:
             dep_id = int(request.form.get("depends_on", 0))
         except (ValueError, TypeError):
-            response = task_detail_panel(task) + _field_error_html("depends_on", "Invalid dependency ID")
-            return make_response(response, 422)
+            return _bad_request(task_detail_panel(task), "depends_on", "Invalid dependency ID")
 
         # Validate self-dependency
         if dep_id == task_id:
-            response = task_detail_panel(task) + _field_error_html("depends_on", "Task cannot depend on itself")
-            return make_response(response, 422)
+            return _bad_request(task_detail_panel(task), "depends_on", "Task cannot depend on itself")
 
         # Validate task exists
         dep_task = get_task(db(), dep_id)
         if not dep_task:
-            response = task_detail_panel(task) + _field_error_html("depends_on", f"Task {dep_id} not found")
-            return make_response(response, 422)
+            return _bad_request(task_detail_panel(task), "depends_on", f"Task {dep_id} not found")
 
         # Check for circular dependency
         existing_deps = {d["id"] for d in task_dependencies(db(), task_id)}
         if dep_id in existing_deps:
-            response = task_detail_panel(task) + _field_error_html("depends_on", "Dependency already exists")
-            return make_response(response, 422)
+            return _bad_request(task_detail_panel(task), "depends_on", "Dependency already exists")
 
         # Check if adding this dependency would create a cycle
         # (if dep_task already depends on task_id, adding task_id->dep_id would create a cycle)
         dep_task_deps = {d["id"] for d in task_dependencies(db(), dep_id)}
         if task_id in dep_task_deps:
-            response = task_detail_panel(task) + _field_error_html("depends_on",
+            return _bad_request(task_detail_panel(task), "depends_on",
                 f"Would create a circular dependency: task {dep_id} already depends on this task")
-            return make_response(response, 422)
 
         try:
             add_dependency(db(), task_id, dep_id)
         except (ValueError, PeeweeException) as exc:
-            response = task_detail_panel(task) + _field_error_html("depends_on", str(exc))
-            return make_response(response, 422)
+            return _bad_request(task_detail_panel(task), "depends_on", str(exc))
 
         return task_detail_panel(get_task(db(), task_id)), 200
 
@@ -668,26 +669,6 @@ def create_app(project_dir: Path):
             return ""
         return task_detail_panel(task, edit=request.args.get("edit") == "1")
 
-    @app.get("/tasks/table")
-    def get_tasks_table() -> str:
-        """GET /tasks/table - Get the tasks table for live polling."""
-        return tasks_table()
-
-    @app.get("/tasks/filtered")
-    def get_filtered_tasks() -> str:
-        """GET /tasks/filtered - Get filtered and sorted tasks based on query parameters."""
-        search = request.args.get("search", "").strip()
-        status_list = request.args.getlist("status")
-        agent_list = request.args.getlist("agent")
-        sort_by = request.args.get("sort")
-        sort_dir = request.args.get("direction", "asc")
-
-        # Get filtered and sorted tasks
-        filtered = filter_tasks(search, status_list or None, agent_list or None, sort_by, sort_dir)
-
-        # Render the filtered table
-        return render_template("tasks_table.html", tasks=filtered, render_row=render_row)
-
     # ========== ROUTES: Agents ==========
 
     @app.get("/agents")
@@ -721,16 +702,13 @@ def create_app(project_dir: Path):
     @app.post("/agents")
     def create_agent() -> tuple[str, int]:
         """POST /agents - Create a new agent with the given configuration."""
-        from flask import make_response
-
         name = request.form.get("name", "").strip()
         existing = {a["name"] for a in list_agents(db())}
 
         # Validate agent name
         name_error = validate_agent_name(name, existing)
         if name_error:
-            response = agent_rows() + _field_error_html("name", name_error)
-            return make_response(response, 422)
+            return _bad_request(agent_rows(), "name", name_error)
 
         # Validate required fields
         backend = request.form.get("backend", "").strip()
@@ -739,39 +717,32 @@ def create_app(project_dir: Path):
 
         backend_error = validate_agent_backend(backend)
         if backend_error:
-            response = agent_rows() + _field_error_html("backend", backend_error)
-            return make_response(response, 422)
+            return _bad_request(agent_rows(), "backend", backend_error)
 
         model_error = validate_agent_model(model)
         if model_error:
-            response = agent_rows() + _field_error_html("model", model_error)
-            return make_response(response, 422)
+            return _bad_request(agent_rows(), "model", model_error)
 
         role_error = validate_agent_role(role)
         if role_error:
-            response = agent_rows() + _field_error_html("role", role_error)
-            return make_response(response, 422)
+            return _bad_request(agent_rows(), "role", role_error)
 
         # Validate prices if provided
         price_error = validate_agent_prices(request.form.to_dict())
         if price_error:
-            response = agent_rows() + _field_error_html("prices", price_error)
-            return make_response(response, 422)
+            return _bad_request(agent_rows(), "prices", price_error)
 
         try:
             set_agent_config(state["project"], name, request.form.to_dict())
             sync_agents_from_config(db(), state["project"])
         except (ValueError, OSError) as exc:
-            response = agent_rows() + _field_error_html("form", f"Failed to create agent: {exc}")
-            return make_response(response, 422)
+            return _bad_request(agent_rows(), "form", f"Failed to create agent: {exc}")
 
         return rows_with_toast(f"added {name}"), 200
 
     @app.post("/agents/<name>")
     def save_agent(name: str) -> tuple[str, int]:
         """POST /agents/<name> - Save agent configuration (backend, model, role, etc)."""
-        from flask import make_response
-
         # Validate required fields if provided
         backend = request.form.get("backend", "").strip()
         model = request.form.get("model", "").strip()
@@ -780,32 +751,27 @@ def create_app(project_dir: Path):
         if backend:
             backend_error = validate_agent_backend(backend)
             if backend_error:
-                response = agent_rows() + _field_error_html("backend", backend_error)
-                return make_response(response, 422)
+                return _bad_request(agent_rows(), "backend", backend_error)
 
         if model:
             model_error = validate_agent_model(model)
             if model_error:
-                response = agent_rows() + _field_error_html("model", model_error)
-                return make_response(response, 422)
+                return _bad_request(agent_rows(), "model", model_error)
 
         if role:
             role_error = validate_agent_role(role)
             if role_error:
-                response = agent_rows() + _field_error_html("role", role_error)
-                return make_response(response, 422)
+                return _bad_request(agent_rows(), "role", role_error)
 
         # Validate prices if provided
         price_error = validate_agent_prices(request.form.to_dict())
         if price_error:
-            response = agent_rows() + _field_error_html("prices", price_error)
-            return make_response(response, 422)
+            return _bad_request(agent_rows(), "prices", price_error)
 
         try:
             set_agent_config(state["project"], name, request.form.to_dict())
         except (ValueError, OSError) as exc:
-            response = agent_rows() + _field_error_html("form", f"Failed to save agent settings: {exc}")
-            return make_response(response, 422)
+            return _bad_request(agent_rows(), "form", f"Failed to save agent settings: {exc}")
 
         sync_agents_from_config(db(), state["project"])
         return rows_with_toast(f"{name} settings saved - restart its daemon to pick them up"), 200
@@ -817,11 +783,6 @@ def create_app(project_dir: Path):
         freed = delete_agent(db(), name)
         note = f" ({freed} task{'s' if freed != 1 else ''} unassigned)" if freed else ""
         return rows_with_toast(f"removed {name}{note}") + '<div id="agent-editor" hx-swap-oob="true"></div>'
-
-    @app.get("/agents/close")
-    def close_editor() -> str:
-        """GET /agents/close - Close the agent editor panel."""
-        return '<div id="agent-editor"></div>'
 
     @app.get("/agents/<name>/context")
     def get_context(name: str) -> str:
@@ -838,36 +799,33 @@ def create_app(project_dir: Path):
 
     @app.get("/docs")
     def docs_page() -> str:
-        """GET /docs - Display the shared docs page."""
-        return render_template("docs.html", page="docs", docs_table=docs_table())
+        """GET /docs - Display the shared docs page.
+
+        ?open=<key> pre-opens that doc's editor, so a link from elsewhere
+        (e.g. a search result) can land directly on it.
+        """
+        open_key = request.args.get("open", "")
+        editor = doc_editor(open_key) if open_key and docs_get(db(), open_key) is not None else '<div id="doc-editor"></div>'
+        return render_template("docs.html", page="docs", docs_table=docs_table(), doc_editor=editor)
 
     @app.post("/docs")
     def create_doc() -> tuple[str, int]:
         """POST /docs - Create a new doc with the given key."""
-        from flask import make_response
-
         key = request.form.get("key", "").strip()
         existing = {d["key"] for d in docs_list(db())}
 
         # Validate doc key
         key_error = validate_doc_key(key, existing)
         if key_error:
-            response = docs_table() + _field_error_html("key", key_error)
-            return make_response(response, 422)
+            return _bad_request(docs_table(), "key", key_error)
 
         try:
             if docs_get(db(), key) is None:
                 docs_set(db(), key, "", HUMAN)
         except (ValueError, OSError) as exc:
-            response = docs_table() + _field_error_html("form", f"Failed to create doc: {exc}")
-            return make_response(response, 422)
+            return _bad_request(docs_table(), "form", f"Failed to create doc: {exc}")
 
         return doc_editor(key), 200
-
-    @app.get("/docs/close")
-    def close_doc() -> str:
-        """GET /docs/close - Close the doc editor panel."""
-        return '<div id="doc-editor"></div>'
 
     @app.get("/docs/<key>")
     def read_doc(key: str) -> str:
@@ -877,21 +835,17 @@ def create_app(project_dir: Path):
     @app.post("/docs/<key>")
     def save_doc(key: str) -> tuple[str, int]:
         """POST /docs/<key> - Save doc content."""
-        from flask import make_response
-
         content = request.form.get("content", "")
 
         # Validate content length
         content_error = validate_doc_content(content)
         if content_error:
-            response = doc_editor(key) + _field_error_html("content", content_error)
-            return make_response(response, 422)
+            return _bad_request(doc_editor(key), "content", content_error)
 
         try:
             docs_set(db(), key, content, HUMAN)
         except (ValueError, OSError) as exc:
-            response = doc_editor(key) + _field_error_html("form", f"Failed to save doc: {exc}")
-            return make_response(response, 422)
+            return _bad_request(doc_editor(key), "form", f"Failed to save doc: {exc}")
 
         return docs_table(), 200
 
@@ -922,11 +876,6 @@ def create_app(project_dir: Path):
             rows=data_rows(table, request.args.get("offset", 0, type=int)),
         )
 
-    @app.get("/data/close")
-    def close_row() -> str:
-        """GET /data/close - Close the row editor panel."""
-        return '<div id="row-editor"></div>'
-
     @app.get("/data/<table>/markdown-preview")
     def markdown_preview(table: str) -> str:
         """GET /data/<table>/markdown-preview - Show fullscreen markdown preview for a field."""
@@ -945,11 +894,6 @@ def create_app(project_dir: Path):
             content=content,
             md=md,
         )
-
-    @app.get("/data/close-markdown")
-    def close_markdown() -> str:
-        """GET /data/close-markdown - Close the markdown preview modal."""
-        return '<div id="markdown-modal"></div>'
 
     @app.get("/data/<table>/rows")
     def data_rows_fragment(table: str) -> str:
@@ -1008,8 +952,6 @@ def create_app(project_dir: Path):
     @app.get("/search")
     def search_page() -> str:
         """GET /search - Display search page with results."""
-        from flask import make_response
-
         query = request.args.get("q", "").strip()
         page = request.args.get("page", 1, type=int)
         tables_filter = request.args.getlist("tables[]")
@@ -1061,73 +1003,15 @@ def create_app(project_dir: Path):
             error_msg=error_msg,
         )
 
-    @app.get("/search/results")
-    def search_results() -> tuple[str, int]:
-        """GET /search/results - AJAX endpoint for search result pagination."""
-        from flask import make_response
-
-        query = request.args.get("q", "").strip()
-        page = request.args.get("page", 1, type=int)
-        tables_filter = request.args.getlist("tables[]")
-
-        # Validate page number
-        if page < 1:
-            page = 1
-
-        # All available tables for filtering
-        all_tables = ["docs", "messages", "tasks", "events"]
-        tables_selected = [t for t in tables_filter if t in all_tables] or all_tables
-
-        # Validate query
-        if not query or len(query.strip()) < 2:
-            response = _field_error_html("search", "Query must be at least 2 characters")
-            return make_response(response, 422)
-
-        if len(query) > 1000:
-            response = _field_error_html("search", "Query must be no more than 1000 characters")
-            return make_response(response, 422)
-
-        # Execute search
-        try:
-            limit = 20
-            offset = (page - 1) * limit
-            results = full_text_search(
-                db(),
-                query,
-                tables=tables_selected if tables_selected != all_tables else None,
-                limit=limit,
-                offset=offset
-            )
-        except ValueError as e:
-            response = _field_error_html("search", str(e))
-            return make_response(response, 422)
-        except Exception as e:
-            response = _field_error_html("search", f"Search failed: {e}")
-            return make_response(response, 422)
-
-        # Render results fragment
-        return render_template(
-            "search_results.html",
-            results=results,
-            query=query,
-            current_page=page,
-            limit=20,
-            tables_selected=tables_selected,
-        ), 200
-
     # ========== ROUTES: Stats Dashboard ==========
 
     def compute_stats() -> dict[str, Any]:
         """Compute all metrics for the stats dashboard."""
-        from collections import defaultdict
-
         tasks = list_tasks(db())
         agents = list_agents(db())
         usage = token_usage_by_agent(db())
-        messages = task_messages(db(), None) if hasattr(task_messages, '__self__') else []
 
         # Fetch all messages directly from db
-        from .models import MODELS, Message
         with db().bind_ctx(MODELS):
             all_messages = list(Message.select())
             messages_list = [{"ts": m.ts, "sender": m.sender, "task_id": m.task_id,

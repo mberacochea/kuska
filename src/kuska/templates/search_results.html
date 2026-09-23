@@ -1,4 +1,4 @@
-<div id="search-results-table">
+<div>
 {% if results %}
 <div class="search-results-container">
   <div class="search-results-header">
@@ -57,12 +57,12 @@
   <div class="search-pagination">
     <span class="muted small">Page {{ current_page }}</span>
     {% if current_page > 1 %}
-    <a href="#" hx-get="/search/results?q={{ query }}&page={{ current_page - 1 }}{% for t in tables_selected %}&tables[]={{ t }}{% endfor %}"
-       hx-target="#search-results-table" hx-swap="outerHTML" class="link">← Previous</a>
+    <a href="/search?q={{ query|urlencode }}&page={{ current_page - 1 }}{% for t in tables_selected %}&tables[]={{ t }}{% endfor %}"
+       class="link">← Previous</a>
     {% endif %}
     {% if results|length >= limit %}
-    <a href="#" hx-get="/search/results?q={{ query }}&page={{ current_page + 1 }}{% for t in tables_selected %}&tables[]={{ t }}{% endfor %}"
-       hx-target="#search-results-table" hx-swap="outerHTML" class="link">Next →</a>
+    <a href="/search?q={{ query|urlencode }}&page={{ current_page + 1 }}{% for t in tables_selected %}&tables[]={{ t }}{% endfor %}"
+       class="link">Next →</a>
     {% endif %}
   </div>
 </div>

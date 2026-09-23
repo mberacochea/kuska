@@ -1,6 +1,6 @@
 <div id="agent-editor">
 <h2>{{ name }} - settings <span class="muted">(.agents/config.toml)</span>
-  <a href="#" class="link" hx-get="/agents/close" hx-target="#agent-editor" hx-swap="outerHTML">close</a></h2>
+  <a href="#" class="link" onclick="closePanel('agent-editor'); return false;">close</a></h2>
 <form hx-post="/agents/{{ name }}" hx-target="#agent-rows" hx-swap="outerHTML">
   <div class="fields">
   {% for f in fields %}

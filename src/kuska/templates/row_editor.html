@@ -1,6 +1,6 @@
 <div id="row-editor">
 <h2>{{ table }} <span class="muted">{{ pk }}={{ pk_value }}</span>
-  <a href="#" class="link" hx-get="/data/close" hx-target="#row-editor" hx-swap="outerHTML">close</a></h2>
+  <a href="#" class="link" onclick="closePanel('row-editor'); return false;">close</a></h2>
 <form hx-post="/data/{{ table }}/row?pk={{ pk_value }}" hx-target="#rows" hx-swap="outerHTML">
   <div class="fields">
   {% for column, kind in fields %}

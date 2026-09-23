@@ -1,6 +1,6 @@
 <div id="doc-editor">
 <h2>{{ key }}
-  <a href="#" class="link" hx-get="/docs/close" hx-target="#doc-editor" hx-swap="outerHTML">close</a></h2>
+  <a href="#" class="link" onclick="closePanel('doc-editor'); return false;">close</a></h2>
 <form hx-post="/docs/{{ key }}" hx-target="#docs" hx-swap="outerHTML">
   <div class="form-group">
     <label for="doc-content-{{ key }}">Content</label>

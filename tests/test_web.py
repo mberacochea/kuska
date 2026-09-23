@@ -244,7 +244,6 @@ def test_web(project: Path) -> None:
     check("said so", "1 task unassigned" in removed, removed[-200:])
     check("editor cleared out-of-band", 'id="agent-editor" hx-swap-oob="true"' in removed)
     check("prompt file kept", ac.prompt_path(project, "bench-1").exists())
-    check("close empties the editor", c.get("/agents/close").get_data(as_text=True).strip() == '<div id="agent-editor"></div>')
 
     c.post("/agents/dev-agent/context", data={"content": "be terse"})
     check("prompt written to disk", ac.prompt_path(project, "dev-agent").read_text() == "be terse")
@@ -272,7 +271,7 @@ def test_web(project: Path) -> None:
     # The "live" indicator should be gone
     check("live indicator removed", ">live<" not in table_html)
     # The reload button should be present
-    check("reload button present", 'id="reload-tasks-btn"' in table_html)
+    check("reload button present", 'class="reload-tasks-btn"' in table_html)
     check("reload button has aria label", 'aria-label="Reload task table"' in table_html)
     check("reload button text correct", "Reload" in table_html)
     # Test individual fragment endpoints
@@ -280,19 +279,24 @@ def test_web(project: Path) -> None:
     check("agents rows fragment renders", "<table>" in rows)
     activity = c.get("/agents/activity").get_data(as_text=True)
     check("activity fragment renders", "activity" in activity.lower() or "hx-get" in activity)
-    # Test get_tasks_table endpoint
-    tasks_table_html = c.get("/tasks/table").get_data(as_text=True)
-    check("tasks table fragment exists", "task-" in tasks_table_html or "<table>" in tasks_table_html)
+    # An htmx request to /tasks (as the filter/sort/reload controls issue) gets
+    # just the tasks-container fragment, not the full page.
+    tasks_table_html = c.get("/tasks", headers={"HX-Request": "true"}).get_data(as_text=True)
+    check("tasks fragment exists", 'id="tasks-container"' in tasks_table_html)
+    check("tasks fragment has no layout", "<html" not in tasks_table_html)
 
     print("reload button functionality")
     # Verify the reload button works with filters
     c.post("/tasks", data={"title": "Test for reload", "description": "Test reload functionality", "assigned_to": "dev-agent"})
     reload_test_html = c.get("/?status=todo").get_data(as_text=True)
-    check("reload button present with filters", 'id="reload-tasks-btn"' in reload_test_html)
+    check("reload button present with filters", 'class="reload-tasks-btn"' in reload_test_html)
     check("filters preserved with reload button", 'id="task-filters-container"' in reload_test_html)
-    # Simulate a reload by calling the filtered endpoint
-    filtered_html = c.get("/tasks/filtered?status=todo").get_data(as_text=True)
-    check("filtered endpoint works for reload", "Test for reload" in filtered_html)
+    # Simulate the reload button (an htmx GET to /tasks with the current filters)
+    filtered_html = c.get("/tasks?status=todo", headers={"HX-Request": "true"}).get_data(as_text=True)
+    check("filtered fragment works for reload", "Test for reload" in filtered_html)
+    # And a real browser reload on the same filtered URL gets a full page, not a bare fragment
+    reloaded_html = c.get("/tasks?status=todo").get_data(as_text=True)
+    check("direct reload of a filtered URL gets the full layout", "<html" in reloaded_html and "Test for reload" in reloaded_html)
 
     print("docs page")
     html = c.get("/docs").get_data(as_text=True)
@@ -386,16 +390,32 @@ def test_web(project: Path) -> None:
     # Test with missing form fields
     c.post("/tasks", data={"title": "no description task"})
     check("tasks can be created with empty description", len(ac.list_tasks(conn)) > 1)
-    # Test agent editor closes properly
-    close_html = c.get("/agents/close").get_data(as_text=True)
-    check("agent editor can be closed", '<div id="agent-editor"></div>' in close_html)
-    check("close returns minimal html", len(close_html.strip()) < 100)
-    # Test doc editor closes properly
-    close_doc = c.get("/docs/close").get_data(as_text=True)
-    check("doc editor can be closed", '<div id="doc-editor"></div>' in close_doc)
-    # Test data row editor closes
-    close_row = c.get("/data/close").get_data(as_text=True)
-    check("row editor can be closed", '<div id="row-editor"></div>' in close_row)
+    # Closing a panel is pure client-side (closePanel() in layout.html) - no
+    # server round trip to test, just that each editor wires its close
+    # control to it.
+    check("layout defines closePanel", "function closePanel(id)" in c.get("/").get_data(as_text=True))
+    agent_editor_html = c.get("/agents/dev-agent/context").get_data(as_text=True)
+    check("agent editor close wired to closePanel", "closePanel('agent-editor')" in agent_editor_html)
+    doc_editor_html = c.post("/docs", data={"key": "closetest"}).get_data(as_text=True)
+    check("doc editor close wired to closePanel", "closePanel('doc-editor')" in doc_editor_html)
+    row_editor_html = c.get("/data/tasks/row", query_string={"pk": t_id}).get_data(as_text=True)
+    check("row editor close wired to closePanel", "closePanel('row-editor')" in row_editor_html)
+
+    print("search view")
+    check("search form pushes the query into the URL", 'hx-push-url="true"' in c.get("/search").get_data(as_text=True))
+    check("the old fragment-only pagination endpoint is gone", c.get("/search/results?q=bench").status_code == 404)
+    # A task result should link straight to it, pre-expanded, on the tasks page
+    search_html = c.get("/search", query_string={"q": "bench"}).get_data(as_text=True)
+    check("task result links to /tasks?open=<id>", f"/tasks?open={t_id}#task-{t_id}" in search_html)
+    opened_task = c.get("/tasks", query_string={"open": t_id}).get_data(as_text=True)
+    check("open=<id> lands with that task expanded", f'id="task-{t_id}"' in opened_task and "collapse" in opened_task)
+    # A doc result should link straight to it, pre-opened, on the docs page
+    c.post("/docs/closetest", data={"content": "zzmarkerdoc content"})
+    search_doc_html = c.get("/search", query_string={"q": "zzmarkerdoc"}).get_data(as_text=True)
+    check("doc result links to /docs?open=<key>", "/docs?open=closetest#doc-editor" in search_doc_html)
+    opened_doc = c.get("/docs", query_string={"open": "closetest"}).get_data(as_text=True)
+    check("open=<key> lands with that doc's editor open", 'id="doc-content-closetest"' in opened_doc)
+    check("open=<missing key> is harmless", 'id="doc-editor"' in c.get("/docs", query_string={"open": "nope"}).get_data(as_text=True))
 
     print("export + delete")
     msg = c.post("/export").get_data(as_text=True)
