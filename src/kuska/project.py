@@ -227,6 +227,46 @@ def agent_config(project_dir: str | os.PathLike, agent_name: str) -> dict:
     return cfg
 
 
+def merge_prompt(existing: str, template: str) -> str:
+    """The agent's own persona, on top of the current shared instructions.
+
+    Split BOTH sides at the first line starting with "## ". Keep existing's head
+    (the persona) and template's tail (the shared instructions). If a file has
+    no "## " at all, treat the whole thing as persona and append the template body.
+    """
+    def find_section_split(content: str) -> int:
+        """Find the line number (0-indexed) of the first line starting with '## '."""
+        for i, line in enumerate(content.split('\n')):
+            if line.startswith('## '):
+                return i
+        return -1  # No section found
+
+    existing_split = find_section_split(existing)
+    template_split = find_section_split(template)
+
+    # Split existing into lines
+    existing_lines = existing.split('\n')
+    template_lines = template.split('\n')
+
+    if existing_split == -1:
+        # No "## " in existing, treat whole thing as persona
+        persona_lines = existing_lines
+    else:
+        # Keep lines before the first "## "
+        persona_lines = existing_lines[:existing_split]
+
+    if template_split == -1:
+        # No "## " in template, just append it
+        body_lines = template_lines
+    else:
+        # Keep lines from the first "## " onward
+        body_lines = template_lines[template_split:]
+
+    # Join and ensure single trailing newline
+    merged = '\n'.join(persona_lines + body_lines).rstrip() + '\n'
+    return merged
+
+
 def sync_agents_from_config(db: SqliteDatabase, project_dir: str | os.PathLike) -> list[str]:
     """Make the agents table match config.toml, and seed missing prompt files."""
     names = []

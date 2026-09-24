@@ -9,6 +9,7 @@ Task and plan authoring lives in the web app, not here:
     kuska run-all           # run web server + MCP server + all agents together
     kuska export            # one-off markdown export
     kuska migrate           # manage database migrations
+    kuska doctor            # check (and --repair) database integrity
 """
 
 from __future__ import annotations
@@ -27,9 +28,15 @@ from .project import (
     config_path,
     db_path,
     default_config,
+    default_prompt,
     find_project,
+    load_config,
+    merge_prompt,
+    prompt_path,
+    read_prompt,
     registry_add,
     sync_agents_from_config,
+    write_prompt,
 )
 from .store import docs_get, docs_set
 
@@ -100,6 +107,60 @@ def cmd_export(args: argparse.Namespace) -> None:
         print(path)
 
 
+def cmd_prompts(args: argparse.Namespace) -> None:
+    """Merge agent prompts with the current template, or show diffs."""
+    import difflib
+
+    project = find_project(args.project)
+    template = (Path(__file__).parent / "defaults" / "prompt.md").read_text()
+    config = load_config(project)
+    agents = config.get("agents", {})
+
+    if not agents:
+        print("no agents found in config.toml")
+        return
+
+    if args.write:
+        # Merge and write
+        for name, cfg in agents.items():
+            existing = read_prompt(project, name)
+            if not existing:
+                # If no prompt exists, seed it fresh
+                seeded = default_prompt(name, cfg.get("role", "a coding agent"))
+                write_prompt(project, name, seeded)
+            else:
+                # Merge the existing prompt with the template
+                merged = merge_prompt(existing, template)
+                write_prompt(project, name, merged)
+                print(f"merged {name}")
+    else:
+        # Show diffs (default behavior)
+        for name, cfg in agents.items():
+            existing = read_prompt(project, name)
+            if not existing:
+                merged = default_prompt(name, cfg.get("role", "a coding agent"))
+            else:
+                merged = merge_prompt(existing, template)
+
+            # Show unified diff
+            existing_lines = (existing or "").splitlines(keepends=True)
+            merged_lines = merged.splitlines(keepends=True)
+
+            diff = difflib.unified_diff(
+                existing_lines,
+                merged_lines,
+                fromfile=f".agents/prompts/{name}.md (current)",
+                tofile=f".agents/prompts/{name}.md (merged)",
+                lineterm="",
+            )
+            diff_output = "".join(diff)
+            if diff_output:
+                print(f"\n{name}:")
+                print(diff_output)
+            else:
+                print(f"{name}: no changes needed")
+
+
 def cmd_migrate(args: argparse.Namespace) -> None:
     """Manage database migrations."""
     project = find_project(args.project)
@@ -149,6 +210,82 @@ def cmd_migrate(args: argparse.Namespace) -> None:
             else:
                 print("No pending migrations to apply")
 
+    finally:
+        db.close()
+
+
+# The four external-content FTS5 indexes migration 005 creates. Kept here
+# rather than imported from the migration module since the migration is a
+# one-shot script, not a place other code should import table names from.
+_FTS_TABLES = ("tasks_fts", "docs_fts", "messages_fts", "events_fts")
+
+
+def cmd_doctor(args: argparse.Namespace) -> None:
+    """Check (and optionally repair) database integrity.
+
+    Runs SQLite's own `PRAGMA integrity_check` over the whole file, then the
+    FTS5 'integrity-check' special command on each of the four external-
+    content indexes migration 005 created (tasks_fts, docs_fts, messages_fts,
+    events_fts). A desynced FTS5 index - e.g. from the migration's old,
+    non-idempotent populate step re-running - surfaces later as
+    `peewee.DatabaseError: database disk image is malformed` on an innocent
+    write to the *content* table (tasks, docs, ...), which is what sends
+    someone looking for a "corrupt database" that PRAGMA integrity_check
+    alone says is fine. This is that second check.
+
+    --repair rebuilds any FTS index that fails its integrity-check, via the
+    FTS5 'rebuild' command (a full re-index from the content table - safe
+    and idempotent, unlike the INSERT OR IGNORE the migration used to use).
+    It does NOT repair a failing PRAGMA integrity_check: that means the main
+    database file itself is damaged, and needs a restore from backup, not a
+    FTS rebuild.
+    """
+    project = find_project(args.project)
+    db = connect(db_path(project))
+    problems: list[str] = []
+    try:
+        rows = db.execute_sql("PRAGMA integrity_check").fetchall()
+        main_ok = len(rows) == 1 and rows[0][0] == "ok"
+        if main_ok:
+            print("database: ok (PRAGMA integrity_check)")
+        else:
+            print("database: PROBLEMS FOUND (PRAGMA integrity_check) -")
+            for (line,) in rows:
+                print(f"  {line}")
+            print("  this is main-database-file damage, not an index problem;")
+            print("  `kuska doctor --repair` cannot fix it - restore from backup.")
+
+        fts_broken = []
+        for table in _FTS_TABLES:
+            try:
+                db.execute_sql(f"INSERT INTO {table}({table}) VALUES('integrity-check')")
+                print(f"{table}: ok")
+            except Exception as exc:
+                fts_broken.append(table)
+                print(f"{table}: CORRUPT - {exc}")
+                print(f"  index disagrees with its source table; run `kuska doctor --repair` to rebuild it.")
+
+        if args.repair and fts_broken:
+            print()
+            for table in fts_broken:
+                db.execute_sql(f"INSERT INTO {table}({table}) VALUES('rebuild')")
+                print(f"{table}: rebuilt")
+            print("\nre-checking after repair:")
+            still_broken = []
+            for table in fts_broken:
+                try:
+                    db.execute_sql(f"INSERT INTO {table}({table}) VALUES('integrity-check')")
+                    print(f"{table}: ok")
+                except Exception as exc:
+                    still_broken.append(table)
+                    print(f"{table}: still CORRUPT - {exc}")
+            problems = still_broken
+        else:
+            problems = fts_broken
+
+        if not main_ok or problems:
+            raise SystemExit(1)
+        print("\nno problems found")
     finally:
         db.close()
 
@@ -216,6 +353,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_export.add_argument("--out", help="output directory (default: <project>/.agents-export)")
     p_export.set_defaults(func=cmd_export)
 
+    p_prompts = sub.add_parser("prompts", help="merge agent prompts with the current template")
+    p_prompts.add_argument(
+        "--write", action="store_true",
+        help="merge and write (default: print diffs)")
+    p_prompts.set_defaults(func=cmd_prompts)
+
     p_migrate = sub.add_parser("migrate", help="manage database migrations")
     p_migrate_group = p_migrate.add_mutually_exclusive_group()
     p_migrate_group.add_argument(
@@ -225,6 +368,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--to", metavar="VERSION", help="migrate to specific version (e.g., 003)"
     )
     p_migrate.set_defaults(func=cmd_migrate)
+
+    p_doctor = sub.add_parser(
+        "doctor", help="check database integrity (PRAGMA + FTS5), optionally repair"
+    )
+    p_doctor.add_argument(
+        "--repair", action="store_true",
+        help="rebuild any FTS5 index that fails its integrity-check",
+    )
+    p_doctor.set_defaults(func=cmd_doctor)
 
     p_run_all = sub.add_parser(
         "run-all",

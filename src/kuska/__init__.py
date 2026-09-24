@@ -9,6 +9,7 @@ submodules - the split is for readability, not to draw API boundaries.
 
 from __future__ import annotations
 
+from . import eventfmt
 from .db import (
     AGENT_STATUSES,
     EVENT_KINDS,
@@ -20,6 +21,7 @@ from .db import (
     now,
 )
 from .export import export_markdown
+from .guardrails import RULES, check_command, check_tool, refusal_text
 from .markdown import as_markdown
 from .models import MODELS, Agent, Doc, Event, FileClaim, Message, Task, TaskDep
 from .project import (
@@ -34,6 +36,7 @@ from .project import (
     default_prompt,
     find_project,
     load_config,
+    merge_prompt,
     prompt_path,
     read_prompt,
     registry_add,
@@ -71,14 +74,17 @@ from .store import (
     docs_list,
     docs_set,
     get_agent,
+    get_event,
     get_inbox,
     get_task,
     heartbeat,
     list_agents,
+    list_features,
     list_tasks,
     log_event,
     normalize_path,
     recent_events,
+    recent_runs,
     register_agent,
     release_files,
     release_run,

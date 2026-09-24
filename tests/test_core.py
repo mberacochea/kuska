@@ -165,6 +165,52 @@ def main() -> None:
         except ValueError:
             check("unknown kind refused", True)
 
+        print("event filters")
+        # telemetry outnumbers substance in a real trail, which is what makes
+        # filtering in SQL rather than in the caller the whole point
+        mono.record("system", "step 3 of 5", label="task_progress")
+        mono.record("system", "still working", label="status")
+        kinds = [e["kind"] for e in ac.task_events(conn, t1)]
+        check("no filter still means everything", kinds.count("system") == 2, kinds)
+        check("task events exclude kinds",
+              "system" not in [e["kind"] for e in ac.task_events(conn, t1, exclude_kinds=("system",))], kinds)
+        check("task events restrict to kinds",
+              [e["kind"] for e in ac.task_events(conn, t1, kinds=("prompt", "thinking"))] == ["prompt", "thinking"])
+        check("a single kind need not be a tuple", len(ac.task_events(conn, t1, kinds="system")) == 2)
+        check("a filter matching nothing is empty", ac.task_events(conn, t1, kinds=("result",)) == [])
+        check("an empty kinds tuple matches nothing", ac.recent_events(conn, kinds=()) == [])
+        # newest-first, dev-agent, minus two kinds: order and scope both survive
+        combined = ac.recent_events(conn, agent="dev-agent", exclude_kinds=("system", "tool_result"))
+        check("filters combine", [e["kind"] for e in combined] ==
+              ["error", "thinking", "tool_use", "prompt"], combined)
+        # the newest three events are two system rows and one other, so a
+        # fetch-then-filter-in-python tail would come back one row long
+        trimmed = ac.recent_events(conn, limit=3, exclude_kinds="system")
+        check("limit counts the events asked for", len(trimmed) == 3, trimmed)
+        check("excluded kind stays out of the tail",
+              "system" not in [e["kind"] for e in trimmed], trimmed)
+
+        print("runs")
+        mono.record("result", "Parser done.", label="done - $0.0182, 3 rounds")
+        bench = ac.Monologue(conn, "bench-agent", t1, quiet=True)
+        bench.record("prompt", "Task 1: benchmark the parser")
+        check("task events filter by agent",
+              [e["agent"] for e in ac.task_events(conn, t1, agent="bench-agent")] == ["bench-agent"])
+        runs = ac.recent_runs(conn)
+        check("one row per run", len(runs) == 2, runs)
+        check("runs are newest first", [r["run_id"] for r in runs] == [bench.run_id, mono.run_id], runs)
+        live, finished = runs
+        check("run counts its own events",
+              finished["event_count"] == len(ac.run_events(conn, mono.run_id)), runs)
+        check("run carries agent and task", (finished["agent"], finished["task_id"]) == ("dev-agent", t1), finished)
+        check("run spans first to last", finished["first_ts"] <= finished["last_ts"], finished)
+        check("finished run reports its result label",
+              (finished["result"] or "").startswith("done - $0.0182"), finished)
+        # a run with no terminal event is in flight, not absent: it is the one
+        # a human most wants to open
+        check("in-flight run still listed", live["result"] is None and live["event_count"] == 1, live)
+        check("runs honour the limit", [r["run_id"] for r in ac.recent_runs(conn, limit=1)] == [bench.run_id])
+
         print("docs")
         check("missing doc is None", ac.docs_get(conn, "architecture") is None)
         ac.docs_set(conn, "architecture", "One SQLite DB per project.", "dev-agent")
@@ -288,6 +334,26 @@ def main() -> None:
             check("errors outside a project", False)
         except SystemExit:
             check("errors outside a project", True)
+
+        print("merge_prompt")
+        # Test: persona preserved
+        existing = "# my-agent\n\nMy role.\n\n## Old section\n\nOld content.\n"
+        template = "# {name}\n\nTemplate role.\n\n## New section\n\nNew content.\n"
+        merged = ac.merge_prompt(existing, template)
+        check("persona preserved", merged.startswith("# my-agent\n\nMy role.\n\n## New section"))
+        # Test: template body current
+        check("template body current", "New content." in merged and "Old content." not in merged)
+        # Test: idempotent on second merge
+        merged2 = ac.merge_prompt(merged, template)
+        check("idempotent on second merge", merged == merged2)
+        # Test: no-"##" file handled
+        existing_no_section = "# agent\n\nJust persona.\n"
+        merged_no_section = ac.merge_prompt(existing_no_section, template)
+        check("no-## file handled", merged_no_section.startswith("# agent\n\nJust persona.\n\n## New section"))
+        # Test: planning-agent's custom header survives
+        planning_persona = "# planning-agent\n\nCustom line 1.\n\nCustom line 2.\n\nCustom line 3.\n\n"
+        planning_merged = ac.merge_prompt(planning_persona + "## Old\n\nOld.\n", template)
+        check("planning-agent header survives", "Custom line 1." in planning_merged and planning_merged.startswith("# planning-agent"))
 
         conn.close()
     finally:
