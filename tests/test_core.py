@@ -218,6 +218,35 @@ def main() -> None:
         check("docs upsert", ac.docs_get(conn, "architecture").endswith("WAL on."))
         check("docs list", [d["key"] for d in ac.docs_list(conn)] == ["architecture"])
 
+        print("search")
+        # Test FTS5 ranking: create three docs with increasing relevance to "parser"
+        ac.docs_set(conn, "unrelated", "This document is about database queries and SQL.", "dev-agent")
+        ac.docs_set(conn, "parser-notes", "Some notes about parsing and parser implementation.", "dev-agent")
+        ac.docs_set(conn, "parser-guide", "parser parser parser parser parser - complete guide to parser design.", "dev-agent")
+        # The best match should be parser-guide (most occurrences of "parser")
+        search_results = ac.full_text_search(conn, "parser", tables=["docs"])
+        check("search finds matches", len(search_results) > 0, f"Found {len(search_results)} results")
+        # Verify best result is first (most negative rank value)
+        best_match = search_results[0]
+        check("best match is first result", best_match["title"] == "parser-guide", f"Best match title: {best_match['title']}")
+        # Verify ranking is ascending (more negative = better)
+        if len(search_results) > 1:
+            check("results ranked by relevance", search_results[0]["rank"] <= search_results[1]["rank"],
+                  f"Rank order: {[r['rank'] for r in search_results[:3]]}")
+
+        # Test FTS5 index sync on repeated updates (regression test for INSERT OR REPLACE bug)
+        # The bug: INSERT OR REPLACE doesn't fire DELETE triggers without recursive_triggers=ON,
+        # leaving orphaned FTS5 entries that surface as "database disk image is malformed" errors
+        ac.docs_set(conn, "fts_test", "alpha version initial", "dev-agent")
+        ac.docs_set(conn, "fts_test", "beta version update", "dev-agent")
+        ac.docs_set(conn, "fts_test", "gamma version final", "dev-agent")
+        # Old FTS term should not be found (was in first version, replaced twice)
+        old_results = ac.full_text_search(conn, "alpha", tables=["docs"])
+        check("stale FTS term not found", len(old_results) == 0, old_results)
+        # Current FTS term should be found exactly once
+        new_results = ac.full_text_search(conn, "gamma", tables=["docs"])
+        check("current FTS term found", len(new_results) == 1, new_results)
+
         print("docs are markdown")
         prose = "# Report\n\n## Summary\n\nDid a thing.\n"
         check("prose untouched", ac.as_markdown(prose) == prose)
@@ -255,8 +284,10 @@ def main() -> None:
         ac.call_tool(conn, "dev-agent", "send_message", {"recipient": "bench-agent", "payload": "ping"})
         check("tool inbox", ac.call_tool(conn, "bench-agent", "get_inbox", {})[0]["payload"] == "ping")
         check("tool docs", ac.call_tool(conn, "dev-agent", "docs_get", {"key": "architecture"})["content"].endswith("WAL on."))
-        check("tool docs_list", [d["key"] for d in ac.call_tool(conn, "dev-agent", "docs_list", {})] ==
-              ["architecture", "handover", "task_7_dev-agent_context"])
+        docs_list = [d["key"] for d in ac.call_tool(conn, "dev-agent", "docs_list", {})]
+        # FTS tests added several docs, so just check that the expected ones are present
+        check("tool docs_list", all(k in docs_list for k in ["architecture", "handover", "task_7_dev-agent_context"]),
+              f"docs_list: {docs_list}")
         check("tool list_tasks", len(ac.call_tool(conn, "dev-agent", "list_tasks", {})) >= 1)
         check("tool result is json", ac.tool_result_text({"a": 1}) == '{"a": 1}')
         try:

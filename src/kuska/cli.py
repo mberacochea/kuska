@@ -70,7 +70,11 @@ def cmd_serve(args: argparse.Namespace) -> None:
     project = find_project(args.project)
     app = create_app(project)
     print(f"serving {project} on http://{args.host}:{args.port}")
-    app.run(host=args.host, port=args.port, debug=args.debug, threaded=True)
+    # Single-threaded by design: the app holds one process-wide open project
+    # in state["db"], and closing that handle while another thread queries it
+    # causes an unhandled exception. Kuska is single-user, so serial request
+    # handling is the correct fix, not a global lock.
+    app.run(host=args.host, port=args.port, debug=args.debug, threaded=False)
 
 
 def cmd_mcp(args: argparse.Namespace) -> None:
@@ -219,6 +223,14 @@ def cmd_migrate(args: argparse.Namespace) -> None:
 # one-shot script, not a place other code should import table names from.
 _FTS_TABLES = ("tasks_fts", "docs_fts", "messages_fts", "events_fts")
 
+# Map FTS table names to their content tables and primary key columns
+_FTS_CONTENT_MAP = {
+    "docs_fts": ("docs", "rowid"),
+    "messages_fts": ("messages", "id"),
+    "events_fts": ("events", "id"),
+    "tasks_fts": ("tasks", "id"),
+}
+
 
 def cmd_doctor(args: argparse.Namespace) -> None:
     """Check (and optionally repair) database integrity.
@@ -226,19 +238,21 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     Runs SQLite's own `PRAGMA integrity_check` over the whole file, then the
     FTS5 'integrity-check' special command on each of the four external-
     content indexes migration 005 created (tasks_fts, docs_fts, messages_fts,
-    events_fts). A desynced FTS5 index - e.g. from the migration's old,
-    non-idempotent populate step re-running - surfaces later as
-    `peewee.DatabaseError: database disk image is malformed` on an innocent
-    write to the *content* table (tasks, docs, ...), which is what sends
-    someone looking for a "corrupt database" that PRAGMA integrity_check
-    alone says is fine. This is that second check.
+    events_fts). Note: FTS5's integrity-check only validates the index's
+    internal consistency, not that it agrees with the content table. A
+    desynced FTS5 index - e.g. from orphaned entries left by INSERT OR REPLACE
+    without recursive_triggers - can pass integrity-check while still missing
+    rows, and surfaces later as `peewee.DatabaseError: database disk image is
+    malformed` on an innocent write to the *content* table (tasks, docs, ...).
 
-    --repair rebuilds any FTS index that fails its integrity-check, via the
-    FTS5 'rebuild' command (a full re-index from the content table - safe
-    and idempotent, unlike the INSERT OR IGNORE the migration used to use).
-    It does NOT repair a failing PRAGMA integrity_check: that means the main
-    database file itself is damaged, and needs a restore from backup, not a
-    FTS rebuild.
+    This command also performs a row-count comparison between each FTS index
+    and its content table to detect desync that integrity-check misses.
+
+    --repair rebuilds any FTS index that fails integrity-check or row-count
+    validation, via the FTS5 'rebuild' command (a full re-index from the
+    content table - safe and idempotent). It does NOT repair a failing PRAGMA
+    integrity_check: that means the main database file itself is damaged, and
+    needs a restore from backup, not a FTS rebuild.
     """
     project = find_project(args.project)
     db = connect(db_path(project))
@@ -257,13 +271,31 @@ def cmd_doctor(args: argparse.Namespace) -> None:
 
         fts_broken = []
         for table in _FTS_TABLES:
+            is_broken = False
+
+            # Check 1: FTS5 internal consistency
             try:
                 db.execute_sql(f"INSERT INTO {table}({table}) VALUES('integrity-check')")
-                print(f"{table}: ok")
             except Exception as exc:
+                is_broken = True
+                print(f"{table}: CORRUPT (integrity-check failed) - {exc}")
+                print(f"  index internal consistency failed; run `kuska doctor --repair` to rebuild it.")
+
+            # Check 2: Row count mismatch (detects orphaned entries and missing rows)
+            if not is_broken:
+                content_table, pk_col = _FTS_CONTENT_MAP[table]
+                fts_count = db.execute_sql(f"SELECT count(*) FROM {table}").fetchone()[0]
+                content_count = db.execute_sql(f"SELECT count(*) FROM {content_table}").fetchone()[0]
+                if fts_count != content_count:
+                    is_broken = True
+                    print(f"{table}: DESYNC - index has {fts_count} rows, {content_table} has {content_count}")
+                    print(f"  index is out of sync with its content table; run `kuska doctor --repair` to rebuild it.")
+
+            if not is_broken:
+                print(f"{table}: ok")
+
+            if is_broken:
                 fts_broken.append(table)
-                print(f"{table}: CORRUPT - {exc}")
-                print(f"  index disagrees with its source table; run `kuska doctor --repair` to rebuild it.")
 
         if args.repair and fts_broken:
             print()

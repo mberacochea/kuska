@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from peewee import JOIN, SQL, SqliteDatabase, fn
+from peewee import JOIN, SQL, Case, SqliteDatabase, fn
 
 from .db import EVENT_KINDS, HUMAN, TASK_STATUSES, now
 from .models import (
@@ -132,9 +132,18 @@ def delete_agent(db: SqliteDatabase, name: str) -> int:
 # --------------------------------------------------------------------------
 
 
+def _norm_feature(value: str | None) -> str | None:
+    """Free text in, a stable group key out. None means ungrouped."""
+    return ((value or "").strip().lower())[:40] or None
+
+
 @bound
 def add_task(
-    db: SqliteDatabase, title: str, description: str = "", assigned_to: str | None = None
+    db: SqliteDatabase,
+    title: str,
+    description: str = "",
+    assigned_to: str | None = None,
+    feature: str | None = None,
 ) -> int:
     """Create a new task.
 
@@ -146,6 +155,9 @@ def add_task(
         title: Short task name.
         description: Optional longer explanation of what to do.
         assigned_to: Optional agent name to assign this task to.
+        feature: Optional free-text feature group this task belongs to (e.g.
+                 "search"). Normalised via _norm_feature; empty/None means
+                 ungrouped.
 
     Returns:
         int: New task ID.
@@ -161,6 +173,7 @@ def add_task(
         description=description,
         assigned_to=assigned_to or None,
         status="todo",
+        feature=_norm_feature(feature),
         created_at=ts,
         updated_at=ts,
     )
@@ -199,6 +212,8 @@ def update_task(db: SqliteDatabase, task_id: int, **fields: Any) -> None:
                   - description (str): Task description.
                   - assigned_to (str | None): Assign to an agent or None.
                   - status (str): Must be in TASK_STATUSES.
+                  - feature (str | None): Free-text feature group, or None
+                    to ungroup. Normalised via _norm_feature.
 
     Raises:
         ValueError: If status is provided and not in TASK_STATUSES.
@@ -208,7 +223,7 @@ def update_task(db: SqliteDatabase, task_id: int, **fields: Any) -> None:
         >>> update_task(db, 42, assigned_to="alice")  # assign to alice
         >>> update_task(db, 42, assigned_to=None)  # unassign
     """
-    allowed = {"title", "description", "assigned_to", "status"}
+    allowed = {"title", "description", "assigned_to", "status", "feature"}
     sets = {k: v for k, v in fields.items() if k in allowed}
     if not sets:
         return
@@ -216,6 +231,8 @@ def update_task(db: SqliteDatabase, task_id: int, **fields: Any) -> None:
         raise ValueError(f"unknown task status: {sets['status']}")
     if "assigned_to" in sets:
         sets["assigned_to"] = sets["assigned_to"] or None
+    if "feature" in sets:
+        sets["feature"] = _norm_feature(sets["feature"])
     sets["updated_at"] = now()
     Task.update(**sets).where(Task.id == task_id).execute()
 
@@ -232,20 +249,27 @@ def delete_task(db: SqliteDatabase, task_id: int) -> None:
 
 
 @bound
-def list_tasks(db: SqliteDatabase, status: str | None = None) -> list[dict]:
-    """Fetch all tasks, optionally filtered by status.
+def list_tasks(
+    db: SqliteDatabase, status: str | None = None, feature: str | None = None
+) -> list[dict]:
+    """Fetch all tasks, optionally filtered by status and/or feature.
 
     Args:
         db: SqliteDatabase instance for this project.
         status: Optional status filter (e.g., "todo", "in_progress", "done").
+        feature: Optional feature filter. Normalised via _norm_feature before
+                 matching, so callers can pass raw free text.
 
     Returns:
         list[dict]: Task records in insertion order, with keys: id, title,
-                    description, assigned_to, status, created_at, updated_at.
+                    description, assigned_to, status, feature, created_at,
+                    updated_at.
     """
     query = Task.select().order_by(Task.id)
     if status:
         query = query.where(Task.status == status)
+    if feature:
+        query = query.where(Task.feature == _norm_feature(feature))
     return rows(query)
 
 
@@ -255,10 +279,12 @@ def filter_tasks(
     search: str = "",
     status: list[str] | None = None,
     agent: list[str] | None = None,
+    feature: list[str] | None = None,
     sort_by: str | None = None,
     sort_dir: str = "asc",
 ) -> list[dict]:
-    """Filter and sort tasks by search query, status, assigned agent, and sort field.
+    """Filter and sort tasks by search query, status, assigned agent, feature,
+    and sort field.
 
     Args:
         db: SqliteDatabase instance for this project.
@@ -266,12 +292,16 @@ def filter_tasks(
         status: Optional list of statuses to include (default: all).
         agent: Optional list of assigned agent names to include. An empty
                string in the list also matches unassigned tasks.
+        feature: Optional list of feature groups to include. An empty string
+                 in the list also matches ungrouped tasks (Task.feature IS NULL).
         sort_by: One of "title", "assigned_to", "status", "created_at",
                  "updated_at". Defaults to updated_at desc, created_at desc.
+                 Rows are always grouped by feature first (ungrouped last),
+                 so this sorts within each feature group.
         sort_dir: "asc" or "desc" (only used with sort_by).
 
     Returns:
-        list[dict]: Matching task records.
+        list[dict]: Matching task records, pre-grouped by feature.
     """
     query = Task.select()
 
@@ -288,6 +318,15 @@ def filter_tasks(
         else:
             query = query.where(Task.assigned_to.in_(agent))
 
+    if feature:
+        if "" in feature:
+            query = query.where(Task.feature.in_(feature) | Task.feature.is_null())
+        else:
+            query = query.where(Task.feature.in_(feature))
+
+    # ungrouped sorts last: "~~~" sorts after any lowercase feature name
+    group = fn.COALESCE(Task.feature, "~~~")
+
     sort_fields = {
         "title": fn.LOWER(fn.COALESCE(Task.title, "")),
         "assigned_to": fn.COALESCE(Task.assigned_to, ""),
@@ -297,12 +336,41 @@ def filter_tasks(
     }
     field = sort_fields.get(sort_by)
     if field is not None:
-        query = query.order_by(field.desc() if sort_dir == "desc" else field.asc())
+        query = query.order_by(group, field.desc() if sort_dir == "desc" else field.asc())
     else:
         query = query.order_by(
-            fn.COALESCE(Task.updated_at, 0).desc(), fn.COALESCE(Task.created_at, 0).desc()
+            group, fn.COALESCE(Task.updated_at, 0).desc(), fn.COALESCE(Task.created_at, 0).desc()
         )
 
+    return rows(query)
+
+
+@bound
+def list_features(db: SqliteDatabase) -> list[dict]:
+    """List distinct feature groups with per-feature task totals, for the
+    filter dropdown and the group headings on the task list.
+
+    Args:
+        db: SqliteDatabase instance for this project.
+
+    Returns:
+        list[dict]: One row per distinct feature, each with keys: feature,
+                    total, done. Ordered by feature name, with the ungrouped
+                    bucket (feature=None) last.
+
+    Examples:
+        >>> list_features(db)
+        [{"feature": "search", "total": 4, "done": 2}, {"feature": None, "total": 1, "done": 0}]
+    """
+    query = (
+        Task.select(
+            Task.feature,
+            fn.COUNT(Task.id).alias("total"),
+            fn.SUM(Case(None, [(Task.status == "done", 1)], 0)).alias("done"),
+        )
+        .group_by(Task.feature)
+        .order_by(fn.COALESCE(Task.feature, "~~~"))
+    )
     return rows(query)
 
 
@@ -722,6 +790,23 @@ def get_inbox(db: SqliteDatabase, agent_name: str, mark_read: bool = True) -> li
 
 
 @bound
+def mark_messages_read(db: SqliteDatabase, message_ids: list[int]) -> None:
+    """Mark specific messages as read.
+
+    Used to mark inbox messages as read after a successful run, ensuring
+    messages are not lost if a run fails (see task R4).
+
+    Args:
+        db: SqliteDatabase instance for this project.
+        message_ids: List of message IDs to mark as read.
+    """
+    if message_ids:
+        Message.update(read_at=now()).where(
+            Message.id.in_(message_ids)
+        ).execute()
+
+
+@bound
 def task_messages(db: SqliteDatabase, task_id: int) -> list[dict]:
     """Fetch all messages related to a task, chronologically.
 
@@ -777,6 +862,71 @@ def token_usage_by_agent(db: SqliteDatabase) -> list[dict]:
     return rows(query)
 
 
+@bound
+def task_status_counts(db: SqliteDatabase) -> list[dict]:
+    """Task counts grouped by status, for the stats dashboard."""
+    query = Task.select(Task.status, fn.COUNT(Task.id).alias("count")).group_by(Task.status)
+    return rows(query)
+
+
+@bound
+def task_counts_by_agent(db: SqliteDatabase) -> list[dict]:
+    """Per-agent total and completed task counts, for the stats dashboard."""
+    query = (
+        Task.select(
+            Task.assigned_to,
+            fn.COUNT(Task.id).alias("total_tasks"),
+            fn.SUM(Task.status == "done").alias("completed_tasks"),
+        )
+        .where(Task.assigned_to.is_null(False))
+        .group_by(Task.assigned_to)
+    )
+    return rows(query)
+
+
+@bound
+def longest_tasks(db: SqliteDatabase, limit: int = 10) -> list[dict]:
+    """The `limit` longest-running done tasks, by wall-clock duration in seconds."""
+    duration = Task.updated_at - Task.created_at
+    query = (
+        Task.select(Task.id, Task.title, duration.alias("duration"))
+        .where(Task.status == "done")
+        .order_by(SQL("duration DESC"))
+        .limit(limit)
+    )
+    return rows(query)
+
+
+@bound
+def avg_task_duration(db: SqliteDatabase) -> float:
+    """Average wall-clock duration of done tasks, in seconds."""
+    duration = Task.updated_at - Task.created_at
+    query = Task.select(fn.COALESCE(fn.AVG(duration), 0.0).alias("avg")).where(Task.status == "done")
+    return query.dicts().get()["avg"]
+
+
+@bound
+def cost_by_task(db: SqliteDatabase, limit: int = 10) -> list[dict]:
+    """Total cost per task, highest first, with the task title joined in.
+
+    A left join, because a message can outlive the task it belonged to -
+    `title` comes back None for those and the caller decides how to label them.
+    """
+    query = (
+        Message.select(
+            Message.task_id,
+            Task.title,
+            fn.COALESCE(fn.SUM(Message.cost_usd), 0.0).alias("cost"),
+        )
+        .join(Task, JOIN.LEFT_OUTER, on=(Message.task_id == Task.id))
+        .where(Message.task_id.is_null(False))
+        .group_by(Message.task_id)
+        .order_by(SQL("cost DESC"))
+        .limit(limit)
+    )
+    return rows(query)
+
+
 # --------------------------------------------------------------------------
 # events: the agent monologue, kept for audit
 # --------------------------------------------------------------------------
@@ -821,18 +971,63 @@ def log_event(
     return int(event.id)
 
 
+def _as_tuple(value: Any) -> tuple:
+    """Accept a single kind or an iterable of them, and normalise to a tuple.
+
+    `kinds="system"` is the obvious thing to write and would otherwise iterate
+    into six one-letter kinds that match nothing.
+    """
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,)
+    return tuple(value)
+
+
+def _filter_events(query, kinds: Any = None, exclude_kinds: Any = None, agent: str | None = None):
+    """Narrow an event query in SQL.
+
+    The filtering belongs in the query and not in the caller: a feed that wants
+    the newest 25 events of substance would otherwise have to over-fetch an
+    unknown multiple of 25 and slice, because telemetry kinds outnumber the rest.
+    """
+    if kinds is not None:
+        query = query.where(Event.kind.in_(_as_tuple(kinds)))
+    excluded = _as_tuple(exclude_kinds)
+    if excluded:
+        query = query.where(Event.kind.not_in(excluded))
+    if agent:
+        query = query.where(Event.agent == agent)
+    return query
+
+
 @bound
-def task_events(db: SqliteDatabase, task_id: int) -> list[dict]:
+def task_events(
+    db: SqliteDatabase,
+    task_id: int,
+    kinds: Any = None,
+    exclude_kinds: Any = None,
+    agent: str | None = None,
+) -> list[dict]:
     """Fetch all events associated with a task, in order.
 
     Args:
         db: SqliteDatabase instance for this project.
         task_id: Task to query events for.
+        kinds: Optional kind, or iterable of kinds, to restrict to.
+        exclude_kinds: Optional kind, or iterable of kinds, to leave out.
+        agent: Optional agent name to filter by.
 
     Returns:
         list[dict]: Event records chronologically ordered.
+
+    Note:
+        With no filters this returns the whole trail, system telemetry included.
+        Hiding noisy kinds is a display decision, so it is the feed that passes
+        `exclude_kinds`, not this function that assumes it.
     """
-    return rows(Event.select().where(Event.task_id == task_id).order_by(Event.id))
+    query = Event.select().where(Event.task_id == task_id).order_by(Event.id)
+    return rows(_filter_events(query, kinds, exclude_kinds, agent))
 
 
 @bound
@@ -850,16 +1045,47 @@ def run_events(db: SqliteDatabase, run_id: str) -> list[dict]:
 
 
 @bound
-def recent_events(db: SqliteDatabase, agent: str | None = None, limit: int = 50) -> list[dict]:
-    """Fetch the most recent events, newest first, optionally filtered by agent.
+def get_event(db: SqliteDatabase, event_id: int) -> dict | None:
+    """Fetch a single event by ID.
+
+    Used to lazily load one row's expanded detail (the fleet tail renders
+    only the one-line summary up front and fetches the full payload on
+    expand, so a 25-row poll never ships bodies nobody opened).
+
+    Args:
+        db: SqliteDatabase instance for this project.
+        event_id: ID of the event to retrieve.
+
+    Returns:
+        dict: Event record, or None if not found.
+    """
+    return row(Event.select().where(Event.id == event_id))
+
+
+@bound
+def recent_events(
+    db: SqliteDatabase,
+    agent: str | None = None,
+    limit: int = 50,
+    kinds: Any = None,
+    exclude_kinds: Any = None,
+) -> list[dict]:
+    """Fetch the most recent events, newest first, optionally filtered.
 
     Useful for monitoring: see what just happened across the fleet or from a
     specific agent.
+
+    The filters are applied in SQL, so `limit` counts events the caller wanted.
+    A tail of the newest 25 rows is otherwise mostly `kind="system"` telemetry -
+    the heartbeat kinds outnumber the substantive ones - and excluding them
+    after the fetch would just return a short list.
 
     Args:
         db: SqliteDatabase instance for this project.
         agent: Optional agent name to filter by.
         limit: Maximum number of events to return (default 50).
+        kinds: Optional kind, or iterable of kinds, to restrict to.
+        exclude_kinds: Optional kind, or iterable of kinds, to leave out.
 
     Returns:
         list[dict]: Recent event records, newest first.
@@ -868,10 +1094,59 @@ def recent_events(db: SqliteDatabase, agent: str | None = None, limit: int = 50)
         >>> recent = recent_events(db, agent="claude-worker-1", limit=10)
         >>> for event in recent:
         ...     print(f"[{event['ts']}] {event['kind']}: {event['label']}")
+        >>> feed = recent_events(db, limit=25, exclude_kinds=("system",))
     """
     query = Event.select().order_by(Event.id.desc()).limit(limit)
-    if agent:
-        query = query.where(Event.agent == agent)
+    return rows(_filter_events(query, kinds, exclude_kinds, agent))
+
+
+@bound
+def recent_runs(db: SqliteDatabase, limit: int = 20) -> list[dict]:
+    """Fetch the most recent agent invocations, newest first, one row per run.
+
+    `events.run_id` groups the monologue of a single invocation; this is the
+    index over those groups, so a UI can offer "show me that run" without
+    reading every event to discover which runs exist.
+
+    Args:
+        db: SqliteDatabase instance for this project.
+        limit: Maximum number of runs to return (default 20).
+
+    Returns:
+        list[dict]: One row per run, newest first, with keys `run_id`, `agent`,
+        `task_id`, `first_ts`, `last_ts`, `event_count` and `result` - the
+        label of the run's terminal `result` event, carrying its final status
+        and cost. `result` is None for a run still in flight, which still
+        appears: an unfinished run is exactly the one a human wants to watch.
+    """
+    # the terminal label comes from a join against the (tiny) set of result
+    # events - one row per run - rather than a query per run. It is constant
+    # within the group, so MAX() over it is an identity, not a choice.
+    terminal = Event.alias()
+    last_result = (
+        terminal.select(terminal.run_id.alias("run_id"), fn.MAX(terminal.id).alias("event_id"))
+        .where((terminal.kind == "result") & terminal.run_id.is_null(False))
+        .group_by(terminal.run_id)
+        .alias("last_result")
+    )
+    label_of = Event.alias()
+    query = (
+        Event.select(
+            Event.run_id,
+            fn.MAX(Event.agent).alias("agent"),
+            fn.MAX(Event.task_id).alias("task_id"),
+            fn.MIN(Event.ts).alias("first_ts"),
+            fn.MAX(Event.ts).alias("last_ts"),
+            fn.COUNT(Event.id).alias("event_count"),
+            fn.MAX(label_of.label).alias("result"),
+        )
+        .join(last_result, JOIN.LEFT_OUTER, on=(last_result.c.run_id == Event.run_id))
+        .join(label_of, JOIN.LEFT_OUTER, on=(label_of.id == last_result.c.event_id))
+        .where(Event.run_id.is_null(False))
+        .group_by(Event.run_id)
+        .order_by(fn.MAX(Event.id).desc())
+        .limit(limit)
+    )
     return rows(query)
 
 
@@ -920,7 +1195,15 @@ def docs_set(db: SqliteDatabase, key: str, content: str, updated_by: str = HUMAN
         >>> docs_set(db, "conventions", "# Code Conventions\\n\\n- Use snake_case...",
         ...          updated_by="claude-reviewer")
     """
-    Doc.replace(key=key, content=content, updated_by=updated_by, updated_at=now()).execute()
+    # Use insert().on_conflict() instead of .replace() to ensure the UPDATE trigger
+    # fires on the FTS5 index. INSERT OR REPLACE only fires the DELETE trigger if
+    # PRAGMA recursive_triggers is ON (it defaults OFF), leaving orphaned index entries.
+    # See migration 005's docs_fts_update for the trigger that this must invoke.
+    now_val = now()
+    Doc.insert(key=key, content=content, updated_by=updated_by, updated_at=now_val).on_conflict(
+        conflict_target=[Doc.key],
+        update={Doc.content: content, Doc.updated_by: updated_by, Doc.updated_at: now_val},
+    ).execute()
 
 
 @bound
@@ -979,7 +1262,16 @@ def normalize_path(path: str, project_dir: str | os.PathLike | None = None) -> s
             candidate = absolute.resolve().relative_to(base)
         except ValueError:
             candidate = absolute.resolve()
-    return str(candidate).strip("/") or "."
+    result = str(candidate)
+    # An absolute result only happens when project_dir was given and the path
+    # escaped it (the relative_to() above failed) - callers such as
+    # guardrails.check_outside_project rely on os.path.isabs() of this return
+    # value to detect that. Stripping "/" indiscriminately would erase the
+    # one signal that carries, so only trim the leading slash of paths that
+    # were never anchored to a project in the first place.
+    if candidate.is_absolute() and project_dir:
+        return result.rstrip("/") or "/"
+    return result.strip("/") or "."
 
 
 def _overlaps(a: str, b: str) -> bool:
@@ -1389,7 +1681,7 @@ def _fts_search_table(
             FROM {fts_table} f
             JOIN docs d ON d.rowid = f.rowid
             WHERE f.{fts_table} MATCH ?
-            ORDER BY f.rank DESC
+            ORDER BY f.rank
         """
         if limit:
             fts_query += f" LIMIT {limit}"
@@ -1422,7 +1714,7 @@ def _fts_search_table(
             FROM {fts_table} f
             JOIN messages m ON m.id = f.rowid
             WHERE f.{fts_table} MATCH ?
-            ORDER BY f.rank DESC
+            ORDER BY f.rank
         """
         if limit:
             fts_query += f" LIMIT {limit}"
@@ -1467,7 +1759,7 @@ def _fts_search_table(
             FROM {fts_table} f
             JOIN tasks t ON t.id = f.rowid
             WHERE f.{fts_table} MATCH ?
-            ORDER BY f.rank DESC
+            ORDER BY f.rank
         """
         if limit:
             fts_query += f" LIMIT {limit}"
@@ -1505,7 +1797,7 @@ def _fts_search_table(
             FROM {fts_table} f
             JOIN events e ON e.id = f.rowid
             WHERE f.{fts_table} MATCH ?
-            ORDER BY f.rank DESC
+            ORDER BY f.rank
         """
         if limit:
             fts_query += f" LIMIT {limit}"
@@ -1607,8 +1899,8 @@ def full_text_search(
         table_results = _fts_search_table(db, table, query, limit=per_table_limit)
         all_results.extend(table_results)
 
-    # Sort by rank descending across all tables
-    all_results.sort(key=lambda x: x["rank"], reverse=True)
+    # Sort by rank ascending across all tables (negative scores, more negative = better match)
+    all_results.sort(key=lambda x: x["rank"])
 
     # Apply offset and limit across combined results
     end_idx = offset + limit
