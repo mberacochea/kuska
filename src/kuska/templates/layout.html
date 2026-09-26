@@ -87,6 +87,43 @@ document.body.addEventListener('input', function(event) {
     event.target.setAttribute('aria-invalid', 'false');
   }
 });
+
+// Inline tag editing functions
+function editTags(taskId) {
+  const display = document.getElementById('tags-display-' + taskId);
+  const input = document.getElementById('tags-input-' + taskId);
+  if (display && input) {
+    display.style.display = 'none';
+    input.style.display = 'block';
+    input.focus();
+    input.select();
+  }
+}
+
+function cancelEditTags(taskId) {
+  const display = document.getElementById('tags-display-' + taskId);
+  const input = document.getElementById('tags-input-' + taskId);
+  if (display && input) {
+    input.style.display = 'none';
+    display.style.display = 'flex';
+  }
+}
+
+// Reset tag editing UI after successful submission
+document.body.addEventListener('htmx:afterSwap', function(event) {
+  // Find any tag inputs that were just replaced and hide them
+  if (event.detail.target && event.detail.target.id && event.detail.target.id.startsWith('task-')) {
+    const taskId = event.detail.target.id.replace('task-', '');
+    const input = document.getElementById('tags-input-' + taskId);
+    if (input && input.style.display === 'block') {
+      input.style.display = 'none';
+      const display = document.getElementById('tags-display-' + taskId);
+      if (display) {
+        display.style.display = 'flex';
+      }
+    }
+  }
+});
 </script>
 </body>
 </html>

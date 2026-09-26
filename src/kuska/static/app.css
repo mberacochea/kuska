@@ -76,6 +76,20 @@ button.link:hover, a.link:hover { color:var(--fg); }
   display:inline-block; padding:.05rem .5rem; border-radius:999px;
   border:1px solid currentColor; font-size:.8rem; white-space:nowrap;
 }
+
+/* Tags column styling */
+.tags-cell {
+  max-width:20rem; padding:.35rem .8rem !important;
+}
+.tags-display {
+  max-height:3.2rem; overflow-y:auto; overflow-x:hidden;
+}
+.tags-display .chip {
+  margin:.15rem .1rem;
+}
+.tags-cell input[type="text"] {
+  padding:.4rem .55rem; font-size:.9rem; margin:0;
+}
 .dot { display:inline-block; width:.6rem; height:.6rem; border-radius:50%; margin-right:.45rem; background:var(--muted); }
 .dot.idle { background:var(--accent); } .dot.working { background:var(--warn); } .dot.offline { background:var(--muted); }
 
