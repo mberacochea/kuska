@@ -136,6 +136,21 @@ def _norm_feature(value: str | None) -> str | None:
     return ((value or "").strip().lower())[:40] or None
 
 
+def _norm_tags(value: str | None) -> str | None:
+    """Normalize tags: split, strip, lowercase, deduplicate, rejoin.
+
+    None or empty string means no tags.
+    """
+    if not value:
+        return None
+    tags = set()
+    for tag in value.split(','):
+        tag = tag.strip().lower()
+        if tag:
+            tags.add(tag)
+    return ','.join(sorted(tags)) if tags else None
+
+
 @bound
 def add_task(
     db: SqliteDatabase,
@@ -143,6 +158,7 @@ def add_task(
     description: str = "",
     assigned_to: str | None = None,
     feature: str | None = None,
+    tags: str | None = None,
 ) -> int:
     """Create a new task.
 
@@ -157,6 +173,7 @@ def add_task(
         feature: Optional free-text feature group this task belongs to (e.g.
                  "search"). Normalised via _norm_feature; empty/None means
                  ungrouped.
+        tags: Optional comma-separated tags for filtering (e.g. "frontend,bug").
 
     Returns:
         int: New task ID.
@@ -173,6 +190,7 @@ def add_task(
         assigned_to=assigned_to or None,
         status="todo",
         feature=_norm_feature(feature),
+        tags=_norm_tags(tags),
         created_at=ts,
         updated_at=ts,
     )
@@ -213,6 +231,7 @@ def update_task(db: SqliteDatabase, task_id: int, **fields: Any) -> None:
                   - status (str): Must be in TASK_STATUSES.
                   - feature (str | None): Free-text feature group, or None
                     to ungroup. Normalised via _norm_feature.
+                  - tags (str | None): Comma-separated tags for filtering.
                   - worktree_path (str | None): Path to the task's git
                     worktree, or None once it's been removed.
 
@@ -224,7 +243,7 @@ def update_task(db: SqliteDatabase, task_id: int, **fields: Any) -> None:
         >>> update_task(db, 42, assigned_to="alice")  # assign to alice
         >>> update_task(db, 42, assigned_to=None)  # unassign
     """
-    allowed = {"title", "description", "assigned_to", "status", "feature", "worktree_path"}
+    allowed = {"title", "description", "assigned_to", "status", "feature", "tags", "worktree_path"}
     sets = {k: v for k, v in fields.items() if k in allowed}
     if not sets:
         return
@@ -234,6 +253,8 @@ def update_task(db: SqliteDatabase, task_id: int, **fields: Any) -> None:
         sets["assigned_to"] = sets["assigned_to"] or None
     if "feature" in sets:
         sets["feature"] = _norm_feature(sets["feature"])
+    if "tags" in sets:
+        sets["tags"] = _norm_tags(sets["tags"])
     sets["updated_at"] = now()
     Task.update(**sets).where(Task.id == task_id).execute()
 
@@ -281,10 +302,11 @@ def filter_tasks(
     status: list[str] | None = None,
     agent: list[str] | None = None,
     feature: list[str] | None = None,
+    tags: list[str] | None = None,
     sort_by: str | None = None,
     sort_dir: str = "asc",
 ) -> list[dict]:
-    """Filter and sort tasks by search query, status, assigned agent, feature,
+    """Filter and sort tasks by search query, status, assigned agent, feature, tags,
     and sort field.
 
     Args:
@@ -295,6 +317,9 @@ def filter_tasks(
                string in the list also matches unassigned tasks.
         feature: Optional list of feature groups to include. An empty string
                  in the list also matches ungrouped tasks (Task.feature IS NULL).
+        tags: Optional list of tags to include. Tasks matching any of the tags
+              are included. An empty string in the list also matches untagged
+              tasks (Task.tags IS NULL).
         sort_by: One of "title", "assigned_to", "status", "created_at",
                  "updated_at". Defaults to updated_at desc, created_at desc.
                  Rows are always grouped by feature first (ungrouped last),
@@ -324,6 +349,21 @@ def filter_tasks(
             query = query.where(Task.feature.in_(feature) | Task.feature.is_null())
         else:
             query = query.where(Task.feature.in_(feature))
+
+    if tags:
+        if "" in tags:
+            # Match tasks that have any of the selected tags OR have no tags
+            tag_conditions = [Task.tags.is_null()]
+            for tag in [t for t in tags if t]:  # filter out empty strings
+                tag_conditions.append(Task.tags.contains(tag))
+            query = query.where(SQL(" OR ").join([c for c in tag_conditions]))
+        else:
+            # Match tasks that have any of the selected tags
+            tag_conditions = []
+            for tag in tags:
+                tag_conditions.append(Task.tags.contains(tag))
+            if tag_conditions:
+                query = query.where(SQL(" OR ").join(tag_conditions))
 
     # ungrouped sorts last: "~~~" sorts after any lowercase feature name
     group = fn.COALESCE(Task.feature, "~~~")
@@ -373,6 +413,31 @@ def list_features(db: SqliteDatabase) -> list[dict]:
         .order_by(fn.COALESCE(Task.feature, "~~~"))
     )
     return rows(query)
+
+
+@bound
+def list_tags(db: SqliteDatabase) -> list[str]:
+    """List all distinct tags used across tasks, sorted alphabetically.
+
+    Args:
+        db: SqliteDatabase instance for this project.
+
+    Returns:
+        list[str]: Sorted list of unique tags (deduplicated).
+
+    Examples:
+        >>> list_tags(db)
+        ["bug", "feature", "urgent"]
+    """
+    query = Task.select(Task.tags).where(Task.tags.is_null(False)).distinct()
+    all_tags = set()
+    for task in rows(query):
+        if task.get("tags"):
+            for tag in task["tags"].split(","):
+                tag = tag.strip()
+                if tag:
+                    all_tags.add(tag)
+    return sorted(list(all_tags))
 
 
 @bound

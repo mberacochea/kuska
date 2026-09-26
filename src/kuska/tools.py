@@ -24,9 +24,11 @@ from .store import (
     get_inbox,
     get_task,
     heartbeat,
+    list_tags,
     list_tasks,
     reply,
     send_message,
+    update_task,
 )
 
 
@@ -49,10 +51,11 @@ def _create_task_handler(db, agent, args):
     title = args["title"]
     description = args.get("description", "")
     assigned_to = args.get("assigned_to")
+    tags = args.get("tags")
     depends_on = args.get("depends_on", [])
 
     # Create the task
-    task_id = add_task(db, title, description=description, assigned_to=assigned_to)
+    task_id = add_task(db, title, description=description, assigned_to=assigned_to, tags=tags)
 
     # Add dependencies if provided
     for dep_id in depends_on:
@@ -80,6 +83,63 @@ def _search_handler(db, agent, args):
         "count": len(results),
         "results": results,
     }
+
+
+def _add_tag_handler(db, agent, args):
+    """Handler for the add_tag tool."""
+    task_id = args["task_id"]
+    new_tags = args["tags"]
+
+    task = get_task(db, task_id)
+    if not task:
+        return {"error": f"Task {task_id} not found"}
+
+    # Get existing tags
+    existing_tags = set()
+    if task.get("tags"):
+        existing_tags = set(task["tags"].split(","))
+
+    # Add new tags
+    for tag in new_tags.split(","):
+        tag = tag.strip().lower()
+        if tag:
+            existing_tags.add(tag)
+
+    # Update task with combined tags
+    combined_tags = ",".join(sorted(existing_tags)) if existing_tags else None
+    update_task(db, task_id, tags=combined_tags)
+
+    # Return updated task
+    updated_task = get_task(db, task_id)
+    return updated_task or {}
+
+
+def _remove_tag_handler(db, agent, args):
+    """Handler for the remove_tag tool."""
+    task_id = args["task_id"]
+    tags_to_remove = args["tags"]
+
+    task = get_task(db, task_id)
+    if not task:
+        return {"error": f"Task {task_id} not found"}
+
+    # Get existing tags
+    existing_tags = set()
+    if task.get("tags"):
+        existing_tags = set(task["tags"].split(","))
+
+    # Remove tags
+    for tag in tags_to_remove.split(","):
+        tag = tag.strip().lower()
+        existing_tags.discard(tag)
+
+    # Update task with remaining tags
+    combined_tags = ",".join(sorted(existing_tags)) if existing_tags else None
+    update_task(db, task_id, tags=combined_tags)
+
+    # Return updated task
+    updated_task = get_task(db, task_id)
+    return updated_task or {}
 
 
 TOOL_SPECS: list[dict] = [
@@ -189,6 +249,7 @@ TOOL_SPECS: list[dict] = [
                 "title": {**_STR, "description": "Short task name"},
                 "description": {**_STR, "description": "Optional longer explanation of what to do"},
                 "assigned_to": {**_STR, "description": "Optional agent name to assign this task to"},
+                "tags": {**_STR, "description": "Optional comma-separated tags for filtering (e.g. 'bug,urgent')"},
                 "depends_on": {
                     "type": "array",
                     "items": _INT,
@@ -242,6 +303,36 @@ TOOL_SPECS: list[dict] = [
             ["query"],
         ),
         "handler": lambda db, agent, a: _search_handler(db, agent, a),
+    },
+    {
+        "name": "add_tag",
+        "description": "Add one or more tags to a task. Tags are comma-separated strings used for filtering and grouping.",
+        "schema": _obj(
+            {
+                "task_id": {**_INT, "description": "ID of the task to tag"},
+                "tags": {**_STR, "description": "Comma-separated tags to add (e.g. 'bug,urgent')"},
+            },
+            ["task_id", "tags"],
+        ),
+        "handler": lambda db, agent, a: _add_tag_handler(db, agent, a),
+    },
+    {
+        "name": "remove_tag",
+        "description": "Remove one or more tags from a task.",
+        "schema": _obj(
+            {
+                "task_id": {**_INT, "description": "ID of the task to remove tags from"},
+                "tags": {**_STR, "description": "Comma-separated tags to remove (e.g. 'bug,urgent')"},
+            },
+            ["task_id", "tags"],
+        ),
+        "handler": lambda db, agent, a: _remove_tag_handler(db, agent, a),
+    },
+    {
+        "name": "list_tags",
+        "description": "List all tags currently used in the project.",
+        "schema": _obj({}),
+        "handler": lambda db, agent, a: {"tags": list_tags(db)},
     },
 ]
 

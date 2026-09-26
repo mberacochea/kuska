@@ -32,6 +32,16 @@
       </select>
     </div>
 
+    <div class="filter-group">
+      <label for="task-tags">Tags:</label>
+      <select id="task-tags" name="tag" multiple class="task-filter-select" aria-label="Filter by tags">
+        <option value="" {{ 'selected' if '' in tag_list }}>Untagged</option>
+        {% for t in tags %}
+        <option value="{{ t }}" {{ 'selected' if t in tag_list }}>{{ t }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
     <button type="button" class="filter-reset" aria-label="Clear all filters"
             hx-get="/tasks" hx-target="#tasks-container" hx-swap="outerHTML" hx-push-url="true"
             hx-params="none">Reset</button>

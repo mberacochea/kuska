@@ -53,6 +53,7 @@ from .store import (
     get_event,
     get_task,
     list_agents,
+    list_tags,
     list_tasks,
     longest_tasks,
     recent_events,
@@ -390,6 +391,7 @@ def create_app(project_dir: Path):
         search: str = "",
         status_list: list[str] | None = None,
         agent_list: list[str] | None = None,
+        tag_list: list[str] | None = None,
         sort_by: str | None = None,
         sort_dir: str = "asc",
     ) -> str:
@@ -406,9 +408,11 @@ def create_app(project_dir: Path):
             tasks_table=tasks_table(tasks, sort_by, sort_dir),
             agents=list_agents(db()),
             statuses=TASK_STATUSES,
+            tags=list_tags(db()),
             search=search,
             status_list=status_list or [],
             agent_list=agent_list or [],
+            tag_list=tag_list or [],
             sort_by=sort_by or "",
             sort_dir=sort_dir,
         )
@@ -714,6 +718,7 @@ def create_app(project_dir: Path):
         search = request.args.get("search", "").strip()
         status_list = request.args.getlist("status")
         agent_list = request.args.getlist("agent")
+        tag_list = request.args.getlist("tag")
         sort_by = request.args.get("sort") or None
         sort_dir = request.args.get("direction", "asc")
         filtered = filter_tasks(
@@ -721,10 +726,11 @@ def create_app(project_dir: Path):
             search,
             status=status_list or None,
             agent=agent_list or None,
+            tags=tag_list or None,
             sort_by=sort_by,
             sort_dir=sort_dir,
         )
-        container = tasks_container(filtered, search, status_list, agent_list, sort_by, sort_dir)
+        container = tasks_container(filtered, search, status_list, agent_list, tag_list, sort_by, sort_dir)
 
         if wants_fragment():
             return container
@@ -734,6 +740,7 @@ def create_app(project_dir: Path):
             page="tasks",
             agents=list_agents(db()),
             statuses=TASK_STATUSES,
+            tags=list_tags(db()),
             tasks_container=container,
         )
 
@@ -791,12 +798,12 @@ def create_app(project_dir: Path):
 
     @app.post("/tasks/<int:task_id>")
     def patch_task(task_id: int) -> tuple[str, int]:
-        """POST /tasks/<id> - Update task fields (title, description, assigned_to, status)."""
+        """POST /tasks/<id> - Update task fields (title, description, assigned_to, status, tags)."""
         task = get_task(db(), task_id)
         if not task:
             return "", 404
 
-        fields = {k: v for k, v in request.form.items() if k in {"title", "description", "assigned_to", "status"}}
+        fields = {k: v for k, v in request.form.items() if k in {"title", "description", "assigned_to", "status", "tags"}}
 
         # Validate title if provided
         if "title" in fields:

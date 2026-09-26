@@ -14,6 +14,13 @@
     </select>
   </td>
   <td class="small">
+    {% if t.tags %}
+      {% for tag in t.tags.split(',') %}
+        <span class="chip">{{ tag }}</span>
+      {% endfor %}
+    {% else %}<span class="muted">-</span>{% endif %}
+  </td>
+  <td class="small">
     {% for d in blocking.get(t.id, []) %}
       <span class="chip s-{{ d.status }}" title="{{ d.title }}">#{{ d.id }} {{ d.status }}</span>
     {% else %}<span class="muted">-</span>{% endfor %}

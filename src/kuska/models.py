@@ -53,6 +53,7 @@ class Task(Base):
     )
     status = CharField(default="todo")  # see db.TASK_STATUSES
     feature = CharField(null=True, index=True)  # free-text group, e.g. "search"
+    tags = TextField(null=True)  # comma-separated tags for filtering and grouping
     worktree_path = TextField(null=True)  # path to the worktree, if one exists
     created_at = FloatField(default=time.time)
     updated_at = FloatField(default=time.time)
