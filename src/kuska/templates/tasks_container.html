@@ -1,7 +1,7 @@
 <div id="tasks-container">
   <form id="task-filters-container" class="task-filters"
         hx-get="/tasks" hx-target="#tasks-container" hx-swap="outerHTML" hx-push-url="true"
-        hx-trigger="input changed delay:400ms, change">
+        hx-trigger="change from:select, input changed delay:400ms from:input">
     <input type="hidden" name="sort" value="{{ sort_by }}">
     <input type="hidden" name="direction" value="{{ sort_dir }}">
 

@@ -12,6 +12,7 @@
   <th>{{ sort_link('title', 'Title', sort_by, sort_dir) }}</th>
   <th>{{ sort_link('assigned_to', 'Assigned', sort_by, sort_dir) }}</th>
   <th>{{ sort_link('status', 'Status', sort_by, sort_dir) }}</th>
+  <th>Tags</th>
   <th>Waiting on</th>
   <th>{{ sort_link('created_at', 'Created', sort_by, sort_dir) }}</th>
   <th>{{ sort_link('updated_at', 'Updated', sort_by, sort_dir) }}</th>
@@ -19,6 +20,6 @@
 </tr></thead>
 <tbody>
 {% for t in tasks %}{{ render_row(t)|safe }}{% endfor %}
-{% if not tasks %}<tr><td colspan="8" class="muted">No tasks yet.</td></tr>{% endif %}
+{% if not tasks %}<tr><td colspan="9" class="muted">No tasks yet.</td></tr>{% endif %}
 </tbody>
 </table>
