@@ -24,10 +24,46 @@ Usage:
 
 from __future__ import annotations
 
+import os
+import time
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - POSIX only
+    fcntl = None
+
 from pathlib import Path
 
 from peewee import SqliteDatabase
 from playhouse.migrations import MigrationError, Runner
+
+
+class _MigrationLock:
+    """Lightweight filesystem lock for migration serialization across processes.
+
+    Only used for migrations, not for all database operations (unlike the old
+    cross-process write lock). This ensures that when multiple kuska processes
+    (serve/mcp/daemon) start simultaneously and call init_db(), only one
+    performs migrations at a time, while others wait their turn.
+    """
+
+    def __init__(self, db_path: str):
+        # Lock file: <db_path>.migration.lock
+        self._lock_path = f"{db_path}.migration.lock" if db_path and db_path != ":memory:" else ""
+        self._fd = None
+
+    def __enter__(self):
+        if fcntl is None or not self._lock_path:
+            return self
+        self._fd = os.open(self._lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+        fcntl.flock(self._fd, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc_info):
+        if self._fd is not None:
+            fcntl.flock(self._fd, fcntl.LOCK_UN)
+            os.close(self._fd)
+            self._fd = None
 
 
 def _get_migrations_dir() -> Path:
@@ -76,6 +112,9 @@ def run_migrations(
 ) -> list[str]:
     """Apply pending migrations to the database.
 
+    Migrations are protected by a filesystem lock to ensure only one process
+    runs them at a time, even when multiple kuska processes start simultaneously.
+
     Args:
         db: SqliteDatabase instance
         target_version: Optional migration name to migrate to. If not specified,
@@ -87,14 +126,20 @@ def run_migrations(
     Raises:
         MigrationError if a migration is malformed or fails.
     """
-    runner = _get_runner(db)
+    # Get the database path to create a migration-specific lock
+    # The database attribute contains the filename string
+    db_path = db.database
 
-    try:
-        # Run migrations up to the target, or all if no target specified
-        applied = runner.up(target=target_version)
-        return applied
-    except MigrationError as e:
-        raise RuntimeError(f"Migration failed: {e}") from e
+    lock = _MigrationLock(db_path)
+    with lock:
+        runner = _get_runner(db)
+
+        try:
+            # Run migrations up to the target, or all if no target specified
+            applied = runner.up(target=target_version)
+            return applied
+        except MigrationError as e:
+            raise RuntimeError(f"Migration failed: {e}") from e
 
 
 def rollback_migration(db: SqliteDatabase, migration_name: str | None = None) -> list[str]:

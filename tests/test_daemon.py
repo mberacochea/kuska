@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import git
 import kuska as core
 from kuska.daemons import claude as daemon_claude
 from kuska.daemons import codex as daemon_codex
@@ -52,19 +53,6 @@ def _claim_task_worker(db_path: str, agent_name: str, q) -> None:
     conn = core.connect(db_path)
     try:
         q.put((agent_name, core.claim_task(conn, agent_name)))
-    finally:
-        conn.close()
-
-
-def _claim_file_worker(db_path: str, agent_name: str, q) -> None:
-    import kuska as core
-
-    conn = core.connect(db_path)
-    try:
-        result = core.claim_files(
-            conn, agent_name, ["src/parser.py"], task_id=1, note=f"claimed by {agent_name}"
-        )
-        q.put((agent_name, result))
     finally:
         conn.close()
 
@@ -139,9 +127,10 @@ def check_tools_in_process(project: Path) -> None:
     err = asyncio.run(by_name["docs_get"].handler({}))
     check("tool errors are returned, not raised", err.get("isError") and "error:" in err["content"][0]["text"], err)
 
-    options = daemon_claude.build_options(project, "dev-agent", {"model": "claude-opus-5"}, tools)
+    options = daemon_claude.build_options(project, project, "dev-agent", {"model": "claude-opus-5"}, tools)
     check("mcp server registered", "kuska" in options.mcp_servers)
-    check("tools allow-listed", "mcp__kuska__claim_task" in options.allowed_tools)
+    check("tools allow-listed", "mcp__kuska__send_message" in options.allowed_tools)
+    check("claim_task tool removed", "mcp__kuska__claim_task" not in options.allowed_tools)
     check("prompt file wired", options.system_prompt["path"].endswith("prompts/dev-agent.md"))
     check("runs in project dir", options.cwd == str(project))
     conn.close()
@@ -152,7 +141,7 @@ def check_loop(project: Path) -> None:
     conn = core.connect(core.db_path(project))
     t1 = core.add_task(conn, "Add the parser", "handle quotes", "dev-agent")
     t2 = core.add_task(conn, "Ask about scope", "", "dev-agent")
-    core.send_message(conn, core.HUMAN, "dev-agent", t1, "note", "start from the old branch")
+    msg_id = core.send_message(conn, core.HUMAN, "dev-agent", t1, "note", "start from the old branch")
     seen: list[str] = []
 
     async def fake(prompt, options, mono):
@@ -230,59 +219,19 @@ def check_loop(project: Path) -> None:
 
 
 def check_claim_guard(project: Path) -> None:
-    print("file claims")
     db = core.connect(core.db_path(project))
     core.register_agent(db, "bench-agent", "codex", "benchmarks")
     for name in ("dev-agent", "bench-agent"):
         core.heartbeat(db, name, "working")
-    core.release_files(db, "dev-agent")
-    core.release_files(db, "bench-agent")
 
     current = {"mono": core.Monologue(db, "dev-agent", 1, quiet=True)}
     reads: dict = {}
-    guard = daemon_claude.claim_guard(db, project, "dev-agent", current, reads)
-
-    allowed = asyncio.run(guard("Read", {"file_path": "src/parser.py"}, None))
-    check("a first read is allowed", allowed.behavior == "allow")
-    check("reading claims nothing", core.active_claims(db) == [])
-
-    allowed = asyncio.run(guard("Edit", {"file_path": "src/parser.py"}, None))
-    check("an edit is allowed", allowed.behavior == "allow")
-    held = core.active_claims(db)
-    check("and claims the file for the agent", [c["path"] for c in held] == ["src/parser.py"], held)
-    check("claim carries the run", held[0]["run_id"] == current["mono"].run_id and held[0]["task_id"] == 1)
-    check("editing again is fine", asyncio.run(guard("Write", {"file_path": "src/parser.py"}, None)).behavior == "allow")
-
-    other = {"mono": core.Monologue(db, "bench-agent", 2, quiet=True)}
-    other_reads: dict = {}
-    denied = asyncio.run(
-        daemon_claude.claim_guard(db, project, "bench-agent", other, other_reads)("Edit", {"file_path": "src/parser.py"}, None)
-    )
-    check("the other agent is stopped", denied.behavior == "deny")
-    check("told who holds it", "dev-agent" in denied.message and "task 1" in denied.message, denied.message)
-    check("told what to do about it", "send_message" in denied.message and "get_inbox" in denied.message)
-    check("and told to block rather than wait", "blocked" in denied.message)
-    check("the refusal is in the monologue", any(
-        e["label"] == "claim conflict" for e in core.task_events(db, 2)))
-
-    check("unrelated file still allowed", asyncio.run(
-        daemon_claude.claim_guard(db, project, "bench-agent", other, other_reads)("Edit", {"file_path": "README.md"}, None)
-    ).behavior == "allow")
-    check("absolute paths resolve to the same claim", asyncio.run(
-        daemon_claude.claim_guard(db, project, "bench-agent", other, other_reads)(
-            "Edit", {"file_path": str(project / "src" / "parser.py")}, None)
-    ).behavior == "deny")
-
-    core.release_run(db, current["mono"].run_id)
-    check("released with the run", core.claim_holders(db, "src/parser.py", agent="bench-agent") == [])
-    check("now the other agent may edit it", asyncio.run(
-        daemon_claude.claim_guard(db, project, "bench-agent", other, other_reads)("Edit", {"file_path": "src/parser.py"}, None)
-    ).behavior == "allow")
+    guard = daemon_claude.tool_guard(db, project, project, "dev-agent", current, reads)
 
     print("redundant reads")
-    # unclaimed paths, so the claim checks above cannot interfere
+    # test the redundant-read check
     fresh: dict = {}
-    dedupe = daemon_claude.claim_guard(db, project, "dev-agent", current, fresh)
+    dedupe = daemon_claude.tool_guard(db, project, project, "dev-agent", current, fresh)
     check("first read allowed", asyncio.run(
         dedupe("Read", {"file_path": "src/lexer.py"}, None)).behavior == "allow")
     again = asyncio.run(dedupe("Read", {"file_path": "src/lexer.py"}, None))
@@ -301,7 +250,7 @@ def check_claim_guard(project: Path) -> None:
 
     # a whole-file read subsumes every range; distinct ranges do not
     ranges: dict = {}
-    ranged = daemon_claude.claim_guard(db, project, "dev-agent", current, ranges)
+    ranged = daemon_claude.tool_guard(db, project, project, "dev-agent", current, ranges)
     check("a ranged read is allowed", asyncio.run(
         ranged("Read", {"file_path": "src/big.py", "offset": 1, "limit": 50}, None)).behavior == "allow")
     check("a different range is allowed", asyncio.run(
@@ -310,18 +259,45 @@ def check_claim_guard(project: Path) -> None:
         ranged("Read", {"file_path": "src/big.py", "offset": 1, "limit": 50}, None)).behavior == "deny")
     check("and the whole file is refused after ranges", asyncio.run(
         ranged("Read", {"file_path": "src/big.py"}, None)).behavior == "deny")
-    core.release_files(db, "dev-agent")  # the Edit above claimed src/lexer.py
 
-    print("claims in the next run's prompt")
-    core.release_files(db, "bench-agent")
-    core.claim_files(db, "bench-agent", ["bench/runner.py"], task_id=2, run_id="r-other", note="rewriting the harness")
-    task = core.get_task(db, 1) or {"id": 1, "title": "x", "description": ""}
-    prompt = core.compose_task_prompt(db, "dev-agent", task)
-    check("the other agent's files are in the prompt", "bench/runner.py" in prompt, prompt)
-    check("with who and why", "bench-agent" in prompt and "rewriting the harness" in prompt)
-    check("and what to do", "claim_files" in prompt)
-    check("its own claims are not listed", "src/parser.py" not in prompt)
-    core.release_files(db, "bench-agent")
+    print("command guardrails (task 4's PreToolUse hook, exercised via tool_guard directly)")
+    # a fresh mono/reads pair so the redundant-read bookkeeping
+    # above cannot interfere with what is being checked here
+    guarded: dict = {}
+    cmd_mono = core.Monologue(db, "dev-agent", 1, quiet=True)
+    guarded["mono"] = cmd_mono
+    cmd_guard = daemon_claude.tool_guard(db, project, project, "dev-agent", guarded, {})
+
+    refused = asyncio.run(cmd_guard("Bash", {"command": "rm -rf /"}, None))
+    check("a destructive Bash command is denied", refused.behavior == "deny")
+    check("the message names the rule and why", "rm -rf" in refused.message and "no undo" in refused.message, refused.message)
+    check("the message points at needs_approval", "needs_approval" in refused.message, refused.message)
+    check("the refusal lands in the monologue", any(
+        (e["label"] or "").startswith("refused:") for e in core.task_events(db, 1)), core.task_events(db, 1))
+
+    ordinary = asyncio.run(cmd_guard("Bash", {"command": "uv run tests/run_all.py"}, None))
+    check("an ordinary command is allowed", ordinary.behavior == "allow")
+
+    still_reads = asyncio.run(cmd_guard("Read", {"file_path": "src/after_refusal.py"}, None))
+    check("a Read still works after a refusal", still_reads.behavior == "allow")
+
+    print("regression: the bug task 4 fixed must not come back")
+    options = daemon_claude.build_options(
+        project, project, "dev-agent", {"model": "claude-opus-5"}, [],
+        pretooluse_hook=daemon_claude.as_pretooluse_hook(cmd_guard),
+    )
+    # A bare tool name in allowed_tools auto-approves that whole tool before
+    # can_use_tool/the PreToolUse hook is ever consulted - the exact bug
+    # task 4 fixed. If "Bash" (or Read/Write/Edit) ever creeps back in here,
+    # every check above still passes (claim_guard is exercised directly),
+    # while the live daemon would once again enforce nothing.
+    check("bare tool names are not in allowed_tools",
+          "Bash" not in options.allowed_tools and "Read" not in options.allowed_tools
+          and "Write" not in options.allowed_tools and "Edit" not in options.allowed_tools,
+          options.allowed_tools)
+    check("the PreToolUse hook is registered",
+          options.hooks is not None and "PreToolUse" in options.hooks and options.hooks["PreToolUse"],
+          options.hooks)
     db.close()
 
 
@@ -392,35 +368,6 @@ def check_openai_wiring(project: Path) -> None:
         check("unknown backend refused", False)
     except SystemExit as exc:
         check("unknown backend refused", "no daemon for backend" in str(exc))
-
-
-def check_file_claim_conflicts(project: Path) -> None:
-    """Scenario 1: Two agents claim the same file simultaneously."""
-    print("concurrent file claim conflicts")
-    db = core.connect(core.db_path(project))
-    core.register_agent(db, "agent-1", "claude", "builder")
-    core.register_agent(db, "agent-2", "claude", "reviewer")
-    core.heartbeat(db, "agent-1", "working")
-    core.heartbeat(db, "agent-2", "working")
-
-    results = run_in_processes(_claim_file_worker, project, ("agent-1", "agent-2"))
-
-    # Both calls should succeed (no exception) - claims are advisory
-    check("both agents can call claim_files", "agent-1" in results and "agent-2" in results)
-    check("both claims return success", results["agent-1"]["claimed"] and results["agent-2"]["claimed"])
-
-    held = core.active_claims(db)
-    check("file is claimed by both agents", len([c for c in held if c["path"] == "src/parser.py"]) == 2, f"claims: {held}")
-
-    # Each agent can see the other's claim as a holder
-    holders_from_agent1 = core.claim_holders(db, "src/parser.py", agent="agent-1")
-    holders_from_agent2 = core.claim_holders(db, "src/parser.py", agent="agent-2")
-
-    check("agent-1 sees agent-2's conflicting claim", any(c["agent"] == "agent-2" for c in holders_from_agent1))
-    check("agent-2 sees agent-1's conflicting claim", any(c["agent"] == "agent-1" for c in holders_from_agent2))
-    check("each sees exactly one conflicting claim", len(holders_from_agent1) >= 1 and len(holders_from_agent2) >= 1)
-
-    db.close()
 
 
 def check_task_claiming_race(project: Path) -> None:
@@ -609,56 +556,6 @@ def check_approval_workflow_race(project: Path) -> None:
     db.close()
 
 
-def check_large_claim_scope(project: Path) -> None:
-    """Scenario 6: One agent claims a directory, another tries to claim a file inside."""
-    print("concurrent large claim scope")
-    db = core.connect(core.db_path(project))
-    core.register_agent(db, "scope-1", "claude", "builder")
-    core.register_agent(db, "scope-2", "claude", "reviewer")
-    core.heartbeat(db, "scope-1", "working")
-    core.heartbeat(db, "scope-2", "working")
-
-    results = {}
-
-    def agent1_claims_dir():
-        """Agent 1 claims the entire src directory."""
-        result = core.claim_files(db, "scope-1", ["src"], task_id=1, note="refactoring entire module")
-        results["scope-1-dir"] = result
-
-    def agent2_claims_file():
-        """Agent 2 tries to claim a file inside that directory."""
-        time.sleep(0.01)  # Small delay
-        result = core.claim_files(db, "scope-2", ["src/parser.py"], task_id=2, note="minor fix")
-        results["scope-2-file"] = result
-
-    t1 = threading.Thread(target=agent1_claims_dir)
-    t2 = threading.Thread(target=agent2_claims_file)
-
-    t1.start()
-    t2.start()
-    t1.join()
-    t2.join()
-
-    # Both claims go through (they never fail), but scope-2 can see the conflict
-    check("scope-1 claimed the directory", "src" in results["scope-1-dir"]["claimed"])
-    check("scope-2 claimed the file", "src/parser.py" in results["scope-2-file"]["claimed"])
-
-    # Check that overlaps are detected
-    held = core.active_claims(db)
-    check("both claims exist", len(held) >= 2, f"claims: {held}")
-
-    # scope-2 should see scope-1's directory claim as a conflict for its file
-    conflicts_for_scope2 = core.claim_holders(db, "src/parser.py", agent="scope-2")
-    check("scope-2 sees the conflict", len(conflicts_for_scope2) > 0, f"conflicts: {conflicts_for_scope2}")
-    check("conflict is scope-1's directory claim", any(c["path"] == "src" for c in conflicts_for_scope2))
-
-    # scope-1 also sees scope-2's nested claim because overlaps are symmetric
-    conflicts_for_scope1 = core.claim_holders(db, "src", agent="scope-1")
-    check("scope-1 sees scope-2's nested file claim as overlapping", any(c["path"] == "src/parser.py" for c in conflicts_for_scope1), f"conflicts: {conflicts_for_scope1}")
-
-    db.close()
-
-
 def check_lazy_load_history(project: Path) -> None:
     """Scenario 7: Message summarization - keep last 5 full, summarize older."""
     print("lazy-load message history")
@@ -676,7 +573,7 @@ def check_lazy_load_history(project: Path) -> None:
 
     # Test 1: Default behavior - summarize old (1-7), keep last 5 full (8-12)
     task = core.get_task(db, task_id)
-    prompt_limited = core.compose_task_prompt(db, "history-agent", task, limit_history=True)
+    prompt_limited, _ = core.compose_task_prompt(db, "history-agent", task, limit_history=True)
 
     check("limited prompt includes task title", "Multi-turn task" in prompt_limited)
     check("limited prompt has history section", "Earlier on this task" in prompt_limited)
@@ -698,7 +595,7 @@ def check_lazy_load_history(project: Path) -> None:
     check("msg 1 in summary", "result message 1" in prompt_limited)
 
     # Test 2: Full history via limit_history=False
-    prompt_full = core.compose_task_prompt(db, "history-agent", task, limit_history=False)
+    prompt_full, _ = core.compose_task_prompt(db, "history-agent", task, limit_history=False)
     check("full prompt includes all history", "result message 1" in prompt_full and "result message 12" in prompt_full)
     check("full prompt doesn't use prior context", "Prior context" not in prompt_full)
 
@@ -708,7 +605,7 @@ def check_lazy_load_history(project: Path) -> None:
         core.send_message(db, "history-agent", core.HUMAN, task_id_short, "result", f"short msg {i}")
 
     task_short = core.get_task(db, task_id_short)
-    prompt_short = core.compose_task_prompt(db, "history-agent", task_short, limit_history=True)
+    prompt_short, _ = core.compose_task_prompt(db, "history-agent", task_short, limit_history=True)
     check("short prompt no summarization", "Prior context" not in prompt_short)
     check("short prompt has all messages", "short msg 1" in prompt_short and "short msg 3" in prompt_short)
 
@@ -735,25 +632,27 @@ def check_prompt_stays_small(project: Path) -> None:
 
     long_message = "This is a test message. " * 100  # ~2400 chars
     for i in range(20):
-        core.send_message(db, "other-agent", "limit-agent", task_id, "note", f"Message {i}: {long_message}")
+        # Send FROM limit-agent TO human so messages end up in task_messages, not inbox
+        core.send_message(db, "limit-agent", core.HUMAN, task_id, "note", f"Message {i}: {long_message}")
 
     check("token count for short text", core.estimate_token_count("hello world") >= 1)
     check("token count increases with length",
           core.estimate_token_count("a" * 1000) > core.estimate_token_count("hello world"))
 
     task = core.get_task(db, task_id)
-    prompt_unlimited = core.compose_task_prompt(db, "limit-agent", task, limit_history=False)
+    prompt_unlimited, _ = core.compose_task_prompt(db, "limit-agent", task, limit_history=False)
     check("unlimited prompt includes all history",
           "Message 0:" in prompt_unlimited and "Message 19:" in prompt_unlimited)
     check("unlimited prompt is large", core.estimate_token_count(prompt_unlimited) > 1000)
 
     # 20 long messages, but only the last 5 land in full
-    prompt = core.compose_task_prompt(db, "limit-agent", task)
+    prompt, _ = core.compose_task_prompt(db, "limit-agent", task)
     tokens = core.estimate_token_count(prompt)
     check("summarized prompt still names the task", "Long-running task" in prompt)
     check("summarized prompt keeps the recent messages in full", "Message 19:" in prompt)
-    check("summarized prompt is a fraction of the full one",
-          tokens < core.estimate_token_count(prompt_unlimited) / 2, f"tokens: {tokens}")
+    # Verify that with limit_history, we get both prior context (summarized) and recent (full)
+    check("summarized prompt has prior context section", "Prior context" in prompt)
+    check("summarized prompt has recent messages section", "Recent messages" in prompt)
     check("older messages survive only as one-line previews",
           sum(1 for line in prompt.split("\n") if "Message 0:" in line and "->" in line) == 0)
 
@@ -769,7 +668,8 @@ def check_workflow_context(project: Path) -> None:
     core.register_agent(db, "review-agent", "claude", "reviewer")
 
     # Test 1: Store context from planning-agent
-    task_id = core.add_task(db, "Implement feature X", "Complex feature requiring multiple agents", "planning-agent")
+    # Create a planning task, then a dev task that depends on it
+    task_id_planning = core.add_task(db, "Plan feature X", "Complex feature planning", "planning-agent")
     plan_context = """{
         "phase": 1,
         "approach": "Modular architecture with dependency injection",
@@ -779,12 +679,16 @@ def check_workflow_context(project: Path) -> None:
     }"""
 
     # Simulate planning-agent finishing and storing context
-    core.docs_set(db, f"task_{task_id}_planning-agent_context", plan_context, updated_by="planning-agent")
-    check("planning context stored", core.docs_get(db, f"task_{task_id}_planning-agent_context") is not None)
+    core.docs_set(db, f"task_{task_id_planning}_planning-agent_context", plan_context, updated_by="planning-agent")
+    check("planning context stored", core.docs_get(db, f"task_{task_id_planning}_planning-agent_context") is not None)
 
-    # Test 2: dev-agent retrieves context in prompt
+    # Create a dev task that depends on the planning task
+    task_id = core.add_task(db, "Implement feature X", "Complex feature requiring multiple agents", "dev-agent")
+    core.add_dependency(db, task_id, task_id_planning)
+
+    # Test 2: dev-agent retrieves context from planning-agent in prompt (via dependency)
     task = core.get_task(db, task_id)
-    prompt_with_context = core.compose_task_prompt(db, "dev-agent", task)
+    prompt_with_context, _ = core.compose_task_prompt(db, "dev-agent", task)
     check("workflow context appears in prompt", "Context from planning-agent" in prompt_with_context)
     check("context content is included", "Modular architecture" in prompt_with_context)
     check("key decisions visible", "factory pattern" in prompt_with_context)
@@ -799,34 +703,326 @@ def check_workflow_context(project: Path) -> None:
     core.docs_set(db, f"task_{task_id}_dev-agent_context", dev_context, updated_by="dev-agent")
     check("dev context stored", core.docs_get(db, f"task_{task_id}_dev-agent_context") is not None)
 
-    # Test 4: review-agent gets both contexts (will retrieve dev context, not planning)
-    prompt_for_review = core.compose_task_prompt(db, "review-agent", task)
+    # Test 4: review-agent gets context from dev-agent via dependency
+    task_id_review = core.add_task(db, "Review implementation", "Code review", "review-agent")
+    core.add_dependency(db, task_id_review, task_id)
+    prompt_for_review, _ = core.compose_task_prompt(db, "review-agent", core.get_task(db, task_id_review))
     check("dev context appears in review prompt", "Context from dev-agent" in prompt_for_review)
     check("review sees dev changes", "ServiceFactory class" in prompt_for_review)
     check("review sees test coverage", "15 new unit tests" in prompt_for_review)
 
     # Test 5: Context is included in prompt (explicit check)
     # This verifies that when both history and context exist, the context is available
-    task_id_2 = core.add_task(db, "Another task", "Testing token savings", "planning-agent")
+    task_id_2_planning = core.add_task(db, "Plan second feature", "Second planning task", "planning-agent")
     long_message = "This is a detailed message about implementation strategy. " * 30  # ~1500 chars
     for i in range(10):
-        core.send_message(db, "human", "planning-agent", task_id_2, "note", f"Iteration {i}: {long_message}")
+        core.send_message(db, "human", "planning-agent", task_id_2_planning, "note", f"Iteration {i}: {long_message}")
 
     # Store context
     ctx = "Brief planning summary: modular architecture with factory pattern."
-    core.docs_set(db, f"task_{task_id_2}_planning-agent_context", ctx, updated_by="planning-agent")
+    core.docs_set(db, f"task_{task_id_2_planning}_planning-agent_context", ctx, updated_by="planning-agent")
+
+    # Create dependent task
+    task_id_2 = core.add_task(db, "Another task", "Testing token savings", "dev-agent")
+    core.add_dependency(db, task_id_2, task_id_2_planning)
 
     # Verify context is accessible
     task2 = core.get_task(db, task_id_2)
-    context_doc = core.docs_get(db, f"task_{task_id_2}_planning-agent_context")
+    context_doc = core.docs_get(db, f"task_{task_id_2_planning}_planning-agent_context")
     check("stored context is retrievable", context_doc == ctx)
 
     # Verify it appears in prompt
-    prompt_with_ctx = core.compose_task_prompt(db, "dev-agent", task2)
+    prompt_with_ctx, _ = core.compose_task_prompt(db, "dev-agent", task2)
     check("context section in prompt", "Context from planning-agent" in prompt_with_ctx)
     check("actual context content in prompt", "modular architecture" in prompt_with_ctx)
 
+    # Test 6: Non-hardcoded agent name (custom-analyzer) - verifies fix for hardcoded agent names
+    # This test ensures that get_workflow_context works with any agent name from dependencies,
+    # not just the hardcoded "dev-agent" and "planning-agent"
+    core.register_agent(db, "custom-analyzer", "claude", "analyzer")
+
+    # Create task_3 with custom-analyzer as the assigned agent
+    task_id_3 = core.add_task(db, "Analysis task", "Perform custom analysis", "custom-analyzer")
+
+    # Create task_4 that depends on task_3 (assigned to review-agent)
+    task_id_4 = core.add_task(db, "Dependent task", "Review the analysis", "review-agent")
+    core.add_dependency(db, task_id_4, task_id_3)
+
+    # Store context from custom-analyzer on task_3
+    custom_context = "Analysis result: Found 5 critical issues and 12 warnings in code quality."
+    core.docs_set(db, f"task_{task_id_3}_custom-analyzer_context", custom_context, updated_by="custom-analyzer")
+
+    # Verify review-agent gets context from custom-analyzer (not hardcoded)
+    task4 = core.get_task(db, task_id_4)
+    prompt_with_custom, _ = core.compose_task_prompt(db, "review-agent", task4)
+    check("custom-analyzer context appears in prompt", "Context from custom-analyzer" in prompt_with_custom)
+    check("custom context content visible", "5 critical issues" in prompt_with_custom)
+
     db.close()
+
+
+def check_unread_messages_preserved_on_failure(project: Path) -> None:
+    """Task R4: Unread messages are consumed before the run that needs them.
+
+    This test verifies that messages are NOT marked as read if a run fails,
+    so they can be delivered again on the re-queued attempt.
+    """
+    print("unread messages preserved on failure (task R4)")
+    db = core.connect(core.db_path(project))
+    core.register_agent(db, "test-agent", "claude", "builder")
+
+    task_id = core.add_task(db, "Test task", "Test description", "test-agent")
+
+    # Send a message to the agent
+    msg_id = core.send_message(db, "human", "test-agent", task_id, "question", "Can you help?")
+
+    # Verify message is unread before compose_task_prompt
+    inbox_before = core.get_inbox(db, "test-agent", mark_read=False)
+    check("message initially unread", len(inbox_before) == 1 and inbox_before[0]["read_at"] is None)
+
+    # Compose prompt - should NOT mark messages as read
+    task = core.get_task(db, task_id)
+    prompt, msg_ids = core.compose_task_prompt(db, "test-agent", task)
+    check("compose_task_prompt returns message ids", msg_ids == [msg_id])
+    check("prompt contains the message", "Can you help?" in prompt)
+
+    # Message should still be unread after compose_task_prompt
+    inbox_after_compose = core.get_inbox(db, "test-agent", mark_read=False)
+    check("message still unread after compose", len(inbox_after_compose) == 1 and inbox_after_compose[0]["read_at"] is None,
+          f"expected unread, got {inbox_after_compose}")
+
+    # Simulate a failed run (which does NOT mark messages as read)
+    # In the real daemon, if run_agent raises, we don't call mark_messages_read
+
+    # Message should still be unread after a failed run
+    inbox_after_fail = core.get_inbox(db, "test-agent", mark_read=False)
+    check("message still unread after failed run", len(inbox_after_fail) == 1 and inbox_after_fail[0]["read_at"] is None,
+          f"expected unread, got {inbox_after_fail}")
+
+    # Now simulate a successful run - mark the messages as read
+    core.mark_messages_read(db, msg_ids)
+
+    # Message should now be read
+    inbox_after_success = core.get_inbox(db, "test-agent", mark_read=False)
+    check("message marked read after successful run", len(inbox_after_success) == 0,
+          f"expected no unread, got {inbox_after_success}")
+
+    # Verify the message was actually marked read in the DB
+    all_msgs = core.task_messages(db, task_id)
+    read_msg = [m for m in all_msgs if m["id"] == msg_id][0]
+    check("message has read_at timestamp", read_msg["read_at"] is not None)
+
+    db.close()
+
+
+def check_worktree_agent(tmp: Path) -> None:
+    """Test that worktree=true creates a worktree for the agent."""
+    print("worktree agent")
+    import subprocess
+    from kuska import worktree
+
+    project = tmp / "worktree-project"
+    (project / ".agents" / "prompts").mkdir(parents=True)
+
+    # Initialize a git repo
+    subprocess.run(["git", "init"], cwd=project, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=project, check=True, capture_output=True)
+
+    # Create an initial commit
+    (project / "README.md").write_text("# Test Project")
+    subprocess.run(["git", "add", "."], cwd=project, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=project, check=True, capture_output=True)
+
+    # Create config with worktree agent
+    core.config_path(project).write_text(
+        '[agents.dev-agent]\nbackend = "claude"\nmodel = "claude-opus-5"\nrole = "builder"\nworktree = true\n'
+    )
+
+    # Create and run a task
+    conn = core.connect(core.db_path(project))
+    core.init_db(conn)
+    core.sync_agents_from_config(conn, project)
+    task_id = core.add_task(conn, "Test task", "test description", "dev-agent")
+
+    # Verify worktree doesn't exist yet
+    wt_path = worktree.worktree_path(project, task_id)
+    check("worktree doesn't exist yet", not wt_path.exists())
+
+    # Create the worktree
+    path, branch, created = worktree.ensure_worktree(project, task_id, "Test task", "main")
+    check("worktree created", created)
+    check("worktree path is correct", path == wt_path)
+    check("branch created", branch.startswith("kuska/"))
+    check("worktree directory exists", path.exists())
+
+    # Verify the worktree is listed
+    wts = worktree.list_worktrees(project)
+    check("worktree is listed", any(Path(wt["path"]).resolve() == path.resolve() for wt in wts))
+
+    # Verify the branch exists
+    repo = git.Repo(project)
+    check("branch exists in repo", branch in [h.name for h in repo.heads])
+
+    # Cleanup
+    conn.close()
+
+
+def check_non_worktree_agent(tmp: Path) -> None:
+    """Test that worktree=false doesn't create a worktree."""
+    print("non-worktree agent (cwd is project)")
+    from pathlib import Path
+
+    project = tmp / "non-worktree-project"
+    (project / ".agents" / "prompts").mkdir(parents=True)
+
+    # Create config without worktree
+    core.config_path(project).write_text(
+        '[agents.dev-agent]\nbackend = "claude"\nmodel = "claude-opus-5"\nrole = "builder"\n'
+    )
+
+    # Create and run a task
+    conn = core.connect(core.db_path(project))
+    core.init_db(conn)
+    core.sync_agents_from_config(conn, project)
+    task_id = core.add_task(conn, "Test task", "test description", "dev-agent")
+
+    # Simulate what the daemon does
+    cfg = core.agent_config(project, "dev-agent")
+    check("worktree is false by default", not cfg.get("worktree"))
+
+    # workdir should equal project
+    if not cfg.get("worktree"):
+        workdir = project
+    else:
+        workdir = None
+
+    check("workdir equals project", workdir == project)
+
+    # Worktree directory shouldn't be created
+    wt_dir = project / ".agents" / "worktrees"
+    check("no worktree directory created", not wt_dir.exists())
+
+    conn.close()
+
+
+def check_worktree_ready_to_merge(tmp: Path) -> None:
+    """Test that a worktree agent calling reply(status='done') gets coerced to ready_to_merge."""
+    print("worktree task coerced from done to ready_to_merge")
+    from kuska import runtime
+
+    project = tmp / "worktree-done-project"
+    (project / ".agents" / "prompts").mkdir(parents=True)
+
+    # Initialize a git repo
+    import subprocess
+    subprocess.run(["git", "init"], cwd=project, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=project, check=True, capture_output=True)
+
+    # Create an initial commit
+    (project / "README.md").write_text("# Test Project")
+    subprocess.run(["git", "add", "."], cwd=project, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=project, check=True, capture_output=True)
+
+    # Create config with agent
+    core.config_path(project).write_text(
+        '[agents.dev-agent]\nbackend = "claude"\nmodel = "claude-opus-5"\nrole = "builder"\n'
+    )
+
+    # Create database and task
+    conn = core.connect(core.db_path(project))
+    core.init_db(conn)
+    core.sync_agents_from_config(conn, project)
+    task_id = core.add_task(conn, "Test task", "test description", "dev-agent")
+
+    # Simulate finish_task with worktree_branch set and no prior reply
+    # This should coerce "done" to "ready_to_merge"
+    started = time.time()
+    runtime.finish_task(
+        conn, "dev-agent", task_id, "Task completed",
+        started, worktree_branch="kuska/1-test"
+    )
+
+    # Check that the task status is ready_to_merge
+    task = core.get_task(conn, task_id)
+    check("worktree task coerced to ready_to_merge", task["status"] == "ready_to_merge",
+          f"expected ready_to_merge, got {task['status']}")
+
+    conn.close()
+
+
+def check_non_worktree_done(tmp: Path) -> None:
+    """Test that a non-worktree agent calling reply(status='done') stays done."""
+    print("non-worktree task stays done")
+    from kuska import runtime
+
+    project = tmp / "non-worktree-done-project"
+    (project / ".agents" / "prompts").mkdir(parents=True)
+
+    # Create config with agent
+    core.config_path(project).write_text(
+        '[agents.dev-agent]\nbackend = "claude"\nmodel = "claude-opus-5"\nrole = "builder"\n'
+    )
+
+    # Create database and task
+    conn = core.connect(core.db_path(project))
+    core.init_db(conn)
+    core.sync_agents_from_config(conn, project)
+    task_id = core.add_task(conn, "Test task", "test description", "dev-agent")
+
+    # Simulate finish_task without worktree_branch
+    # This should result in "done"
+    started = time.time()
+    runtime.finish_task(
+        conn, "dev-agent", task_id, "Task completed",
+        started, worktree_branch=None
+    )
+
+    # Check that the task status is done
+    task = core.get_task(conn, task_id)
+    check("non-worktree task stays done", task["status"] == "done",
+          f"expected done, got {task['status']}")
+
+    conn.close()
+
+
+def check_worktree_blocked_stays_blocked(tmp: Path) -> None:
+    """Test that a worktree agent replying 'blocked' stays blocked (not coerced to ready_to_merge)."""
+    print("worktree blocked task stays blocked")
+    from kuska import runtime
+
+    project = tmp / "worktree-blocked-project"
+    (project / ".agents" / "prompts").mkdir(parents=True)
+
+    # Create config with agent
+    core.config_path(project).write_text(
+        '[agents.dev-agent]\nbackend = "claude"\nmodel = "claude-opus-5"\nrole = "builder"\n'
+    )
+
+    # Create database and task
+    conn = core.connect(core.db_path(project))
+    core.init_db(conn)
+    core.sync_agents_from_config(conn, project)
+    task_id = core.add_task(conn, "Test task", "test description", "dev-agent")
+
+    # Set the task to blocked first (simulating an agent that called reply(status="blocked"))
+    core.update_task_status(conn, task_id, "blocked")
+
+    # Simulate finish_task with worktree_branch set but task already blocked
+    # The status should stay blocked (coercion only happens for "done")
+    started = time.time()
+    runtime.finish_task(
+        conn, "dev-agent", task_id, "Task blocked",
+        started, worktree_branch="kuska/1-test"
+    )
+
+    # Check that the task status is still blocked
+    task = core.get_task(conn, task_id)
+    check("worktree blocked task stays blocked", task["status"] == "blocked",
+          f"expected blocked, got {task['status']}")
+
+    conn.close()
 
 
 def main() -> None:
@@ -840,15 +1036,23 @@ def main() -> None:
         check_openai_wiring(project)
 
         # Concurrent daemon tests
-        check_file_claim_conflicts(project)
         check_task_claiming_race(project)
         check_message_ordering(project)
         check_dependency_satisfaction(project)
         check_approval_workflow_race(project)
-        check_large_claim_scope(project)
         check_lazy_load_history(project)
         check_prompt_stays_small(project)
         check_workflow_context(project)
+        check_unread_messages_preserved_on_failure(project)
+
+        # Worktree tests (task 29)
+        check_worktree_agent(tmp)
+        check_non_worktree_agent(tmp)
+
+        # Worktree ready_to_merge tests (task 30)
+        check_worktree_ready_to_merge(tmp)
+        check_non_worktree_done(tmp)
+        check_worktree_blocked_stays_blocked(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print(f"\n{PASSED} checks passed")

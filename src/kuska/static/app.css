@@ -69,6 +69,7 @@ button.link:hover, a.link:hover { color:var(--fg); }
 .s-todo { color:var(--muted); }
 .s-in_progress { color:var(--warn); }
 .s-needs_approval { color:var(--info); }
+.s-ready_to_merge { color:var(--warn); }
 .s-blocked { color:var(--danger); }
 .s-done { color:var(--accent); }
 .chip {
@@ -98,6 +99,18 @@ pre.raw {
   white-space:pre-wrap; word-break:break-word; background:var(--shade);
   padding:.6rem .8rem; border-radius:6px; font-size:.85rem; margin:.4rem 0;
 }
+
+/* Code blocks for merge queue commands */
+.code-block {
+  background:var(--shade); padding:.6rem .8rem; border-radius:6px;
+  font-size:.85rem; display:flex; justify-content:space-between; align-items:center;
+  gap:.8rem;
+}
+.code-block code {
+  font-family:ui-monospace,"Monaco","Menlo","Consolas",monospace;
+  flex:1; overflow-x:auto; white-space:nowrap;
+}
+.code { font-family:ui-monospace,"Monaco","Menlo","Consolas",monospace; }
 .fields { display:grid; grid-template-columns:repeat(auto-fit,minmax(16rem,1fr)); gap:.9rem; margin:.9rem 0; }
 .fields label { display:flex; flex-direction:column; gap:.3rem; font-size:.85rem; font-weight:600; }
 .fields input, .fields select, .fields textarea { font-weight:400; }
@@ -110,12 +123,31 @@ pre.raw {
 .ev summary { cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .ev .g { display:inline-block; width:1.2rem; }
 .ev .what { font-weight:600; }
+.ev .label { font-weight:600; color:var(--fg); }
 .ev .body { color:var(--muted); }
+.ev .sig { color:var(--muted); }
 .k-tool_use .what { color:var(--warn); }
 .k-error .what { color:var(--danger); }
 .k-result .what { color:var(--accent); }
+.k-warning .what { color:var(--warn); }
 .k-thinking .what, .k-system .what, .k-prompt .what { color:var(--muted); }
 .ev .detail { padding:.3rem 0 .7rem 1.2rem; }
+
+/* run grouping in task feed */
+.run-group { margin:.6rem 0; padding:.6rem .9rem; border-left:3px solid var(--line); }
+.run-header { display:flex; gap:.6rem; align-items:center; font-weight:600; font-size:.95rem; padding:.3rem 0; cursor:default; user-select:none; }
+.run-header .g { display:inline-block; width:1.2rem; }
+.run-header .agent-name { font-weight:700; }
+.run-header .status { font-weight:600; }
+
+/* activity filters */
+.activity-container { display:flex; flex-direction:column; gap:.9rem; }
+.activity-filters { background:var(--shade); padding:.75rem .9rem; border-radius:6px; border:1px solid var(--line); }
+.activity-filter-controls { display:flex; gap:1rem; flex-wrap:wrap; align-items:center; }
+.activity-filter-controls .filter-group { display:flex; align-items:center; gap:.4rem; }
+.activity-filter-controls label { font-size:.8rem; font-weight:600; color:var(--muted); white-space:nowrap; text-transform:uppercase; letter-spacing:.5px; }
+.activity-filter-controls input[type=checkbox] { cursor:pointer; }
+.activity-filter-select { min-width:10rem; padding:.4rem .5rem; font-size:.9rem; }
 
 #toast:empty { display:none; }
 #toast {

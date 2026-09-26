@@ -14,6 +14,7 @@ dependencies = [
     "peewee>=4.5.1",       # models and queries
     # early beta, no API stability guarantee - pinned exactly, on purpose
     "openai-codex==0.154.0",
+    "gitpython>=3.1.62",
 ]
 
 [project.scripts]

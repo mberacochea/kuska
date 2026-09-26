@@ -1,0 +1,44 @@
+{% extends "layout.html" %}
+{% block body %}
+<h2>Runs <span class="muted">- agent invocations</span></h2>
+
+<table class="runs-table">
+  <thead>
+    <tr>
+      <th>Agent</th>
+      <th>Task</th>
+      <th>Started</th>
+      <th>Events</th>
+      <th>Status</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for run in runs %}
+    <tr>
+      <td class="agent-name"><a href="/runs/{{ run.run_id }}">{{ run.agent }}</a></td>
+      <td>
+        {% if run.task_id %}
+          <a href="/tasks/{{ run.task_id }}">#{{ run.task_id }}</a>
+        {% else %}
+          <span class="muted">—</span>
+        {% endif %}
+      </td>
+      <td class="muted small" title="{{ _fmt_ts(run.first_ts) }}">{{ ago(run.first_ts) }}</td>
+      <td class="muted">{{ run.event_count }}</td>
+      <td>
+        {% if run.result %}
+          {% set status_text = run.result.split(" - ")[0].strip() or "unknown" %}
+          <span class="status">{{ status_text }}</span>
+        {% else %}
+          <span class="status in-flight">in flight</span>
+        {% endif %}
+      </td>
+    </tr>
+  {% else %}
+    <tr>
+      <td colspan="5" class="muted">No runs yet.</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

@@ -1,12 +1,17 @@
 <div id="tasks-container">
   <form id="task-filters-container" class="task-filters"
         hx-get="/tasks" hx-target="#tasks-container" hx-swap="outerHTML" hx-push-url="true"
-        hx-trigger="input changed delay:300ms, change">
+        hx-trigger="input changed delay:400ms, change">
     <input type="hidden" name="sort" value="{{ sort_by }}">
     <input type="hidden" name="direction" value="{{ sort_dir }}">
 
-    <input type="text" name="search" placeholder="Search tasks..." class="task-search"
-           aria-label="Search tasks by title or description" value="{{ search }}" autofocus>
+    {# hx-preserve keeps this exact input node (focus, cursor position) across
+       the outerHTML swap below - without it, every debounced search request
+       replaces the field out from under you, which is what actually reads as
+       "flicker" while typing, not the request rate itself. #}
+    <input type="text" id="task-search-input" name="search" placeholder="Search tasks..." class="task-search"
+           aria-label="Search tasks by title or description" value="{{ search }}" autofocus
+           hx-preserve="true">
 
     <div class="filter-group">
       <label for="task-status">Status:</label>

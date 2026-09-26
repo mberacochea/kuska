@@ -1,0 +1,43 @@
+{% extends "layout.html" %}
+{% block body %}
+{% if error %}
+  <div class="error">{{ error }}</div>
+{% else %}
+  {% if run %}
+    <div class="run-transcript">
+      <h2>Run {{ run.run_id }}</h2>
+      <div class="run-header-summary">
+        <span class="agent-name">{{ run.agent }}</span>
+        {% if run.task_id %}<span class="muted">· Task <a href="/tasks/{{ run.task_id }}">#{{ run.task_id }}</a></span>{% endif %}
+        <span class="muted">·</span>
+        <span class="muted" title="{{ _fmt_ts(run.first_ts) }}">{{ ago(run.first_ts) }}</span>
+        <span class="muted">·</span>
+        <span class="muted">{{ run.event_count }} event{{ 's' if run.event_count != 1 else '' }}</span>
+        {% if run.status %}<span class="muted">·</span><span class="status">{{ run.status }}</span>{% endif %}
+        {% if run.cost is not none %}<span class="muted">·</span><span class="cost">${{ '%.4f'|format(run.cost) }}</span>{% endif %}
+      </div>
+
+      <div class="log">
+      {% for e in events %}
+        <details class="ev k-{{ e.kind }}"{% if loop.first %} open{% endif %}>
+          <summary>
+            <span class="g">{{ glyph(e.kind) }}</span>
+            <span class="muted small" title="{{ _fmt_ts(e.ts) }}">{{ clock(e.ts) }}</span>
+            <span class="label">{{ e.label or e.kind }}</span>
+            <span class="sig">{{ summarize(e) }}</span>
+          </summary>
+          <div class="detail">
+            {{ detail_html(e)|safe }}
+          </div>
+        </details>
+      {% else %}
+        <div class="muted small">No events for this run.</div>
+      {% endfor %}
+      </div>
+    </div>
+  {% else %}
+    <h2>Runs</h2>
+    <div class="muted">No run found.</div>
+  {% endif %}
+{% endif %}
+{% endblock %}

@@ -17,10 +17,12 @@ from .models import init_db as _init_db
 
 HUMAN = "human"
 
-# 'needs_approval' is a hold: the task does not run, and neither does anything
-# depending on it, until a human approves it or sends it back.
-TASK_STATUSES = ("todo", "in_progress", "needs_approval", "blocked", "done")
-HOLDING_STATUSES = ("needs_approval", "blocked")
+# 'needs_approval' and 'ready_to_merge' are holds: the task does not run, and
+# neither does anything depending on it, until a human approves/merges it or
+# sends it back. 'needs_approval' is for agent decisions; 'ready_to_merge' means
+# the agent committed its work to a branch and a human must review and merge.
+TASK_STATUSES = ("todo", "in_progress", "needs_approval", "ready_to_merge", "blocked", "done")
+HOLDING_STATUSES = ("needs_approval", "ready_to_merge", "blocked")
 AGENT_STATUSES = ("idle", "working", "offline")
 
 # What one agent invocation narrates as it works. `messages` stays what agents
@@ -39,14 +41,21 @@ def init_db(database: SqliteDatabase) -> None:
     """Create any table this version knows about that the file does not have.
 
     This uses the peewee ORM migration system to evolve the schema.
+
+    A half-applied migration must not be allowed to survive as a printed
+    warning: a desynced FTS5 index from a partially-applied migration 005
+    looks fine right up until it 500s an innocent `UPDATE` weeks later. If a
+    migration fails, this raises and startup refuses to serve rather than
+    limping on with an unknown schema state.
+
+    Migrations are serialized across processes by a filesystem lock in the
+    migration module itself, not by the global write lock that previously
+    affected all database operations.
     """
-    # Run migrations to apply any pending schema changes
-    try:
-        run_migrations(database)
-    except Exception as e:
-        # If migrations fail, log but continue - _init_db will catch fallback cases
-        import sys
-        print(f"Warning: migration failed (will try Peewee fallback): {e}", file=sys.stderr)
+    # Run migrations - they use a migration-specific filesystem lock to ensure
+    # only one process runs them at a time, even when multiple processes call
+    # init_db() simultaneously at startup.
+    run_migrations(database)
 
     # Peewee table creation as fallback, in case migrations didn't cover everything
     # (e.g., for databases that existed before the first migration was created)

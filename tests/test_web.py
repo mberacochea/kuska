@@ -35,15 +35,19 @@ def test_web(project: Path) -> None:
     app.config.update(TESTING=True)
     c = app.test_client()
     conn = ac.connect(ac.db_path(project))
+    HX = {"HX-Request": "true"}
 
     print("project page")
     html = c.get("/").get_data(as_text=True)
     check("renders", "<title>webproject - kuska</title>" in html)
     check("htmx loaded", "htmx.min.js" in html)
-    check("empty state", "No tasks yet." in html)
+    check("no task list clutter", "No tasks yet." not in html and 'id="tasks-container"' not in html)
 
     check("description saved", c.post("/description", data={"content": "# Web project"}).status_code == 200)
     check("description round-trips", "# Web project" in c.get("/").get_data(as_text=True))
+
+    print("tasks page starts empty")
+    check("empty state", "No tasks yet." in c.get("/tasks").get_data(as_text=True))
 
     print("tasks")
     frag = c.post("/tasks", data={"title": "Ship it", "description": "carefully", "assigned_to": "dev-agent"}).get_data(as_text=True)
@@ -58,8 +62,8 @@ def test_web(project: Path) -> None:
     check("unassign", ac.get_task(conn, 1)["assigned_to"] is None)
     c.post("/tasks/1", data={"assigned_to": "dev-agent"})
 
-    detail = c.get("/tasks/1/detail").get_data(as_text=True)
-    check("detail expands", "carefully" in detail and "No messages yet." in detail)
+    detail = c.get("/tasks/1", headers=HX).get_data(as_text=True)
+    check("task page shows detail", "carefully" in detail and "No messages yet." in detail)
     check("requeue offered when not todo", "Re-queue" in detail)
     c.post("/tasks/1/requeue")
     check("requeued", ac.get_task(conn, 1)["status"] == "todo")
@@ -69,9 +73,9 @@ def test_web(project: Path) -> None:
     check("message is routed to assignee", ac.get_inbox(conn, "dev-agent")[0]["payload"] == "check the edge case")
 
     ac.reply(conn, "dev-agent", 1, "Shipped.", input_tokens=10, output_tokens=5, cost_usd=0.01)
-    detail = c.get("/tasks/1/detail").get_data(as_text=True)
+    detail = c.get("/tasks/1", headers=HX).get_data(as_text=True)
     check("result shows in thread", "Shipped." in detail and "$0.0100" in detail)
-    check("collapse route", 'id="task-1"' in c.get("/tasks/1/row").get_data(as_text=True))
+    check("row still fetchable on its own", 'id="task-1"' in c.get("/tasks/1/row").get_data(as_text=True))
 
     print("task status filtering")
     # Create specific tasks for filtering tests
@@ -110,7 +114,7 @@ def test_web(project: Path) -> None:
     check("held task is not claimable", ac.claim_task(conn, "dev-agent") is None)
     row = c.get(f"/tasks/{second}/row").get_data(as_text=True)
     check("row shows what it waits on", f"#{first} needs_approval" in row, row)
-    detail = c.get(f"/tasks/{first}/detail").get_data(as_text=True)
+    detail = c.get(f"/tasks/{first}", headers=HX).get_data(as_text=True)
     check("approval prompt shown", "Waiting for your approval." in detail)
     check("both resolutions offered", "Approve (mark done)" in detail and "Send back (re-queue)" in detail)
 
@@ -129,17 +133,17 @@ def test_web(project: Path) -> None:
 
     print("markdown rendering")
     c.post("/tasks/1", data={"title": "Ship it", "description": "## Plan\n\n- one\n- two\n\n`code`"})
-    detail = c.get("/tasks/1/detail").get_data(as_text=True)
+    detail = c.get("/tasks/1", headers=HX).get_data(as_text=True)
     check("headings rendered", "<h2>Plan</h2>" in detail, detail[:0])
     check("lists rendered", "<li>one</li>" in detail)
     check("inline code rendered", "<code>code</code>" in detail)
     check("source not shown raw", "## Plan" not in detail)
-    check("edit view gives the source back", "## Plan" in c.get("/tasks/1/detail?edit=1").get_data(as_text=True))
+    check("edit view gives the source back", "## Plan" in c.get("/tasks/1?edit=1", headers=HX).get_data(as_text=True))
     ac.send_message(conn, "dev-agent", "human", 1, "result", "**done** &lt;ok&gt;")
-    thread = c.get("/tasks/1/detail").get_data(as_text=True)
+    thread = c.get("/tasks/1", headers=HX).get_data(as_text=True)
     check("message markdown rendered", "<strong>done</strong>" in thread)
     ac.send_message(conn, "dev-agent", "human", 1, "note", "<script>alert(1)</script>")
-    check("html from agents is escaped", "<script>alert(1)</script>" not in c.get("/tasks/1/detail").get_data(as_text=True))
+    check("html from agents is escaped", "<script>alert(1)</script>" not in c.get("/tasks/1", headers=HX).get_data(as_text=True))
     check("docs render too", "<strong>bold</strong>" in (
         c.post("/docs", data={"key": "notes"}),
         c.post("/docs/notes", data={"content": "**bold**"}),
@@ -154,21 +158,8 @@ def test_web(project: Path) -> None:
     check("polls itself", 'hx-get="/agents/rows"' in html)
     rows = c.get("/agents/rows").get_data(as_text=True)
     check("rows fragment", "<table>" in rows)
-    # the poll replaces #agent-rows wholesale, so the editor must live outside
-    # it - otherwise opening one and typing loses the text 5s later
-    check("editor host is outside the poll", 'id="agent-editor"' in html and 'id="agent-editor"' not in rows)
-
-    print("claims panel")
-    ac.heartbeat(conn, "dev-agent", "working")
-    ac.claim_files(conn, "dev-agent", ["src/parser.py"], task_id=1, run_id="r1", note="rewriting")
-    panel = c.get("/agents/claims").get_data(as_text=True)
-    check("panel polls itself", 'hx-get="/agents/claims"' in panel)
-    check("shows the file and holder", "src/parser.py" in panel and "dev-agent" in panel)
-    check("shows why", "rewriting" in panel)
-    check("on the agents page", 'id="claims"' in c.get("/agents").get_data(as_text=True))
-    ac.release_run(conn, "r1")
-    check("empty state", "Nothing claimed" in c.get("/agents/claims").get_data(as_text=True))
-    check("claims are editable as rows", 'id="rows"' in c.get("/data/file_claims").get_data(as_text=True))
+    check("agent name links to its own page", '<a href="/agents/dev-agent">' in rows)
+    check("list page has no embedded editor", 'id="agent-editor"' not in html)
 
     print("agent heartbeat and status")
     ac.heartbeat(conn, "dev-agent", "working")
@@ -184,11 +175,14 @@ def test_web(project: Path) -> None:
     check("offline status visible", ac.get_agent(conn, "dev-agent")["status"] == "offline")
 
     print("agent settings")
-    editor = c.get("/agents/dev-agent/context").get_data(as_text=True)
+    editor = c.get("/agents/dev-agent", headers=HX).get_data(as_text=True)
     check("settings form", 'name="model"' in editor and 'name="backend"' in editor)
     check("current model prefilled", 'value="claude-opus-5"' in editor, editor)
     check("every field offered", all(f'name="{f["key"]}"' in editor for f in ac.AGENT_FIELDS))
     check("prompt editor too", "textarea" in editor and "prompts/dev-agent.md" in editor)
+    full_agent_page = c.get("/agents/dev-agent").get_data(as_text=True)
+    check("agent page is a full page", "<nav>" in full_agent_page and 'name="model"' in full_agent_page)
+    check("missing agent 404s", c.get("/agents/nope").status_code == 404)
 
     saved = c.post("/agents/dev-agent", data={
         "backend": "claude", "model": "claude-sonnet-5", "role": "builder",
@@ -200,9 +194,9 @@ def test_web(project: Path) -> None:
     check("option written", cfg["permission_mode"] == "plan", cfg)
     check("blank fields dropped", "sandbox" not in cfg and "codex_bin" not in cfg, cfg)
     check("role synced to the db", ac.get_agent(conn, "dev-agent")["role"] == "builder")
-    check("table swapped back", 'id="agent-rows"' in saved and "claude-sonnet-5" in saved)
+    check("editor panel swapped back", 'id="agent-editor"' in saved and "claude-sonnet-5" in saved)
     check("toast is out-of-band", 'id="toast" hx-swap-oob="true"' in saved, saved[-200:])
-    check("editor reflects the change", 'value="claude-sonnet-5"' in c.get("/agents/dev-agent/context").get_data(as_text=True))
+    check("editor reflects the change", 'value="claude-sonnet-5"' in c.get("/agents/dev-agent", headers=HX).get_data(as_text=True))
 
     print("agent current task display")
     new_task_id = ac.add_task(conn, "for the agent", "test", "dev-agent")
@@ -237,17 +231,17 @@ def test_web(project: Path) -> None:
     check("bad price explained", "price_in_per_mtok must be a valid number" in bad_price.get_data(as_text=True))
 
     t_id = ac.add_task(conn, "for bench", assigned_to="bench-1")
-    removed = c.post("/agents/bench-1/delete").get_data(as_text=True)
+    removed = c.post("/agents/bench-1/delete")
     check("gone from config", "bench-1" not in ac.load_config(project)["agents"])
     check("gone from db", ac.get_agent(conn, "bench-1") is None)
     check("its task survives, unassigned", ac.get_task(conn, t_id)["assigned_to"] is None)
-    check("said so", "1 task unassigned" in removed, removed[-200:])
-    check("editor cleared out-of-band", 'id="agent-editor" hx-swap-oob="true"' in removed)
+    check("redirects back to the agents list", removed.headers.get("HX-Redirect") == "/agents")
+    check("its own page is gone", c.get("/agents/bench-1").status_code == 404)
     check("prompt file kept", ac.prompt_path(project, "bench-1").exists())
 
     c.post("/agents/dev-agent/context", data={"content": "be terse"})
     check("prompt written to disk", ac.prompt_path(project, "dev-agent").read_text() == "be terse")
-    check("editor reloads it", "be terse" in c.get("/agents/dev-agent/context").get_data(as_text=True))
+    check("editor reloads it", "be terse" in c.get("/agents/dev-agent", headers=HX).get_data(as_text=True))
 
     print("activity")
     mono = ac.Monologue(conn, "dev-agent", new_task_id, quiet=True)
@@ -257,15 +251,21 @@ def test_web(project: Path) -> None:
     check("tail polls itself", 'hx-get="/agents/activity"' in tail)
     check("tail shows the tool", "Edit" in tail and "dev-agent" in tail)
     check("tail truncates", "a" * 400 not in tail)
+    # Regression: the poll target's own response used to include the filter
+    # form too, so every 3s poll (outerHTML on just #activity) dropped in a
+    # duplicate filter bar as a sibling instead of just refreshing the log.
+    check("poll fragment is the log alone, no filter form", "activity-filters" not in tail and "agent-filter" not in tail)
     check("tail on the agents page", 'id="activity"' in c.get("/agents").get_data(as_text=True))
-    detail = c.get(f"/tasks/{new_task_id}/detail").get_data(as_text=True)
+    agents_page_html = c.get("/agents").get_data(as_text=True)
+    check("filters appear exactly once on the agents page", agents_page_html.count("activity-filters") == 1)
+    detail = c.get(f"/tasks/{new_task_id}", headers=HX).get_data(as_text=True)
     check("task log rendered", f"Task {new_task_id}" in detail and "<details" in detail)
     check("full body available to expand", "a" * 400 in detail)
     check("log does not poll over the form", 'hx-trigger="every 3s"' not in detail, detail[:0])
 
     print("live polling features (replaced with reload button)")
     # Test the polling container structure
-    table_html = c.get("/").get_data(as_text=True)
+    table_html = c.get("/tasks").get_data(as_text=True)
     # The live reload trigger should be gone
     check("live reload trigger removed", 'hx-trigger="every 5s"' not in table_html)
     # The "live" indicator should be gone
@@ -288,7 +288,7 @@ def test_web(project: Path) -> None:
     print("reload button functionality")
     # Verify the reload button works with filters
     c.post("/tasks", data={"title": "Test for reload", "description": "Test reload functionality", "assigned_to": "dev-agent"})
-    reload_test_html = c.get("/?status=todo").get_data(as_text=True)
+    reload_test_html = c.get("/tasks?status=todo").get_data(as_text=True)
     check("reload button present with filters", 'class="reload-tasks-btn"' in reload_test_html)
     check("filters preserved with reload button", 'id="task-filters-container"' in reload_test_html)
     # Simulate the reload button (an htmx GET to /tasks with the current filters)
@@ -317,7 +317,7 @@ def test_web(project: Path) -> None:
     check("swaps just the table", removed.count("hx-post=\"/docs\"") == 0, removed)
 
     print("data browser")
-    for table in ("tasks", "agents", "messages", "docs", "events", "file_claims"):
+    for table in ("tasks", "agents", "messages", "docs", "events"):
         page = c.get(f"/data/{table}").get_data(as_text=True)
         check(f"{table} page renders", 'id="rows"' in page and ("Insert row" in page or "editable" in table))
     check("unknown table refused", "no such table" in c.get("/data/nope").get_data(as_text=True))
@@ -358,7 +358,7 @@ def test_web(project: Path) -> None:
     c.post("/tasks", data={"title": special_title, "description": "Testing: <script>alert(1)</script>"})
     special_tasks = [t for t in ac.list_tasks(conn) if "<special>" in t["title"]]
     check("special chars stored in db", len(special_tasks) > 0)
-    html = c.get("/").get_data(as_text=True)
+    html = c.get("/tasks").get_data(as_text=True)
     check("special chars escaped in html", "<script>" not in html or "alert" not in html)
     # The title should be visible but escaped
     check("title visible but safe", "special" in html)
@@ -384,7 +384,7 @@ def test_web(project: Path) -> None:
 
     print("error handling and edge cases")
     # Test invalid task IDs
-    check("nonexistent task detail returns empty", c.get("/tasks/99999/detail").get_data(as_text=True) == "")
+    check("nonexistent task page 404s", c.get("/tasks/99999").status_code == 404)
     check("nonexistent task row returns empty", c.get("/tasks/99999/row").get_data(as_text=True) == "")
     check("nonexistent task patch ignored", c.post("/tasks/99999", data={"status": "done"}).get_data(as_text=True) == "")
     # Test with missing form fields
@@ -394,21 +394,71 @@ def test_web(project: Path) -> None:
     # server round trip to test, just that each editor wires its close
     # control to it.
     check("layout defines closePanel", "function closePanel(id)" in c.get("/").get_data(as_text=True))
-    agent_editor_html = c.get("/agents/dev-agent/context").get_data(as_text=True)
-    check("agent editor close wired to closePanel", "closePanel('agent-editor')" in agent_editor_html)
     doc_editor_html = c.post("/docs", data={"key": "closetest"}).get_data(as_text=True)
     check("doc editor close wired to closePanel", "closePanel('doc-editor')" in doc_editor_html)
     row_editor_html = c.get("/data/tasks/row", query_string={"pk": t_id}).get_data(as_text=True)
     check("row editor close wired to closePanel", "closePanel('row-editor')" in row_editor_html)
 
+    print("merge queue")
+    # Initialize git in the project so we can test worktree functionality
+    import subprocess
+    subprocess.run(["git", "init"], cwd=project, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=project, check=True, capture_output=True)
+    (project / "README.md").write_text("# Test Project")
+    subprocess.run(["git", "add", "."], cwd=project, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=project, check=True, capture_output=True)
+
+    # Create tasks with ready_to_merge status
+    merge_task_1 = ac.add_task(conn, "Fix search ranking", "Important feature", "dev-agent")
+    merge_task_2 = ac.add_task(conn, "Refactor database layer", "Technical debt", "dev-agent")
+
+    # Create worktrees for both tasks
+    path1, branch1, _ = ac.worktree.ensure_worktree(project, merge_task_1, "Fix search ranking", "main")
+    path2, branch2, _ = ac.worktree.ensure_worktree(project, merge_task_2, "Refactor database layer", "main")
+    ac.update_task(conn, merge_task_1, worktree_path=str(path1))
+    ac.update_task(conn, merge_task_2, worktree_path=str(path2))
+
+    ac.update_task_status(conn, merge_task_1, "ready_to_merge")
+    ac.update_task_status(conn, merge_task_2, "ready_to_merge")
+
+    # Add a dependency: task 2 waits on task 1 (so task 1 blocks task 2)
+    ac.add_dependency(conn, merge_task_2, merge_task_1)
+
+    merge_queue_page = c.get("/merge-queue").get_data(as_text=True)
+    check("merge queue page renders", "Merge Queue" in merge_queue_page)
+    check("ready_to_merge task shows in queue", str(merge_task_1) in merge_queue_page or "Fix search" in merge_queue_page)
+    check("ready_to_merge task shows its branch", branch1 in merge_queue_page or "kuska" in merge_queue_page)
+    check("another ready_to_merge task shows", str(merge_task_2) in merge_queue_page or "Refactor database" in merge_queue_page)
+
+    # Test the rows fragment
+    rows = c.get("/merge-queue/rows", headers=HX).get_data(as_text=True)
+    check("merge queue rows fragment renders", "tr" in rows)
+
+    # Test marking merged
+    marked = c.post(f"/tasks/{merge_task_1}/merged").get_data(as_text=True)
+    check("POST /tasks/<id>/merged sets done", ac.get_task(conn, merge_task_1)["status"] == "done")
+
+    # Test ordering: merge_task_1 (1 blocks) should come before merge_task_2 (0 blocks)
+    # because higher blocking count comes first, so task 1 should appear before task 2
+    merge_queue_page = c.get("/merge-queue").get_data(as_text=True)
+    task_1_pos = merge_queue_page.find(str(merge_task_1))
+    task_2_pos = merge_queue_page.find(str(merge_task_2))
+    check("ordering puts blocking task above non-blocking one", task_1_pos < task_2_pos and task_1_pos > 0)
+
+    # Test that diff command in task detail has three dots, not two
+    task_detail = c.get(f"/tasks/{merge_task_2}", headers=HX).get_data(as_text=True)
+    check("diff command in HTML has three dots", f"git diff {branch2[len('kuska/'):]}" not in task_detail or "..." in task_detail)
+    check("diff command has three dots not two", "...<" not in task_detail)  # No two-dot version with bracket
+
     print("search view")
     check("search form pushes the query into the URL", 'hx-push-url="true"' in c.get("/search").get_data(as_text=True))
     check("the old fragment-only pagination endpoint is gone", c.get("/search/results?q=bench").status_code == 404)
-    # A task result should link straight to it, pre-expanded, on the tasks page
+    # A task result should link straight to its own page
     search_html = c.get("/search", query_string={"q": "bench"}).get_data(as_text=True)
-    check("task result links to /tasks?open=<id>", f"/tasks?open={t_id}#task-{t_id}" in search_html)
-    opened_task = c.get("/tasks", query_string={"open": t_id}).get_data(as_text=True)
-    check("open=<id> lands with that task expanded", f'id="task-{t_id}"' in opened_task and "collapse" in opened_task)
+    check("task result links to /tasks/<id>", f'href="/tasks/{t_id}"' in search_html)
+    opened_task = c.get(f"/tasks/{t_id}").get_data(as_text=True)
+    check("task page shows its detail", 'id="task-detail"' in opened_task and "Depends on" in opened_task)
     # A doc result should link straight to it, pre-opened, on the docs page
     c.post("/docs/closetest", data={"content": "zzmarkerdoc content"})
     search_doc_html = c.get("/search", query_string={"q": "zzmarkerdoc"}).get_data(as_text=True)
@@ -422,17 +472,16 @@ def test_web(project: Path) -> None:
     # page, so clicking a task nested a second copy of the table inside that
     # task's own row. A response destined for an element must never carry the
     # layout with it.
-    HX = {"HX-Request": "true"}
     doctype = "<!doctype html>"
 
-    task_frag = c.get("/tasks", query_string={"open": t_id}, headers=HX).get_data(as_text=True)
-    check("htmx /tasks?open= is a fragment", doctype not in task_frag.lower())
-    check("htmx /tasks?open= carries no nav", "<nav>" not in task_frag)
+    task_frag = c.get(f"/tasks/{t_id}", headers=HX).get_data(as_text=True)
+    check("htmx /tasks/<id> is a fragment", doctype not in task_frag.lower())
+    check("htmx /tasks/<id> carries no nav", "<nav>" not in task_frag)
 
-    agent_frag = c.get("/agents", query_string={"open": "codex-1"}, headers=HX).get_data(as_text=True)
-    check("htmx /agents?open= is the editor alone", doctype not in agent_frag.lower())
-    check("htmx /agents?open= is the editor", 'id="agent-editor"' in agent_frag and "<nav>" not in agent_frag)
-    check("htmx /agents?open= has no second agent table", "agent-rows" not in agent_frag)
+    agent_frag = c.get("/agents/dev-agent", headers=HX).get_data(as_text=True)
+    check("htmx /agents/<name> is the editor alone", doctype not in agent_frag.lower())
+    check("htmx /agents/<name> is the editor", 'id="agent-editor"' in agent_frag and "<nav>" not in agent_frag)
+    check("htmx /agents/<name> has no second agent table", "agent-rows" not in agent_frag)
 
     doc_frag = c.get("/docs", query_string={"open": "closetest"}, headers=HX).get_data(as_text=True)
     check("htmx /docs?open= is the editor alone", doctype not in doc_frag.lower())
@@ -448,28 +497,26 @@ def test_web(project: Path) -> None:
 
     # Back/forward: on a cache miss htmx re-requests the URL and replaces the
     # whole body, so a history restore has to get the full page back.
-    restore = c.get("/tasks", query_string={"open": t_id},
+    restore = c.get(f"/tasks/{t_id}",
                     headers={"HX-Request": "true", "HX-History-Restore-Request": "true"})
     check("history restore gets the full page", doctype in restore.get_data(as_text=True).lower())
 
     # A plain browser navigation is unaffected by any of the above.
-    for url, args in (("/tasks", {"open": t_id}), ("/agents", {"open": "codex-1"}),
+    for url, args in ((f"/tasks/{t_id}", {}), ("/agents/dev-agent", {}),
                       ("/docs", {"open": "closetest"}), ("/data/tasks", {"open": t_id})):
         body = c.get(url, query_string=args).get_data(as_text=True)
         check(f"plain GET {url} is a full page", doctype in body.lower() and "<nav>" in body)
 
-    # The links themselves must aim at a fragment endpoint, not at the page.
+    # The list row is a plain link to the task's own page - no htmx needed.
     rows_html = c.get("/tasks").get_data(as_text=True)
-    check("task link fetches the detail fragment", f'hx-get="/tasks/{t_id}/detail"' in rows_html)
-    check("task link still deep-links in href", f'href="/tasks?open={t_id}"' in rows_html)
-    check("task link pushes the deep link", f'hx-push-url="/tasks?open={t_id}"' in rows_html)
-    detail_html = c.get(f"/tasks/{t_id}/detail").get_data(as_text=True)
-    check("collapse swaps the row back", f'hx-get="/tasks/{t_id}/row"' in detail_html)
-    collapsed = c.get(f"/tasks/{t_id}/row").get_data(as_text=True)
-    check("collapse target renders a usable row",
-          collapsed.startswith(f'<tr id="task-{t_id}">') and 'name="status"' in collapsed)
-    check("edit fetches the detail fragment in edit mode", f'hx-get="/tasks/{t_id}/detail?edit=1"' in detail_html)
-    check("no link hx-gets a whole page into a row", f'hx-get="/tasks?open={t_id}"' not in detail_html)
+    check("task link points at its own page", f'href="/tasks/{t_id}">' in rows_html)
+    check("no hx-get on the task link", f'hx-get="/tasks/{t_id}"' not in rows_html)
+
+    # On the task page itself, editing toggles in place via htmx targeting
+    # #task-detail, not the list row.
+    detail_html = c.get(f"/tasks/{t_id}", headers=HX).get_data(as_text=True)
+    check("edit fetches the panel fragment in edit mode", f'hx-get="/tasks/{t_id}?edit=1"' in detail_html)
+    check("edit targets the task-detail panel", 'hx-target="#task-detail"' in detail_html)
     check("search form selects its own block", 'hx-select="#search-page"' in c.get("/search").get_data(as_text=True))
 
     print("export + delete")
@@ -479,7 +526,7 @@ def test_web(project: Path) -> None:
         last = c.post(f"/tasks/{task['id']}/delete").get_data(as_text=True)
     check("delete empties table", "No tasks yet." in last)
     check("gone from db", ac.list_tasks(conn) == [])
-    check("missing task is harmless", c.get("/tasks/99/detail").get_data(as_text=True) == "")
+    check("missing task 404s", c.get("/tasks/99").status_code == 404)
 
     print("route status codes")
     # Test various HTTP status codes
@@ -490,7 +537,44 @@ def test_web(project: Path) -> None:
     check("GET /data/tasks is 200", c.get("/data/tasks").status_code == 200)
     check("invalid data table returns 200", c.get("/data/nonexistent").status_code == 200)
     check("POST /tasks is 200", c.post("/tasks", data={"title": "x"}).status_code == 200)
-    check("GET /tasks/1/detail is 200", c.get("/tasks/1/detail").status_code == 200)
+    check("GET /tasks/<missing> is 404", c.get("/tasks/999999").status_code == 404)
+
+    print("run transcript view")
+    # Create a task and some events to work with
+    task_id = ac.add_task(conn, "test run transcript", "testing runs", "dev-agent")
+    mono = ac.Monologue(conn, "dev-agent", task_id, quiet=True)
+    mono.record("prompt", f"Task {task_id}: Build something")
+    mono.tool_call("Read", {"file_path": "src/main.py"})
+    mono.record("tool_result", {"content": "file content here"})
+    run_id = mono.run_id
+
+    # Test runs index
+    runs_page = c.get("/runs").get_data(as_text=True)
+    check("runs index renders", "<html" in runs_page and "Runs" in runs_page)
+    check("runs table shows", "<table" in runs_page and "dev-agent" in runs_page)
+    check("task link in runs index", f'#{ task_id}' in runs_page)
+    check("nav marks runs page active", 'class="on">Runs<' in runs_page or 'class="on"' in runs_page and '/runs' in runs_page)
+
+    # Test run transcript page
+    transcript = c.get(f"/runs/{run_id}").get_data(as_text=True)
+    check("run transcript renders", "<html" in transcript and "Run" in transcript)
+    check("run id shown", run_id in transcript)
+    check("agent shown", "dev-agent" in transcript)
+    check("task link in transcript", f'#{ task_id}' in transcript)
+    check("events shown in order", "prompt" in transcript and "Read" in transcript)
+    check("transcript reads top to bottom", transcript.index("prompt") < transcript.index("Read"))
+
+    # Test malformed run_id validation
+    bad_run = c.get("/runs/not-a-hex-id").get_data(as_text=True)
+    check("malformed run_id rejected", "Invalid" in bad_run or "error" in bad_run.lower())
+
+    # Test unknown run_id
+    unknown_run = c.get("/runs/aabbccddeeff").get_data(as_text=True)
+    check("unknown run handled", "No run" in unknown_run or "error" in unknown_run.lower())
+
+    # Test path traversal attempt on run_id - Flask's routing should reject this
+    traversal_resp = c.get("/runs/../../etc/passwd")
+    check("path traversal refused", traversal_resp.status_code == 404)
 
     conn.close()
 
@@ -525,12 +609,18 @@ def test_mcp(project: Path) -> None:
                 check("attributed to caller", ac.docs_list(conn)[-1]["updated_by"] == "codex-1")
                 ac.add_task(conn, "codex task", "do the thing", "codex-1")
 
-                res = await session.call_tool("claim_task", {})
-                check("claim via mcp", '"codex task"' in res.content[0].text, res.content)
-                check("task in progress", ac.get_task(conn, 1)["status"] == "in_progress")
-                await session.call_tool("reply", {"task_id": 1, "payload": "done", "cost_usd": 0.5})
+                # Verify claim_task tool is no longer available
+                claim_task_tool = next((t for t in tools.tools if t.name == "claim_task"), None)
+                check("claim_task tool removed", claim_task_tool is None, f"Tool still exists: {claim_task_tool}")
+                check("task remains todo", ac.get_task(conn, 1)["status"] == "todo")
+
+                # Verify reply schema no longer has cost fields
+                reply_schema = next(t for t in tools.tools if t.name == "reply").input_schema
+                check("reply schema no cost fields", "cost_usd" not in reply_schema.get("properties", {}))
+                check("reply schema no token fields", all(k not in reply_schema.get("properties", {}) for k in ["input_tokens", "output_tokens"]))
+
+                await session.call_tool("reply", {"task_id": 1, "payload": "done"})
                 check("reply via mcp", ac.get_task(conn, 1)["status"] == "done")
-                check("cost logged", ac.token_usage_by_agent(conn)[0]["cost_usd"] == 0.5)
 
                 res = await session.call_tool("reply", {"payload": "missing task_id"})
                 check("bad args are an error result", res.is_error)

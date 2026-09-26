@@ -92,7 +92,6 @@ Use the "Data" page in the web UI to inspect:
 - `tasks` - all tasks and their status
 - `messages` - inter-agent communication and cost tracking
 - `events` - full narration of agent runs
-- `file_claims` - which files are being edited
 - `docs` - shared knowledge base
 
 ## Single Binary (Production)
@@ -129,12 +128,63 @@ task daemon AGENT=dev-agent
 
 Or in the web UI, check the "Agents" page for error messages and spend.
 
+## Working with Worktrees
+
+When an agent is configured with `worktree = true`, each task runs in its own
+git worktree on a dedicated branch. Worktrees live under `.agents/worktrees/`.
+
+### Where they are
+
+Each worktree is named `task-<id>` and lives at:
+```
+.agents/worktrees/task-42/          # the worktree directory
+# checked out on branch:
+kuska/42-short-description          # auto-generated from task title
+```
+
+### Reviewing a worktree
+
+1. **From the web UI**, find the task in the task list and mark it as "ready to review" or find its "ready_to_merge" status.
+
+2. **In a terminal**, list available worktrees:
+```bash
+git worktree list
+```
+
+3. **Check out the worktree** to review:
+```bash
+cd .agents/worktrees/task-42
+git log --oneline                   # see agent's commits
+git diff main                       # see what changed vs main
+```
+
+4. **Merge when ready**:
+```bash
+# From the main checkout, merge the branch
+git merge kuska/42-short-description
+
+# Then clean up the worktree
+git worktree remove .agents/worktrees/task-42
+```
+
+5. **Mark it merged** in the web UI so other tasks that depend on it can proceed.
+
+### Pruning worktrees
+
+Remove all pruned (already-merged) worktrees and clean up `.git/worktrees` metadata:
+```bash
+kuska worktree prune --all
+```
+
+This is safe to run anytime; it only removes worktrees whose branches are
+already merged into main.
+
 ## Architecture
 
 The system consists of:
 
 1. **Web Server** (Flask) - Project planning, agent configuration, live status
-2. **MCP Server** - Coordination tools (claim_files, send_message, etc.) for external clients
+2. **MCP Server** - Coordination tools (send_message, docs_get, etc.) for external clients
 3. **Agent Daemons** - Run continuously, poll for tasks, report progress
 
 `run-all` starts all three in separate threads:
@@ -143,6 +193,17 @@ The system consists of:
 - Each agent daemon runs in its own thread, polling for tasks
 
 Ctrl+C cleanly shuts down all services.
+
+### Single-Threaded Web Server
+
+The web server runs with `threaded=False` (serial request handling, not concurrent). This is intentional: the Flask app's `state` dict holds one process-wide open project and its SQLite database handle. When a request calls `open_project()` to switch projects, it closes the previous handle. With concurrent requests, another thread could be mid-query on that closed handle, causing an unhandled exception.
+
+Kuska is a single-user tool, so serving one request at a time is the correct design:
+- One project open per process
+- One database handle per process
+- No need for concurrent request handling
+
+Do not add a global lock around request handling or rework `state` into per-session storage — serving one project at a time is accepted behaviour here.
 
 ## Multi-Agent Context Passing (Phase 4.1)
 

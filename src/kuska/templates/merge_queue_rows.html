@@ -1,0 +1,26 @@
+{# Fragment for merge queue table rows, polled every 5s #}
+{% for t in tasks %}
+<tr id="task-{{ t.id }}">
+  <td class="num muted"><a href="/tasks/{{ t.id }}">{{ t.id }}</a></td>
+  <td><a href="/tasks/{{ t.id }}">{{ t.title }}</a></td>
+  <td class="muted">{{ t.assigned_to or '-' }}</td>
+  <td class="code">{{ worktrees.get(t.id, {}).get('branch', '-') }}</td>
+  <td class="num">{{ ahead.get(t.id, 0) }}</td>
+  <td class="small">
+    {% set diff = diffs.get(t.id, {}) %}
+    {% if diff %}{{ diff.files }} files +{{ diff.insertions }} −{{ diff.deletions }}{% else %}-{% endif %}
+  </td>
+  <td class="num">
+    {% set block_count = blocks.get(t.id, 0) %}
+    {% if block_count > 0 %}<strong>{{ block_count }}</strong>{% else %}-{% endif %}
+  </td>
+  <td>{{ '✓' if merged.get(t.id, False) else '-' }}</td>
+  <td style="display:flex; gap:.5rem">
+    {% if not merged.get(t.id, False) %}
+    <button class="link" hx-post="/tasks/{{ t.id }}/merged" hx-target="#merge-queue" hx-swap="outerHTML">Mark merged</button>
+    {% endif %}
+    <button class="link" hx-post="/tasks/{{ t.id }}/prune" hx-target="body" hx-swap="innerHTML"
+            {%- if not merged.get(t.id, False) %} disabled title="Branch not merged"{% endif %}>Prune</button>
+  </td>
+</tr>
+{% endfor %}

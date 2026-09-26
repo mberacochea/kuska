@@ -169,6 +169,10 @@
     <div class="stat-value s-needs_approval">{{ metrics.needs_approval }}</div>
   </div>
   <div class="stat-card">
+    <h3>Ready to Merge</h3>
+    <div class="stat-value s-ready_to_merge">{{ metrics.ready_to_merge }}</div>
+  </div>
+  <div class="stat-card">
     <h3>Todo</h3>
     <div class="stat-value s-todo">{{ metrics.todo }}</div>
   </div>
@@ -357,6 +361,31 @@
 </table>
 {% else %}
 <p class="muted">No tasks waiting for approval.</p>
+{% endif %}
+
+<!-- Tasks Ready to Merge -->
+{% if metrics.merge_tasks %}
+<h2>Tasks Ready to Merge <span class="muted">- {{ metrics.merge_tasks|length }} task(s)</span></h2>
+<table>
+  <thead>
+    <tr>
+      <th>Task ID</th>
+      <th>Title</th>
+      <th>Assigned To</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for task in metrics.merge_tasks %}
+    <tr>
+      <td>#{{ task.id }}</td>
+      <td>{{ task.title }}</td>
+      <td>{{ task.assigned_to or '-' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No tasks ready to merge.</p>
 {% endif %}
 
 {% endblock %}

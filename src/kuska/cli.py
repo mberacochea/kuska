@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 
 from . import __version__
+from . import worktree
 from .db import HUMAN, connect, init_db
 from .export import export_markdown
 from .migration import get_current_version, run_migrations
@@ -346,6 +347,149 @@ def cmd_run_all(args: argparse.Namespace) -> None:
         print("\nstopped")
 
 
+def cmd_worktree_list(args: argparse.Namespace) -> None:
+    """List all worktrees and their status."""
+    project = find_project(args.project)
+    if not worktree.is_git_repo(project):
+        print("Not a git repository")
+        return
+
+    wt_list = worktree.list_worktrees(project)
+    base = worktree.base_branch(project)
+    merged = worktree.merged_branches(project, base)
+
+    if not wt_list:
+        print("No worktrees")
+        return
+
+    # Parse task IDs from worktree paths
+    db = connect(db_path(project))
+    init_db(db)
+    from .store import list_tasks
+
+    tasks = {t["id"]: t for t in list_tasks(db)}
+    db.close()
+
+    for wt in wt_list:
+        path = Path(wt["path"])
+        # Extract task ID from path (e.g., .agents/worktrees/task-17 -> 17)
+        task_id = None
+        if path.name.startswith("task-"):
+            try:
+                task_id = int(path.name.split("-")[1])
+            except (ValueError, IndexError):
+                pass
+
+        branch = wt.get("branch", "detached")
+        is_merged = "✓" if branch in merged else " "
+        ahead = 0
+        if branch and branch != "detached":
+            try:
+                ahead = worktree.ahead_count(path, branch, base)
+            except Exception:
+                pass
+
+        print(f"{path} | {branch} | task-{task_id if task_id else '?'} | +{ahead} | {is_merged}")
+
+
+def cmd_worktree_prune(args: argparse.Namespace) -> None:
+    """Remove worktrees whose branches are merged or whose tasks are done.
+
+    By default, only removes worktrees for which the branch is merged.
+    --all also removes worktrees for tasks that are done (merged or not).
+    --force removes any worktree, regardless of task status or merge status.
+    """
+    project = find_project(args.project)
+    if not worktree.is_git_repo(project):
+        print("Not a git repository")
+        return
+
+    wt_list = worktree.list_worktrees(project)
+    base = worktree.base_branch(project)
+    merged = worktree.merged_branches(project, base)
+
+    db = connect(db_path(project))
+    init_db(db)
+    from .store import list_tasks, update_task
+
+    all_tasks = {t["id"]: t for t in list_tasks(db)}
+
+    removed = []
+    skipped = []
+
+    for wt in wt_list:
+        path = Path(wt["path"])
+        branch = wt.get("branch")
+
+        # Extract task ID from path
+        task_id = None
+        if path.name.startswith("task-"):
+            try:
+                task_id = int(path.name.split("-")[1])
+            except (ValueError, IndexError):
+                pass
+
+        # Determine if this worktree should be removed
+        should_remove = False
+        skip_reason = None
+
+        if args.force:
+            # --force removes everything
+            should_remove = True
+        elif branch and branch in merged:
+            # Branch is merged - always remove
+            should_remove = True
+        elif args.all and task_id and task_id in all_tasks:
+            # --all removes if task is done
+            task = all_tasks[task_id]
+            if task["status"] == "done":
+                should_remove = True
+            else:
+                skip_reason = "task not done"
+        else:
+            # Default: only remove merged branches
+            if branch and branch not in merged:
+                skip_reason = "branch not merged"
+
+        if not should_remove:
+            if skip_reason:
+                skipped.append((task_id, branch, skip_reason))
+            continue
+
+        # Remove the worktree
+        if branch:
+            success, msg = worktree.remove_worktree(project, path, branch)
+        else:
+            success, msg = worktree.remove_worktree(project, path, None)
+
+        if success:
+            removed.append((task_id, branch))
+            # Update task to clear worktree_path if it's in the DB
+            if task_id and task_id in all_tasks:
+                update_task(db, task_id, worktree_path=None)
+        else:
+            skipped.append((task_id, branch, f"error: {msg}"))
+
+    # Final prune to clean up any orphaned entries
+    worktree.prune(project)
+
+    # Report results
+    if removed:
+        print(f"Removed {len(removed)} worktree(s):")
+        for task_id, branch in removed:
+            print(f"  task-{task_id}: {branch}")
+
+    if skipped and not args.force:
+        print(f"\nSkipped {len(skipped)} worktree(s):")
+        for task_id, branch, reason in skipped:
+            print(f"  task-{task_id}: {branch} ({reason})")
+
+    if not removed and not skipped:
+        print("No worktrees to prune")
+
+    db.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="kuska", description=__doc__.splitlines()[0])
     parser.add_argument("--version", action="version", version=f"kuska {__version__}")
@@ -422,6 +566,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_run_all.add_argument("--port", type=int, default=5055)
     p_run_all.add_argument("--poll-interval", type=float, default=2.0)
     p_run_all.set_defaults(func=cmd_run_all)
+
+    p_worktree = sub.add_parser("worktree", help="manage worktrees")
+    p_worktree_sub = p_worktree.add_subparsers(dest="worktree_command", required=True)
+
+    p_wt_list = p_worktree_sub.add_parser("list", help="list all worktrees")
+    p_wt_list.set_defaults(func=cmd_worktree_list)
+
+    p_wt_prune = p_worktree_sub.add_parser("prune", help="remove merged worktrees")
+    p_wt_prune.add_argument("--all", action="store_true", help="also remove worktrees for done tasks")
+    p_wt_prune.add_argument("--force", action="store_true", help="remove any worktree regardless of status")
+    p_wt_prune.set_defaults(func=cmd_worktree_prune)
 
     return parser
 

@@ -11,16 +11,17 @@ import uuid
 
 from peewee import SqliteDatabase
 
+from .eventfmt import GLYPHS, TERMINAL_WIDTH, glyph, one_line, summarize  # noqa: F401 - GLYPHS/TERMINAL_WIDTH/one_line re-exported for callers that reach them via runtime
 from .markdown import as_markdown
 from .models import MODELS, Message
 from .store import (
-    active_claims,
     check_cost_anomaly,
     docs_get,
     docs_set,
     get_inbox,
     get_task,
     log_event,
+    mark_messages_read,
     reply,
     task_dependencies,
     task_messages,
@@ -62,14 +63,16 @@ def get_workflow_context(
     skip re-parsing message history.
 
     Context keys follow the pattern: task_{task_id}_{source_agent}_context
-    where source_agent is the agent that produced the context.
+    where source_agent is the agent that produced the context. When
+    source_agent is not specified, we look for context from upstream
+    task dependencies in reverse order (most recent first).
 
     Args:
         db: SqliteDatabase instance for this project.
         task: Task dict (must include 'id').
         source_agent: Name of agent to retrieve context from. If None,
                      tries to detect the most recent context available
-                     (planning-agent → dev-agent → review-agent order).
+                     by searching upstream task dependencies in reverse order.
 
     Returns:
         str: Formatted context section or empty string if none found.
@@ -80,14 +83,18 @@ def get_workflow_context(
         ...     # Include in prompt for dev-agent
     """
     if not source_agent:
-        # Try to find context from expected workflow: planning → dev → review
-        # Check in reverse order (most recent first)
-        for agent in ["dev-agent", "planning-agent"]:
-            doc_key = f"task_{task['id']}_{agent}_context"
-            content = docs_get(db, doc_key)
-            if content:
-                source_agent = agent
-                break
+        # Get upstream tasks and extract their agents in reverse order (most recent first)
+        deps = task_dependencies(db, task["id"])
+        if deps:
+            # Check dependencies in reverse order (most recent first)
+            # Context is stored on the dependency task with the dependency task's assigned agent
+            for dep in reversed(deps):
+                if dep.get("assigned_to"):
+                    doc_key = f"task_{dep['id']}_{dep['assigned_to']}_context"
+                    content = docs_get(db, doc_key)
+                    if content:
+                        source_agent = dep["assigned_to"]
+                        break
         if not source_agent:
             return ""
     else:
@@ -138,7 +145,7 @@ def compose_task_prompt(
     agent_name: str,
     task: dict,
     limit_history: bool = True,
-) -> str:
+) -> tuple[str, list[int]]:
     """Compose the prompt text for an agent invocation: task, context, and thread.
 
     Each agent invocation starts with a blank slate, so all context must be
@@ -172,10 +179,13 @@ def compose_task_prompt(
                       Set to False for full history.
 
     Returns:
-        str: Formatted prompt text, ready to prepend to the agent's input.
+        tuple[str, list[int]]: A tuple of (prompt_text, inbox_message_ids).
+            - prompt_text: Formatted prompt text, ready to prepend to the agent's input.
+            - inbox_message_ids: List of message IDs that were fetched from the inbox
+                                (should be marked as read after a successful run).
 
     Examples:
-        >>> prompt = compose_task_prompt(db, "claude-worker", task)
+        >>> prompt, msg_ids = compose_task_prompt(db, "claude-worker", task)
         >>> # Returns markdown like:
         >>> # # Task 42: Fix bug in parser
         >>> # Task description here...
@@ -197,28 +207,16 @@ def compose_task_prompt(
         parts += [f"- task {d['id']} ({d['status']}): {d['title']}" for d in deps]
         parts += [""]
 
-    others = [c for c in active_claims(db) if c["agent"] != agent_name]
-    if others:
-        parts += ["## Files other agents are working on right now", ""]
-        parts += [
-            f"- `{c['path']}` - {c['agent']}"
-            + (f" ({c['note']})" if c["note"] else "")
-            + (f", task {c['task_id']}" if c["task_id"] else "")
-            for c in others
-        ]
-        parts += [
-            "",
-            "Do not edit those. Claim what you are about to change with "
-            "`claim_files` first, and message whoever holds a file you need.",
-            "",
-        ]
-
     # Include workflow context from previous agent if available
     workflow_context = get_workflow_context(db, task)
     if workflow_context:
         parts += [workflow_context, ""]
 
-    inbox = get_inbox(db, agent_name)
+    # Fetch inbox messages without marking them as read - mark as read only
+    # after a successful run (see task R4: unread messages consumed before the
+    # run that needs them)
+    inbox = get_inbox(db, agent_name, mark_read=False)
+    inbox_message_ids = [m["id"] for m in inbox]
     all_history = [
         m for m in task_messages(db, task["id"]) if m["id"] not in {i["id"] for i in inbox}
     ]
@@ -248,7 +246,7 @@ def compose_task_prompt(
             scope = f" (task {m['task_id']})" if m["task_id"] and m["task_id"] != task["id"] else ""
             parts += [f"**{m['sender']}**{scope} ({m['msg_type']}):", m["payload"] or "", ""]
 
-    return "\n".join(parts)
+    return "\n".join(parts), inbox_message_ids
 
 
 def estimate_cost(cfg: dict, input_tokens: int, output_tokens: int) -> float:
@@ -291,6 +289,7 @@ def finish_task(
     cache_write_tokens: int = 0,
     tool_rounds: int = 0,
     cost_usd: float = 0.0,
+    worktree_branch: str | None = None,
 ) -> int:
     """Close out one invocation, recording its cost without double-counting.
 
@@ -314,6 +313,7 @@ def finish_task(
         cache_write_tokens: Input written to cache, at roughly 1.25x the price.
         tool_rounds: API round-trips in this turn - the real cost driver.
         cost_usd: Total cost in USD, as reported by the backend.
+        worktree_branch: The git branch the task ran on (if using worktrees).
 
     Returns:
         int: Message ID of the result (newly created or updated).
@@ -340,8 +340,12 @@ def finish_task(
         else:
             task = get_task(db, task_id)
             # whatever hold the agent put the task under is the agent's call to keep
-            terminal = ("blocked", "done", "needs_approval")
+            terminal = ("blocked", "done", "needs_approval", "ready_to_merge")
             status = task["status"] if task and task["status"] in terminal else "done"
+            # if a worktree task would result in "done", coerce to "ready_to_merge"
+            # so the branch requires human review before merging
+            if worktree_branch is not None and status == "done":
+                status = "ready_to_merge"
             msg_id = reply(
                 db, agent_name, task_id, payload,
                 input_tokens=input_tokens, output_tokens=output_tokens,
@@ -363,38 +367,12 @@ def finish_task(
 # format and the audit trail are the same for every backend.
 # --------------------------------------------------------------------------
 
-GLYPHS = {
-    "prompt": "\u25b8",
-    "thinking": "\u00b7",
-    "text": "\u25aa",
-    "tool_use": "\u2699",
-    "tool_result": "\u2190",
-    "system": "\u2508",
-    "error": "\u2718",
-    "result": "\u2714",
-}
-TERMINAL_WIDTH = 160
-
-
-def one_line(text: str, width: int = TERMINAL_WIDTH) -> str:
-    """Collapse a block of output to one readable terminal line.
-
-    Joins multiple lines into one (collapsing whitespace) and truncates if
-    needed, adding an ellipsis to indicate truncation.
-
-    Args:
-        text: Text to collapse.
-        width: Maximum width before truncation (default TERMINAL_WIDTH).
-
-    Returns:
-        str: Single-line summary.
-
-    Examples:
-        >>> one_line("this is\\na long\\ntext", width=10)
-        "this is a..."
-    """
-    flat = " ".join(str(text).split())
-    return flat if len(flat) <= width else flat[: width - 1] + "\u2026"
+# GLYPHS, TERMINAL_WIDTH and one_line() now live in eventfmt.py - that module
+# owns "how an event reads" for all three surfaces (terminal, web, export),
+# and this one needs eventfmt.summarize() below, so the shared primitives had
+# to move rather than the two modules importing each other. Re-exported here
+# (imported above) since callers - web.py, tests, __init__.py - reach them as
+# `runtime.GLYPHS` / `runtime.one_line`.
 
 
 class Monologue:
@@ -440,8 +418,10 @@ class Monologue:
         log_event(self.db, self.agent, self.task_id, self.run_id, kind, body, label)
         if self.quiet:
             return
-        head = f"[{self.agent}] {GLYPHS.get(kind, ' ')} {label or kind}"
-        print(f"{head}  {one_line(body)}", file=sys.stderr if kind == "error" else sys.stdout, flush=True)
+        event = {"agent": self.agent, "task_id": self.task_id, "run_id": self.run_id,
+                  "kind": kind, "label": label, "body": body}
+        head = f"[{self.agent}] {glyph(kind)} {label or kind}"
+        print(f"{head}  {summarize(event)}", file=sys.stderr if kind == "error" else sys.stdout, flush=True)
 
     def tool_call(self, name: str, args) -> None:
         """Record a tool invocation.

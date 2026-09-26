@@ -26,7 +26,6 @@ from .models import (
     Agent,
     Doc,
     Event,
-    FileClaim,
     Message,
     Task,
     TaskDep,
@@ -69,14 +68,6 @@ TABLES: dict[str, dict[str, Any]] = {
         ],
         "insertable": ["sender", "recipient", "task_id", "msg_type", "payload"],
         "note": "this is the audit log and the cost ledger - edit with care",
-    },
-    "file_claims": {
-        "label": "File claims",
-        "model": FileClaim,
-        "order": lambda m: m.claimed_at.desc(),
-        "editable": ["path", "agent", "task_id", "mode", "note"],
-        "insertable": ["path", "agent", "task_id", "run_id", "mode", "note"],
-        "note": "advisory: who says they are touching what, released when a run ends",
     },
     "docs": {
         "label": "Docs",

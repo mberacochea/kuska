@@ -52,6 +52,8 @@ class Task(Base):
         on_delete="SET NULL", lazy_load=False,
     )
     status = CharField(default="todo")  # see db.TASK_STATUSES
+    feature = CharField(null=True, index=True)  # free-text group, e.g. "search"
+    worktree_path = TextField(null=True)  # path to the worktree, if one exists
     created_at = FloatField(default=time.time)
     updated_at = FloatField(default=time.time)
 
@@ -98,28 +100,6 @@ class Message(Base):
         indexes = ((("recipient", "task_id"), False),)
 
 
-class FileClaim(Base):
-    """"I am touching this file" - advisory, cooperative, and short-lived.
-
-    A claim belongs to one run, so it dies when that invocation ends. If a
-    daemon dies without releasing, the claim is ignored once its agent stops
-    heartbeating, which is why there is no TTL to tune here.
-    """
-
-    id = AutoField()
-    path = CharField()  # relative to the project directory; may be a directory
-    agent = CharField()
-    task_id = IntegerField(null=True)
-    run_id = CharField(null=True)
-    mode = CharField(default="write")  # write | read
-    note = TextField(null=True)
-    claimed_at = FloatField(default=time.time)
-
-    class Meta:
-        table_name = "file_claims"
-        indexes = ((("path",), False), (("agent",), False))
-
-
 class Doc(Base):
     key = CharField(primary_key=True)
     content = TextField(null=True)
@@ -147,7 +127,7 @@ class Event(Base):
         indexes = ((("task_id", "id"), False), (("run_id", "id"), False))
 
 
-MODELS = [Agent, Task, TaskDep, Message, FileClaim, Doc, Event]
+MODELS = [Agent, Task, TaskDep, Message, Doc, Event]
 
 PRAGMAS = {
     "journal_mode": "wal",
@@ -156,8 +136,17 @@ PRAGMAS = {
 }
 
 
+
+
 def connect(db_path: str | os.PathLike) -> SqliteDatabase:
-    """Open (or create) one project's database."""
+    """Open (or create) one project's database.
+
+    WAL mode (journal_mode) provides concurrent readers alongside one writer.
+    busy_timeout makes a blocked writer wait rather than fail immediately.
+    These pragmas replace the old cross-process write lock, which was both
+    incomplete (only wrapped individual statements, not transactions) and
+    harmful (serialized the entire fleet through one mutex).
+    """
     database = SqliteDatabase(str(db_path), pragmas=PRAGMAS, check_same_thread=False)
     database.connect(reuse_if_open=True)
     return database

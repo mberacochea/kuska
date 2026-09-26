@@ -1,15 +1,27 @@
 <div class="log">
-{% for e in events %}
-  <details class="ev k-{{ e.kind }}">
-    <summary><span class="g">{{ glyph(e.kind) }}</span>
-      <span class="muted small">{{ ago(e.ts) }}</span>
-      <span class="what">{{ e.agent }} {{ e.label or e.kind }}</span>
-      <span class="body">{{ brief(e.body) }}</span></summary>
-    <div class="detail">
-      {% if e.kind in prose_kinds %}<div class="md">{{ md(e.body)|safe }}</div>
-      {% else %}<pre class="raw">{{ e.body }}</pre>{% endif %}
-    </div>
-  </details>
+{% for group in run_groups %}
+  <div class="run-group">
+    <summary class="run-header">
+      <span class="g">⚡</span>
+      <span class="muted small">{{ ago(group.first_ts) }}</span>
+      <span class="agent-name">{{ group.agent }}</span>
+      <span class="muted">·</span>
+      <span class="muted">{{ group.count }} event{{ 's' if group.count != 1 else '' }}</span>
+      {% if group.status %}<span class="muted">·</span><span class="status">{{ group.status }}</span>{% endif %}
+      {% if group.cost is not none %}<span class="muted">·</span><span class="cost">${{ '%.4f'|format(group.cost) }}</span>{% endif %}
+    </summary>
+    {% for e in group.events %}
+      <details class="ev k-{{ e.kind }}"{% if group.open and loop.first %} open{% endif %}>
+        <summary><span class="g">{{ glyph(e.kind) }}</span>
+          <span class="muted small" title="{{ _fmt_ts(e.ts) }}">{{ clock(e.ts) }}</span>
+          <span class="label">{{ e.label or e.kind }}</span>
+          <span class="sig">{{ summarize(e) }}</span></summary>
+        <div class="detail">
+          {{ detail_html(e)|safe }}
+        </div>
+      </details>
+    {% endfor %}
+  </div>
 {% else %}
   <div class="muted small">No activity logged for this task yet.</div>
 {% endfor %}

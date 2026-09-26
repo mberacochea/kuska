@@ -52,7 +52,9 @@ src/kuska/
   project.py     # .agents/ layout, prompts, config.toml, project registry
   runtime.py     # prompt composition, turn accounting, the agent monologue
   markdown.py    # rendering agent prose, with embedded HTML escaped
-  tools.py       # the seven shared agent tools, defined once
+  tools.py       # the ten shared agent tools, defined once
+  guardrails.py  # refuse rm -rf, git reset --hard, sudo, etc. before they run
+  worktree.py    # git worktrees: branch per task, merge queue
   mcp_server.py  # those tools over stdio, for Codex and other external clients
   web.py         # Flask + HTMX routes
   runner.py      # run-all: web server + MCP + daemons in one command
@@ -87,8 +89,9 @@ myproject/
 ```
 
 Everything under `.agents/` is that project's own state, seeded once from
-`src/kuska/defaults/` and never read back by the core - delete the directory
-and `kuska init` rebuilds it from the shipped templates.
+`src/kuska/defaults/`. Worktrees with unmerged work now live there. To safely
+clean up, run `kuska worktree prune --all` first to remove merged worktrees and
+resolve stale metadata in `.git/worktrees`, then delete the directory.
 
 Running several projects in parallel is several such directories, each with
 its own DB file and its own daemons. `kuska init` records each one in
@@ -140,43 +143,46 @@ waited on it) or **send back** (re-queue it for the agent).
 1. A human adds a task in the web UI and assigns it to an agent.
 2. That agent's daemon claims it on its next poll (`UPDATE ... RETURNING`, so
    two daemons can never take the same task).
-3. The daemon runs **one fresh invocation** - no conversation is kept between
+3. If the agent is configured with `worktree = true`, the daemon creates a
+   git worktree at `.agents/worktrees/task-<id>` on branch `kuska/<id>-<slug>`.
+   The agent runs **one fresh invocation** there. No worktree: the agent runs in
+   the main checkout.
+4. The daemon runs **one fresh invocation** - no conversation is kept between
    tasks, so context never accumulates or goes stale. What the agent needs to
    know (description, earlier turns, answers to its questions) is composed
    into the prompt by `compose_task_prompt`.
-4. The result and the turn's tokens/cost are written to `messages`, which
+5. The result and the turn's tokens/cost are written to `messages`, which
    doubles as the audit log and the cost ledger. The agents page reads its
    status and spend straight out of it.
+6. If the task ran in a worktree, the agent commits there and the task
+   enters `ready_to_merge`. A human reviews the branch, then merges it in a
+   terminal and marks it merged in the web UI, which releases anything that
+   depended on it.
 
 An agent that needs something from another agent sends a message, marks its
 task `blocked` and exits, rather than waiting inline. When the answer lands,
 the human re-queues the task from the web UI and the next run gets the reply
 as context.
 
-## Two agents, one repository
+Note: Worktrees resolve conflicts at merge time rather than preventing them.
+The claim system they replaced never actually prevented conflicts anyway — it
+only counted claims from agents that had heartbeated in the last 180 seconds,
+and no daemon heartbeats mid-run.
 
-Agents working different tasks in the same checkout will eventually reach for
-the same file. The answer here is cooperation rather than locking: an agent
-says what it is touching, and everyone else can see it.
+## Tasks in their own branches
 
-- `claim_files(paths, note)` records "I am working on these". Directories
-  cover everything under them, paths are normalised, and claiming never fails
-  - it returns whoever else is already holding the path, which is the point.
-- `who_has(path)` asks before starting; `release_files(paths)` lets go early.
-- The Claude daemon does not rely on the agent remembering. Its `can_use_tool`
-  hook claims a file when the agent edits it, and when somebody else holds it
-  the edit comes back refused, naming the holder and the task and telling the
-  agent to message them, check `get_inbox`, and `reply` with status `blocked`
-  rather than editing on top of their work. Reads are never gated.
-- A claim belongs to a run, so it is released when that invocation ends, and
-  it stops counting as soon as its agent stops heartbeating - a crashed daemon
-  cannot wedge the repository, and there is no TTL to tune.
-- The next run starts informed: files other agents hold are written into the
-  task prompt, and the agents page shows the same list live.
+Agents configured with `worktree = true` run each task in an isolated git
+worktree on its own branch, created at `.agents/worktrees/task-<id>` on branch
+`kuska/<id>-<slug>`. The agent makes commits there; when done, the task enters
+`ready_to_merge`. A human reviews the branch in a terminal, merges it, and
+marks it merged in the web UI.
 
-Codex has no per-tool callback to hook, so its claims are whatever the agent
-takes through the tools - cooperative all the way down. Both backends release
-everything they hold when a run ends and when the daemon stops.
+This design trades conflict prevention for isolation and explicitness: you now
+resolve conflicts at merge time rather than preventing them by bookkeeping.
+The claim system it replaced never actually prevented conflicts anyway — it
+only saw claims from agents that had heartbeated in the last 180 seconds, and
+no daemon heartbeats mid-run. Worktrees give you a clear boundary and a git
+audit trail instead.
 
 ## Editing the data
 
@@ -187,7 +193,7 @@ Four pages, in increasing order of bluntness:
 - **Docs** - the shared knowledge agents read and write through `docs_get` /
   `docs_set`: create a key, edit its content, delete it.
 - **Data** - every table in the DB (`tasks`, `task_deps`, `agents`,
-  `messages`, `file_claims`, `docs`, `events`), row by row: list with paging, insert, edit the columns that are
+  `messages`, `docs`, `events`), row by row: list with paging, insert, edit the columns that are
   safe to edit, delete. It is driven by one spec per table in `tables.py`, so
   a new table means one entry there rather than a new page.
 
@@ -197,10 +203,9 @@ and the cost ledger, and editing `agents` does not write back to
 
 ## Agent tools
 
-Thirteen tools - `get_inbox`, `send_message`, `claim_task`, `create_task`,
-`list_tasks`, `reply`, `docs_get`, `docs_set`, `docs_list`, `claim_files`,
-`release_files`, `who_has`, `heartbeat` - defined once in `tools.py` and
-consumed three ways:
+Ten tools - `get_inbox`, `send_message`, `reply`, `docs_get`, `docs_set`,
+`docs_list`, `heartbeat`, `create_task`, `list_tasks`, `search` - defined once
+in `tools.py` and consumed three ways:
 
 - **Claude** registers them in-process via `create_sdk_mcp_server()` - no
   extra process.
@@ -225,10 +230,12 @@ a model change needs that daemon restarted.
 backend = "claude"          # 'claude' | 'codex'
 model = "claude-opus-5"
 role = "Implements features and fixes bugs"
+worktree = true             # run tasks in per-task git worktrees; requires git repo
 
 [agents.codex-1]
 backend = "codex"
 model = "gpt-5-codex"
+role = "Second opinion"
 sandbox = "workspace-write"          # read-only | workspace-write | full-access
 price_in_per_mtok = 1.25             # codex reports tokens, not dollars
 price_out_per_mtok = 10.0
@@ -238,6 +245,12 @@ codex_bin = "/usr/local/bin/codex"   # only needed for the PyInstaller build
 `permission_mode` (claude) and `sandbox` (codex) are passed through to the
 SDKs. Adding another option means one entry in `AGENT_FIELDS` in
 `project.py` - the form, validation and the daemon read it from there.
+
+Destructive shell commands are refused by `src/kuska/guardrails.py` before they run, regardless of `permission_mode`: `rm -rf`, `git reset --hard`, `git push --force`, `git clean -fd`, `git branch -D`, `sudo`, downloads piped into a shell, `chmod 777`, writes outside the project, anything aimed at `.agents/project.db`, and anything aimed at `.agents/worktrees`. Adding a rule is one dict in the `RULES` table.
+
+This enforcement catches mistakes, not a determined agent — `sh -c "rm -rf build"`, `find -delete`, and `python -c "shutil.rmtree(...)"` all pass through.
+
+The guardrails are wired into the Claude daemon's `PreToolUse` hook. The codex backend has no per-tool callback and the openai backend has no permission concept, so `guardrails.py` is written to be callable from them but does not yet protect them. `dev-agent` is currently a codex agent, so the guardrails do not yet protect its shell commands.
 
 ## Building a binary
 

@@ -1,7 +1,6 @@
 <div id="agent-editor">
-<h2>{{ name }} - settings <span class="muted">(.agents/config.toml)</span>
-  <a href="#" class="link" onclick="closePanel('agent-editor'); return false;">close</a></h2>
-<form hx-post="/agents/{{ name }}" hx-target="#agent-rows" hx-swap="outerHTML">
+<h2>{{ name }} - settings <span class="muted">(.agents/config.toml)</span></h2>
+<form hx-post="/agents/{{ name }}" hx-target="#agent-editor" hx-swap="outerHTML">
   <div class="fields">
   {% for f in fields %}
     <div class="form-group">
@@ -12,6 +11,9 @@
         <option value="{{ c }}" {{ 'selected' if c == value(f) }}>{{ c or '(default)' }}</option>
         {% endfor %}
       </select>
+      {% elif f.type == 'bool' %}
+      <input type="checkbox" id="agent-{{ f.key }}" name="{{ f.key }}" value="true" aria-label="{{ f.label }}"
+             {% if value(f) %}checked{% endif %}>
       {% else %}
       <input type="text" id="agent-{{ f.key }}" name="{{ f.key }}" value="{{ value(f) }}" aria-label="{{ f.label }}"
              {% if f.type == 'number' %}inputmode="decimal"{% endif %}>
@@ -23,7 +25,6 @@
   <div style="display:flex; gap:.5rem; margin-top:.9rem">
     <button class="primary" type="submit">Save settings</button>
     <button type="button" class="link" hx-post="/agents/{{ name }}/delete"
-            hx-target="#agent-rows" hx-swap="outerHTML"
             hx-confirm="Remove {{ name }}? Its tasks become unassigned and its prompt file stays on disk.">
       remove agent</button>
   </div>

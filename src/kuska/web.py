@@ -6,25 +6,28 @@ build step and no bundler."""
 
 from __future__ import annotations
 
+import itertools
 import re
-from collections import defaultdict
+import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 from flask import Flask, make_response, render_template, request
 from flask_htmx import HTMX
 from markupsafe import escape
-from peewee import IntegrityError, PeeweeException, SqliteDatabase
+from peewee import PeeweeException, SqliteDatabase
 
+from . import eventfmt
 from . import tables as tbl
-from .db import HUMAN, TASK_STATUSES, connect, init_db, now
+from . import worktree
+from .db import EVENT_KINDS, HUMAN, TASK_STATUSES, connect, init_db, now
 from .export import _fmt_ts, export_markdown
-from .markdown import PROSE_KINDS
 from .markdown import render as md
-from .models import MODELS, Message
 from .project import (
     AGENT_FIELDS,
     db_path,
+    find_project,
     load_config,
     read_prompt,
     registry_load,
@@ -33,12 +36,13 @@ from .project import (
     sync_agents_from_config,
     write_prompt,
 )
-from .runtime import GLYPHS, one_line
+from .runtime import one_line
 from .store import (
-    active_claims,
     add_dependency,
     add_task,
+    avg_task_duration,
     blocking_map,
+    cost_by_task,
     delete_agent,
     delete_task,
     docs_get,
@@ -46,16 +50,22 @@ from .store import (
     docs_set,
     filter_tasks,
     full_text_search,
+    get_event,
     get_task,
     list_agents,
     list_tasks,
+    longest_tasks,
     recent_events,
+    recent_runs,
     remove_dependency,
+    run_events,
     send_message,
+    task_counts_by_agent,
     task_dependencies,
     task_dependents,
     task_events,
     task_messages,
+    task_status_counts,
     token_usage_by_agent,
     update_task,
     update_task_status,
@@ -78,10 +88,99 @@ def _ago(ts: float | None) -> str:
     return _fmt_ts(ts)
 
 
+def _clock(ts: float | None) -> str:
+    """HH:MM:SS for one event's timestamp.
+
+    Individual event log lines used a humanized "12h ago" - fine for a task's
+    created/updated column, but relative time on a per-event feed just makes
+    old events unreadable ("3d ago" tells you nothing about when in the day
+    it happened). The full date is still one hover away via the same title
+    attribute these spans already carried.
+    """
+    if not ts:
+        return "-"
+    return time.strftime("%H:%M:%S", time.localtime(ts))
+
+
+# a run's terminal `result` event has a label like "done - $5.1009, 103
+# rounds, ..." (claude.py) or "done - $0.0312, 40/1217 tok" (codex.py,
+# openai.py) - every backend agrees on "<status> - <summary with a $cost>",
+# so pulling the status and the first dollar amount out of it is enough to
+# read across all three without parsing the rest of the summary.
+_RUN_COST = re.compile(r"\$([0-9]+(?:\.[0-9]+)?)")
+
+
+def _run_status_cost(label: str | None) -> tuple[str | None, float | None]:
+    """(status, cost) parsed from a `result` event's label, degrading to (None, None)."""
+    if not label:
+        return None, None
+    status = label.split(" - ", 1)[0].strip() or None
+    match = _RUN_COST.search(label)
+    cost = float(match.group(1)) if match else None
+    return status, cost
+
+
+def _group_runs(events: list[dict]) -> list[dict]:
+    """Group a task's chronological events into per-run blocks.
+
+    One agent works a task's runs one at a time, so a task's events already
+    arrive in contiguous per-run blocks in id order - `itertools.groupby`
+    over the flat list is enough, no need to bucket by run_id first.
+
+    Returns one dict per run: `run_id`, `agent`, `first_ts`, `count`,
+    `status`/`cost` (parsed from the run's terminal `result` event, both None
+    while the run is still in flight), `events` (the run's events, newest
+    first), and `open` (True only for the newest run - the one a human is
+    most likely watching right now).
+
+    Runs and, within each run, events are returned newest-first, since a
+    human scanning a task's activity cares about what just happened.
+    """
+    groups: list[dict] = []
+    for run_id, members in itertools.groupby(events, key=lambda e: e.get("run_id")):
+        members = list(members)
+        result = next((e for e in members if e.get("kind") == "result"), None)
+        status, cost = _run_status_cost(result["label"] if result else None)
+        groups.append(
+            {
+                "run_id": run_id,
+                "agent": members[0].get("agent"),
+                "first_ts": members[0].get("ts"),
+                "count": len(members),
+                "status": status,
+                "cost": cost,
+                "events": members,
+                "open": False,
+            }
+        )
+    if groups:
+        groups[-1]["open"] = True
+    groups.reverse()
+    for g in groups:
+        g["events"] = list(reversed(g["events"]))
+    return groups
+
+
+def _activity_qs(agent: str, kind: str, show_system: bool) -> str:
+    """Query string for the current fleet-tail filter state, or "" when unfiltered.
+
+    Rendered onto the tail's own `hx-get` so its 3s self-poll keeps re-asking
+    with the same filters instead of silently resetting them - and, when no
+    filter is set, this returns "" so the attribute stays the bare
+    `/agents/activity` the tests (and a plain first load) expect.
+    """
+    params = [(k, v) for k, v in (("agent", agent), ("kind", kind)) if v]
+    if show_system:
+        params.append(("system", "1"))
+    return f"?{urlencode(params)}" if params else ""
+
+
 # agent names become TOML keys and prompt filenames, so keep them plain
 AGENT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 BACKENDS = ("claude", "codex", "openai")
 DOC_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+# run_id is a 12-hex id set per Monologue (runtime.py:429)
+RUN_ID = re.compile(r"[0-9a-f]{12}")
 
 # Validation limits
 MAX_TASK_TITLE_LEN = 200
@@ -261,11 +360,8 @@ def create_app(project_dir: Path):
 
     # ========== Helper: Task Rendering ==========
 
-    def render_row(task: dict, expanded: bool = False, edit: bool = False) -> str:
-        """Render a single task row - collapsed by default, or its full detail
-        panel when expanded (used to land a search result open in place)."""
-        if expanded:
-            return task_detail_panel(task, edit=edit)
+    def render_row(task: dict) -> str:
+        """Render a single task row - title links out to its own /tasks/<id> page."""
         return render_template(
             "task_row.html",
             t=task,
@@ -279,19 +375,12 @@ def create_app(project_dir: Path):
         tasks: list[dict] | None = None,
         sort_by: str | None = None,
         sort_dir: str = "asc",
-        open_task_id: int | None = None,
-        edit_task_id: bool = False,
     ) -> str:
-        """Render the full task table. Defaults to all tasks, unfiltered, unsorted.
-
-        open_task_id, if given, renders that one row already expanded - a link
-        from elsewhere (e.g. a search result) can land directly on it.
-        edit_task_id, if True, renders the expanded row in edit mode.
-        """
+        """Render the full task table. Defaults to all tasks, unfiltered, unsorted."""
         return render_template(
             "tasks_table.html",
             tasks=tasks if tasks is not None else list_tasks(db()),
-            render_row=lambda t: render_row(t, expanded=(t["id"] == open_task_id), edit=(edit_task_id and t["id"] == open_task_id)),
+            render_row=render_row,
             sort_by=sort_by,
             sort_dir=sort_dir,
         )
@@ -303,8 +392,6 @@ def create_app(project_dir: Path):
         agent_list: list[str] | None = None,
         sort_by: str | None = None,
         sort_dir: str = "asc",
-        open_task_id: int | None = None,
-        edit_task_id: bool = False,
     ) -> str:
         """Render the task table together with its filter/sort controls.
 
@@ -313,12 +400,10 @@ def create_app(project_dir: Path):
         that knows the current filter/sort state, and re-renders it into the
         form on every response so there is no client-side state to keep in
         sync.
-
-        edit_task_id, if True, renders the expanded task in edit mode.
         """
         return render_template(
             "tasks_container.html",
-            tasks_table=tasks_table(tasks, sort_by, sort_dir, open_task_id, edit_task_id),
+            tasks_table=tasks_table(tasks, sort_by, sort_dir),
             agents=list_agents(db()),
             statuses=TASK_STATUSES,
             search=search,
@@ -335,18 +420,50 @@ def create_app(project_dir: Path):
 
     def task_activity(task_id: int) -> str:
         """Render the activity feed for a task."""
+        events = task_events(db(), task_id)
+        run_groups = _group_runs(events)
         return render_template(
             "task_activity.html",
-            events=task_events(db(), task_id),
+            run_groups=run_groups,
             ago=_ago,
-            glyph=lambda kind: GLYPHS.get(kind, " "),
-            brief=lambda body: one_line(body or "", 90),
-            prose_kinds=PROSE_KINDS,
-            md=md,
+            clock=_clock,
+            summarize=eventfmt.summarize,
+            detail_html=eventfmt.detail_html,
+            glyph=eventfmt.glyph,
+            _fmt_ts=_fmt_ts,
         )
 
-    def task_detail_panel(task: dict, edit: bool = False) -> str:
-        """Render the detail panel for a task (display or edit mode)."""
+    def task_panel(task: dict, edit: bool = False) -> str:
+        """Render the standalone task page's content (display or edit mode).
+
+        Used both as the body of the full /tasks/<id> page and as the htmx
+        fragment every mutation on that page swaps back in.
+        """
+        # Get worktree info if the task has one
+        worktree_info = None
+        worktree_commands = []
+        if task.get("worktree_path"):
+            project = state["project"]
+            path = Path(task["worktree_path"])
+            wt_list = worktree.list_worktrees(project)
+            wt = next((w for w in wt_list if Path(w["path"]).resolve() == path.resolve()), None)
+            if wt:
+                branch = wt.get("branch", "")
+                base = worktree.base_branch(project)
+                worktree_info = {
+                    "path": task["worktree_path"],
+                    "branch": branch,
+                    "base": base,
+                }
+                # Generate the four merge commands
+                if branch:
+                    worktree_commands = [
+                        f"git diff {base}...{branch}",
+                        f"git merge --no-ff {branch}",
+                        f"git checkout -b pr/{task['id']}-{branch[len('kuska/'):]} {base} && git merge --squash {branch} && git commit",
+                        f"git worktree remove {task['worktree_path']} && git branch -d {branch}",
+                    ]
+
         return render_template(
             "task_detail.html",
             t=task,
@@ -357,9 +474,81 @@ def create_app(project_dir: Path):
             candidates=dependency_candidates(task),
             messages=task_messages(db(), task["id"]),
             activity=task_activity(task["id"]),
+            worktree_info=worktree_info,
+            worktree_commands=worktree_commands,
             ago=_ago,
             md=md,
         )
+
+    def _merge_queue_context(tasks: list[dict]) -> dict:
+        """Gather worktree info, diff stats, and blocking dependencies for each
+        task in ready_to_merge status, flipping merged tasks to done.
+
+        Shared by the merge-queue page and its polled rows fragment so the
+        merge-detection and sorting logic lives in exactly one place.
+        """
+        project = state["project"]
+        base = worktree.base_branch(project)
+
+        # Get all worktrees
+        wt_list = worktree.list_worktrees(project)
+        worktrees_map = {
+            Path(wt["path"]).name.replace("task-", ""): wt
+            for wt in wt_list if wt.get("branch")
+        }
+
+        # Get merged branches
+        merged = worktree.merged_branches(project, base)
+
+        # Get diff stats for each task
+        diffs = {}
+        ahead = {}
+        for task in tasks:
+            if task.get("worktree_path"):
+                path = Path(task["worktree_path"])
+                wt = next((w for w in wt_list if Path(w["path"]).resolve() == path.resolve()), None)
+                if wt and wt.get("branch"):
+                    diffs[task["id"]] = worktree.diff_stat(project, wt["branch"], base)
+                    ahead[task["id"]] = worktree.ahead_count(path, wt["branch"], base)
+                    worktrees_map[str(task["id"])] = wt
+
+        # Get blocked-by counts for each task
+        blocks_map = {}  # task_id -> count of tasks that depend on it
+        for task in tasks:
+            dependents = task_dependents(db(), task["id"])
+            blocks_map[task["id"]] = len([d for d in dependents if d["status"] != "done"])
+
+        # Sort by blocks descending, then task id ascending
+        tasks_sorted = sorted(
+            tasks,
+            key=lambda t: (-blocks_map.get(t["id"], 0), t["id"])
+        )
+
+        # Perform merge detection: flip tasks to done if branch is merged.
+        # A branch that never diverged from base is trivially "merged" by
+        # git's own definition, so also require it to actually be ahead -
+        # otherwise every freshly-created worktree would auto-flip to done.
+        for task in tasks_sorted:
+            if task.get("worktree_path"):
+                path = Path(task["worktree_path"])
+                wt = next((w for w in wt_list if Path(w["path"]).resolve() == path.resolve()), None)
+                if wt and wt.get("branch") and wt["branch"] in merged and ahead.get(task["id"], 0) > 0:
+                    # Branch is merged - update task to done
+                    update_task_status(db(), task["id"], "done")
+                    task["status"] = "done"
+
+        return {
+            "tasks": tasks_sorted,
+            "worktrees": worktrees_map,
+            "diffs": diffs,
+            "ahead": ahead,
+            "blocks": blocks_map,
+            "merged": {task["id"]: task["status"] == "done" for task in tasks_sorted},
+        }
+
+    def merge_queue_rows(tasks: list[dict]) -> str:
+        """Render the merge queue rows fragment."""
+        return render_template("merge_queue_table.html", **_merge_queue_context(tasks))
 
     # ========== Helper: Agent Rendering ==========
 
@@ -376,19 +565,62 @@ def create_app(project_dir: Path):
             "agent_rows.html", agents=list_agents(db()), models=agent_models(), ago=_ago
         )
 
-    def activity_tail() -> str:
-        """Render the live activity feed showing recent events."""
+    def _activity_query() -> tuple[list[dict], str, str, bool, str]:
+        """Read the activity filters from the request and fetch matching events.
+
+        Returns (events, agent_filter, kind_filter, show_system, qs).
+        """
+        agent = request.args.get("agent", "").strip() or None
+        kind = request.args.get("kind", "").strip() or None
+        show_system = request.args.get("system") == "1"
+
+        # Exclude system events unless explicitly requested
+        exclude_kinds = None if show_system else eventfmt.QUIET_KINDS
+
+        events = recent_events(db(), agent=agent, kinds=kind, exclude_kinds=exclude_kinds, limit=25)
+        qs = _activity_qs(agent or "", kind or "", show_system)
+        return events, agent or "", kind or "", show_system, qs
+
+    def activity_log() -> str:
+        """Render just the #activity log fragment - the self-poll target.
+
+        Deliberately excludes the filter form: that form lives once in
+        activity_tail.html, outside #activity, so the 3s poll (outerHTML on
+        #activity alone) never re-renders it. Returning the filters here too
+        would duplicate them into the page on every poll tick.
+        """
+        events, _agent, _kind, _show_system, qs = _activity_query()
         return render_template(
-            "activity_tail.html",
-            events=recent_events(db(), limit=25),
+            "activity_log.html",
+            events=events,
+            qs=qs,
             ago=_ago,
-            glyph=lambda kind: GLYPHS.get(kind, " "),
-            brief=lambda body: one_line(body or "", 110),
+            clock=_clock,
+            summarize=eventfmt.summarize,
+            detail_html=eventfmt.detail_html,
+            glyph=eventfmt.glyph,
+            _fmt_ts=_fmt_ts,
         )
 
-    def claims_panel() -> str:
-        """Render the file claims panel showing what agents are working on."""
-        return render_template("claims.html", claims=active_claims(db()), ago=_ago)
+    def activity_tail() -> str:
+        """Render the full live activity block (filters + log) for the agents page."""
+        events, agent_filter, kind_filter, show_system, qs = _activity_query()
+        return render_template(
+            "activity_tail.html",
+            events=events,
+            agent_filter=agent_filter,
+            kind_filter=kind_filter,
+            show_system=show_system,
+            agents=list_agents(db()),
+            kinds=EVENT_KINDS,
+            qs=qs,
+            ago=_ago,
+            clock=_clock,
+            summarize=eventfmt.summarize,
+            detail_html=eventfmt.detail_html,
+            glyph=eventfmt.glyph,
+            _fmt_ts=_fmt_ts,
+        )
 
     def editor(name: str) -> str:
         """Render the agent configuration and prompt editor."""
@@ -458,14 +690,12 @@ def create_app(project_dir: Path):
 
     @app.get("/")
     def index() -> str:
-        """GET / - Display the project overview with task list."""
+        """GET / - Display the project overview (description + export)."""
         return render_template(
             "project.html",
             page="project",
             description=docs_get(db(), "description") or "",
             description_html=md(docs_get(db(), "description")),
-            agents=list_agents(db()),
-            tasks_container=tasks_container(),
         )
 
     @app.get("/tasks")
@@ -480,19 +710,21 @@ def create_app(project_dir: Path):
         points the address bar at this same URL with the same query params,
         those two cases always render identically - there is no separate
         fragment-only endpoint that a reload could land on and get bare HTML.
-
-        ?open=<id> - Opens that task's detail panel
-        ?open=<id>&edit=1 - Opens that task's detail panel in edit mode
         """
         search = request.args.get("search", "").strip()
         status_list = request.args.getlist("status")
         agent_list = request.args.getlist("agent")
         sort_by = request.args.get("sort") or None
         sort_dir = request.args.get("direction", "asc")
-        open_task_id = request.args.get("open", type=int)
-        edit_task = request.args.get("edit") == "1"
-        filtered = filter_tasks(db(), search, status_list or None, agent_list or None, sort_by, sort_dir)
-        container = tasks_container(filtered, search, status_list, agent_list, sort_by, sort_dir, open_task_id, edit_task)
+        filtered = filter_tasks(
+            db(),
+            search,
+            status=status_list or None,
+            agent=agent_list or None,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+        )
+        container = tasks_container(filtered, search, status_list, agent_list, sort_by, sort_dir)
 
         if wants_fragment():
             return container
@@ -552,7 +784,7 @@ def create_app(project_dir: Path):
 
         try:
             add_task(db(), title, description, assigned_to)
-        except (ValueError, IntegrityError) as exc:
+        except (ValueError, PeeweeException) as exc:
             return _bad_request(tasks_container(), "form", f"Failed to create task: {exc}")
 
         return tasks_container(), 200
@@ -570,33 +802,33 @@ def create_app(project_dir: Path):
         if "title" in fields:
             title_error = validate_task_title(fields["title"], db(), task_id)
             if title_error:
-                return _bad_request(task_detail_panel(task, edit=True), "title", title_error)
+                return _bad_request(task_panel(task, edit=True), "title", title_error)
 
         # Validate description if provided
         if "description" in fields:
             desc_error = validate_task_description(fields["description"])
             if desc_error:
-                return _bad_request(task_detail_panel(task, edit=True), "description", desc_error)
+                return _bad_request(task_panel(task, edit=True), "description", desc_error)
 
         # Validate assigned_to if provided
         if "assigned_to" in fields:
             assigned_to = fields["assigned_to"] or None
             agent_error = validate_task_assigned_to(assigned_to, db())
             if agent_error:
-                return _bad_request(task_detail_panel(task, edit=True), "assigned_to", agent_error)
+                return _bad_request(task_panel(task, edit=True), "assigned_to", agent_error)
 
         try:
             update_task(db(), task_id, **fields)
-        except (ValueError, IntegrityError) as exc:
-            return _bad_request(task_detail_panel(task, edit=True), "form", f"Failed to update task: {exc}")
+        except (ValueError, PeeweeException) as exc:
+            return _bad_request(task_panel(task, edit=True), "form", f"Failed to update task: {exc}")
 
         task = get_task(db(), task_id)
         if not task:
             return "", 404
 
-        # an edit from the detail panel comes back as the panel, not the row
+        # an edit from the task page comes back as the page's panel, not the row
         if "description" in fields:
-            return task_detail_panel(task) + _toast(f"task {task_id} saved"), 200
+            return task_panel(task) + _toast(f"task {task_id} saved"), 200
         return render_row(task), 200
 
     @app.post("/tasks/<int:task_id>/requeue")
@@ -604,21 +836,21 @@ def create_app(project_dir: Path):
         """POST /tasks/<id>/requeue - Re-queue a task (set status to todo)."""
         update_task_status(db(), task_id, "todo")
         task = get_task(db(), task_id)
-        return render_row(task) if task else ""
+        return task_panel(task) if task else ""
 
     @app.post("/tasks/<int:task_id>/approve")
     def approve_task(task_id: int) -> str:
         """POST /tasks/<id>/approve - Approve a task (set status to done)."""
         update_task_status(db(), task_id, "done")
         task = get_task(db(), task_id)
-        return (render_row(task) + _toast(f"task {task_id} approved")) if task else ""
+        return (task_panel(task) + _toast(f"task {task_id} approved")) if task else ""
 
     @app.post("/tasks/<int:task_id>/send-back")
     def send_back_task(task_id: int) -> str:
         """POST /tasks/<id>/send-back - Send a task back (set status to todo)."""
         update_task_status(db(), task_id, "todo")
         task = get_task(db(), task_id)
-        return (render_row(task) + _toast(f"task {task_id} sent back")) if task else ""
+        return (task_panel(task) + _toast(f"task {task_id} sent back")) if task else ""
 
     @app.post("/tasks/<int:task_id>/deps")
     def add_task_dependency(task_id: int) -> tuple[str, int]:
@@ -630,42 +862,42 @@ def create_app(project_dir: Path):
         try:
             dep_id = int(request.form.get("depends_on", 0))
         except (ValueError, TypeError):
-            return _bad_request(task_detail_panel(task), "depends_on", "Invalid dependency ID")
+            return _bad_request(task_panel(task), "depends_on", "Invalid dependency ID")
 
         # Validate self-dependency
         if dep_id == task_id:
-            return _bad_request(task_detail_panel(task), "depends_on", "Task cannot depend on itself")
+            return _bad_request(task_panel(task), "depends_on", "Task cannot depend on itself")
 
         # Validate task exists
         dep_task = get_task(db(), dep_id)
         if not dep_task:
-            return _bad_request(task_detail_panel(task), "depends_on", f"Task {dep_id} not found")
+            return _bad_request(task_panel(task), "depends_on", f"Task {dep_id} not found")
 
         # Check for circular dependency
         existing_deps = {d["id"] for d in task_dependencies(db(), task_id)}
         if dep_id in existing_deps:
-            return _bad_request(task_detail_panel(task), "depends_on", "Dependency already exists")
+            return _bad_request(task_panel(task), "depends_on", "Dependency already exists")
 
         # Check if adding this dependency would create a cycle
         # (if dep_task already depends on task_id, adding task_id->dep_id would create a cycle)
         dep_task_deps = {d["id"] for d in task_dependencies(db(), dep_id)}
         if task_id in dep_task_deps:
-            return _bad_request(task_detail_panel(task), "depends_on",
+            return _bad_request(task_panel(task), "depends_on",
                 f"Would create a circular dependency: task {dep_id} already depends on this task")
 
         try:
             add_dependency(db(), task_id, dep_id)
         except (ValueError, PeeweeException) as exc:
-            return _bad_request(task_detail_panel(task), "depends_on", str(exc))
+            return _bad_request(task_panel(task), "depends_on", str(exc))
 
-        return task_detail_panel(get_task(db(), task_id)), 200
+        return task_panel(get_task(db(), task_id)), 200
 
     @app.post("/tasks/<int:task_id>/deps/<int:dep_id>/delete")
     def drop_task_dependency(task_id: int, dep_id: int) -> str:
         """POST /tasks/<id>/deps/<dep_id>/delete - Remove a task dependency."""
         remove_dependency(db(), task_id, dep_id)
         task = get_task(db(), task_id)
-        return task_detail_panel(task) if task else ""
+        return task_panel(task) if task else ""
 
     @app.post("/tasks/<int:task_id>/delete")
     def remove_task(task_id: int) -> str:
@@ -684,7 +916,7 @@ def create_app(project_dir: Path):
             send_message(
                 db(), HUMAN, task["assigned_to"] or HUMAN, task_id, "note", payload
             )
-        return task_detail_panel(task)
+        return task_panel(task)
 
     @app.get("/tasks/<int:task_id>/row")
     def task_row(task_id: int) -> str:
@@ -692,40 +924,109 @@ def create_app(project_dir: Path):
         task = get_task(db(), task_id)
         return render_row(task) if task else ""
 
-    @app.get("/tasks/<int:task_id>/detail")
-    def task_detail(task_id: int) -> str:
-        """GET /tasks/<id>/detail - Get the task detail panel (optionally in edit mode)."""
+    @app.get("/tasks/<int:task_id>")
+    def task_page(task_id: int) -> tuple[str, int] | str:
+        """GET /tasks/<id> - the standalone task page (status, description,
+        dependencies, message thread, and run activity).
+
+        Same htmx-vs-browser split as /tasks: an htmx request (e.g. toggling
+        edit mode, or a mutation's response target) gets just the panel
+        fragment, a plain navigation gets the whole page.
+
+        ?edit=1 - opens the description editor
+        """
         task = get_task(db(), task_id)
         if not task:
-            return ""
-        return task_detail_panel(task, edit=request.args.get("edit") == "1")
+            return "", 404
+        panel = task_panel(task, edit=request.args.get("edit") == "1")
+        if wants_fragment():
+            return panel
+        return render_template("task.html", page="tasks", t=task, task_panel=panel)
+
+    @app.post("/tasks/<int:task_id>/merged")
+    def mark_task_merged(task_id: int) -> str:
+        """POST /tasks/<id>/merged - Mark a task as done (merged)."""
+        update_task_status(db(), task_id, "done")
+        # Return the merge queue fragment
+        tasks_ready = list_tasks(db(), status="ready_to_merge")
+        return merge_queue_rows(tasks_ready)
+
+    @app.get("/merge-queue")
+    def merge_queue_page() -> str:
+        """GET /merge-queue - Display tasks ready to merge."""
+        tasks_ready = list_tasks(db(), status="ready_to_merge")
+        return render_template("merge_queue.html", page="merge-queue", **_merge_queue_context(tasks_ready))
+
+    @app.get("/merge-queue/rows")
+    def merge_queue_rows_fragment() -> str:
+        """GET /merge-queue/rows - Return merge queue rows fragment for polling."""
+        tasks_ready = list_tasks(db(), status="ready_to_merge")
+        return merge_queue_rows(tasks_ready)
+
+    @app.post("/tasks/<int:task_id>/prune")
+    def prune_task_worktree(task_id: int) -> str:
+        """POST /tasks/<id>/prune - Remove a task's worktree and branch."""
+        task = get_task(db(), task_id)
+        if not task:
+            return "", 404
+
+        if not task.get("worktree_path"):
+            return _toast("No worktree for this task"), 200
+
+        project = find_project(request.args.get("project"))
+        base = worktree.base_branch(project)
+        path = Path(task["worktree_path"])
+        branch = worktree.list_worktrees(project)
+
+        # Find the branch for this worktree
+        task_branch = None
+        for wt in branch:
+            if Path(wt["path"]).resolve() == path.resolve():
+                task_branch = wt.get("branch")
+                break
+
+        # Check if branch is merged
+        merged = worktree.merged_branches(project, base)
+        if task_branch and task_branch not in merged:
+            return _toast("Branch is not merged - cannot prune"), 400
+
+        # Remove the worktree
+        success, msg = worktree.remove_worktree(project, path, task_branch)
+        if success:
+            # Clear the worktree_path from the task
+            update_task(db(), task_id, worktree_path=None)
+            return merge_queue_rows(list_tasks(db(), status="ready_to_merge"))
+        else:
+            return _toast(f"Failed to prune: {msg}"), 400
 
     # ========== ROUTES: Agents ==========
 
     @app.get("/agents")
     def agents_page() -> str:
-        """GET /agents - Display the agents page with status, activity, and file claims.
-
-        ?open=<name> pre-opens that agent's editor, so a link from elsewhere
-        (e.g. a search result) can land directly on it. An htmx click on an
-        agent name hits this same URL but only swaps #agent-editor, so it gets
-        the editor on its own; a browser landing on the URL gets the page with
-        the editor already open.
-        """
-        open_name = request.args.get("open", "")
-        agent_editor = editor(open_name) if open_name and any(a["name"] == open_name for a in list_agents(db())) else '<div id="agent-editor"></div>'
-        if open_name and wants_fragment():
-            return agent_editor
+        """GET /agents - Display the agents page with status and activity."""
         return render_template(
             "agents.html",
             page="agents",
             agent_rows=agent_rows(),
-            agent_editor=agent_editor,
             activity=activity_tail(),
-            claims=claims_panel(),
             backends=BACKENDS,
             usage=token_usage_by_agent(db()),
         )
+
+    @app.get("/agents/<name>")
+    def agent_page(name: str) -> tuple[str, int] | str:
+        """GET /agents/<name> - the standalone agent settings + prompt page.
+
+        Same htmx-vs-browser split as /tasks/<id>: an htmx request (e.g. the
+        response target of a save or delete) gets just the editor panel, a
+        plain navigation gets the whole page.
+        """
+        if not any(a["name"] == name for a in list_agents(db())):
+            return "", 404
+        panel = editor(name)
+        if wants_fragment():
+            return panel
+        return render_template("agent.html", page="agents", name=name, agent_panel=panel)
 
     @app.get("/agents/rows")
     def agents_rows() -> str:
@@ -734,13 +1035,8 @@ def create_app(project_dir: Path):
 
     @app.get("/agents/activity")
     def agents_activity() -> str:
-        """GET /agents/activity - Get the activity tail fragment."""
-        return activity_tail()
-
-    @app.get("/agents/claims")
-    def agents_claims() -> str:
-        """GET /agents/claims - Get the file claims panel fragment."""
-        return claims_panel()
+        """GET /agents/activity - Get the activity log fragment (poll target and filter-change target)."""
+        return activity_log()
 
     @app.post("/agents")
     def create_agent() -> tuple[str, int]:
@@ -794,49 +1090,56 @@ def create_app(project_dir: Path):
         if backend:
             backend_error = validate_agent_backend(backend)
             if backend_error:
-                return _bad_request(agent_rows(), "backend", backend_error)
+                return _bad_request(editor(name), "backend", backend_error)
 
         if model:
             model_error = validate_agent_model(model)
             if model_error:
-                return _bad_request(agent_rows(), "model", model_error)
+                return _bad_request(editor(name), "model", model_error)
 
         if role:
             role_error = validate_agent_role(role)
             if role_error:
-                return _bad_request(agent_rows(), "role", role_error)
+                return _bad_request(editor(name), "role", role_error)
 
         # Validate prices if provided
         price_error = validate_agent_prices(request.form.to_dict())
         if price_error:
-            return _bad_request(agent_rows(), "prices", price_error)
+            return _bad_request(editor(name), "prices", price_error)
 
         try:
             set_agent_config(state["project"], name, request.form.to_dict())
         except (ValueError, OSError) as exc:
-            return _bad_request(agent_rows(), "form", f"Failed to save agent settings: {exc}")
+            return _bad_request(editor(name), "form", f"Failed to save agent settings: {exc}")
 
         sync_agents_from_config(db(), state["project"])
-        return rows_with_toast(f"{name} settings saved - restart its daemon to pick them up"), 200
+        return editor(name) + _toast(f"{name} settings saved - restart its daemon to pick them up"), 200
 
     @app.post("/agents/<name>/delete")
-    def remove_agent(name: str) -> str:
-        """POST /agents/<name>/delete - Delete an agent and unassign its tasks."""
+    def remove_agent(name: str):
+        """POST /agents/<name>/delete - Delete an agent, unassign its tasks, and
+        redirect back to the agents list (its own page no longer exists)."""
         remove_agent_config(state["project"], name)
-        freed = delete_agent(db(), name)
-        note = f" ({freed} task{'s' if freed != 1 else ''} unassigned)" if freed else ""
-        return rows_with_toast(f"removed {name}{note}") + '<div id="agent-editor" hx-swap-oob="true"></div>'
-
-    @app.get("/agents/<name>/context")
-    def get_context(name: str) -> str:
-        """GET /agents/<name>/context - Get the agent prompt editor."""
-        return editor(name)
+        delete_agent(db(), name)
+        resp = make_response("")
+        resp.headers["HX-Redirect"] = "/agents"
+        return resp
 
     @app.post("/agents/<name>/context")
     def set_context(name: str) -> str:
         """POST /agents/<name>/context - Save an agent's prompt content."""
         write_prompt(state["project"], name, request.form.get("content", ""))
         return f"{name} prompt saved"
+
+    # ========== ROUTES: Events ==========
+
+    @app.get("/events/<int:event_id>/detail")
+    def get_event_detail(event_id: int) -> str:
+        """GET /events/<id>/detail - Fetch the expanded detail for an event."""
+        event = get_event(db(), event_id)
+        if not event:
+            return ""
+        return eventfmt.detail_html(event)
 
     # ========== ROUTES: Docs ==========
 
@@ -1078,57 +1381,125 @@ def create_app(project_dir: Path):
             error_msg=error_msg,
         )
 
+    # ========== ROUTES: Run Transcripts ==========
+
+    @app.get("/runs")
+    def runs_index() -> str:
+        """GET /runs - Display the index of recent agent invocations."""
+        runs = recent_runs(db(), limit=50)
+        return render_template(
+            "runs.html",
+            page="runs",
+            runs=runs,
+            ago=_ago,
+            _fmt_ts=_fmt_ts,
+        )
+
+    @app.get("/runs/<run_id>")
+    def run_transcript(run_id: str) -> str:
+        """GET /runs/<run_id> - Display a complete invocation transcript.
+
+        A run_id is a 12-hex id set per Monologue (runtime.py:429).
+        """
+        # Validate run_id format before querying
+        if not RUN_ID.fullmatch(run_id):
+            return render_template(
+                "run.html",
+                page="runs",
+                run_id=None,
+                run=None,
+                events=[],
+                error="Invalid run ID format",
+                ago=_ago,
+                summarize=eventfmt.summarize,
+                detail_html=eventfmt.detail_html,
+                glyph=eventfmt.glyph,
+                _fmt_ts=_fmt_ts,
+            )
+
+        # Fetch all events for this run
+        events = run_events(db(), run_id)
+
+        if not events:
+            return render_template(
+                "run.html",
+                page="runs",
+                run_id=run_id,
+                run=None,
+                events=[],
+                error="No run found with this ID",
+                ago=_ago,
+                summarize=eventfmt.summarize,
+                detail_html=eventfmt.detail_html,
+                glyph=eventfmt.glyph,
+                _fmt_ts=_fmt_ts,
+            )
+
+        # Extract run metadata from events
+        first_event = events[0]
+        last_event = events[-1]
+        result_event = next((e for e in events if e.get("kind") == "result"), None)
+        status, cost = _run_status_cost(result_event["label"] if result_event else None)
+
+        run_data = {
+            "run_id": run_id,
+            "agent": first_event.get("agent"),
+            "task_id": first_event.get("task_id"),
+            "first_ts": first_event.get("ts"),
+            "last_ts": last_event.get("ts"),
+            "event_count": len(events),
+            "status": status,
+            "cost": cost,
+        }
+
+        return render_template(
+            "run.html",
+            page="runs",
+            run_id=run_id,
+            run=run_data,
+            events=events,
+            error=None,
+            ago=_ago,
+            clock=_clock,
+            summarize=eventfmt.summarize,
+            detail_html=eventfmt.detail_html,
+            glyph=eventfmt.glyph,
+            _fmt_ts=_fmt_ts,
+        )
+
     # ========== ROUTES: Stats Dashboard ==========
 
     def compute_stats() -> dict[str, Any]:
         """Compute all metrics for the stats dashboard."""
-        tasks = list_tasks(db())
         agents = list_agents(db())
         usage = token_usage_by_agent(db())
-
-        # Fetch all messages directly from db
-        with db().bind_ctx(MODELS):
-            all_messages = list(Message.select())
-            messages_list = [{"ts": m.ts, "sender": m.sender, "task_id": m.task_id,
-                             "input_tokens": m.input_tokens, "output_tokens": m.output_tokens,
-                             "cost_usd": m.cost_usd} for m in all_messages]
+        agent_task_counts = {r["assigned_to"]: r for r in task_counts_by_agent(db())}
 
         # Project overview stats
-        total_tasks = len(tasks)
-        completed = len([t for t in tasks if t["status"] == "done"])
-        in_progress = len([t for t in tasks if t["status"] == "in_progress"])
-        blocked = len([t for t in tasks if t["status"] == "blocked"])
-        needs_approval = len([t for t in tasks if t["status"] == "needs_approval"])
-        todo = len([t for t in tasks if t["status"] == "todo"])
+        status_counts = {r["status"]: r["count"] for r in task_status_counts(db())}
+        total_tasks = sum(status_counts.values())
+        completed = status_counts.get("done", 0)
+        in_progress = status_counts.get("in_progress", 0)
+        blocked = status_counts.get("blocked", 0)
+        needs_approval = status_counts.get("needs_approval", 0)
+        ready_to_merge = status_counts.get("ready_to_merge", 0)
+        todo = status_counts.get("todo", 0)
 
         completed_pct = int((completed / total_tasks * 100) if total_tasks > 0 else 0)
-
-        # Task timeline for burndown chart - group by day
-        task_timeline = defaultdict(int)
-        current_time = now()
-        for task in tasks:
-            if task["status"] == "done" and task["updated_at"]:
-                day_ts = int(task["updated_at"] / 86400) * 86400
-                task_timeline[day_ts] += 1
-
-        # Sort by timestamp
-        timeline_sorted = sorted(task_timeline.items())
-        burndown_data = [{"day": int(ts), "completed": count} for ts, count in timeline_sorted[-30:]]
 
         # Agent productivity stats
         agent_stats = []
         for agent in agents:
             agent_usage = next((u for u in usage if u["agent"] == agent["name"]), None)
-            agent_tasks = [t for t in tasks if t["assigned_to"] == agent["name"]]
-            completed_by_agent = len([t for t in agent_tasks if t["status"] == "done"])
+            counts = agent_task_counts.get(agent["name"])
 
             stats = {
                 "name": agent["name"],
                 "backend": agent["backend"],
                 "status": agent["status"],
                 "current_task_id": agent["current_task_id"],
-                "completed_tasks": completed_by_agent,
-                "total_tasks": len(agent_tasks),
+                "completed_tasks": counts["completed_tasks"] if counts else 0,
+                "total_tasks": counts["total_tasks"] if counts else 0,
                 "turns": agent_usage["turns"] if agent_usage else 0,
                 "input_tokens": agent_usage["input_tokens"] if agent_usage else 0,
                 "output_tokens": agent_usage["output_tokens"] if agent_usage else 0,
@@ -1159,60 +1530,20 @@ def create_app(project_dir: Path):
         rounds_per_run = (total_tool_rounds / total_turns) if total_turns else 0.0
 
         # Cost per task (for histogram)
-        task_costs = defaultdict(float)
-        for msg in messages_list:
-            if msg["task_id"]:
-                task_costs[msg["task_id"]] += msg["cost_usd"]
-
-        cost_per_task = [{"task_id": tid, "cost": cost} for tid, cost in sorted(task_costs.items(), key=lambda x: x[1], reverse=True)[:10]]
-
-        # Add task titles
-        task_lookup = {t["id"]: t for t in tasks}
+        cost_per_task = cost_by_task(db())
         for item in cost_per_task:
-            task = task_lookup.get(item["task_id"])
-            item["title"] = task["title"] if task else f"Task {item['task_id']}"
+            if not item["title"]:
+                item["title"] = f"Task {item['task_id']}"
 
-        # Task analysis
-        task_durations = []
-        for task in tasks:
-            if task["status"] == "done" and task["created_at"] and task["updated_at"]:
-                duration = task["updated_at"] - task["created_at"]
-                task_durations.append({
-                    "id": task["id"],
-                    "title": task["title"],
-                    "duration": duration,
-                    "duration_hours": duration / 3600,
-                })
+        # Task duration analysis
+        longest = longest_tasks(db())
+        for t in longest:
+            t["duration_hours"] = t["duration"] / 3600
+        avg_duration_hours = avg_task_duration(db()) / 3600
 
-        task_durations.sort(key=lambda x: x["duration"], reverse=True)
-        longest_tasks = task_durations[:10]
-
-        avg_duration = sum(t["duration"] for t in task_durations) / len(task_durations) if task_durations else 0
-        avg_duration_hours = avg_duration / 3600
-
-        # Blocked tasks
-        blocked_tasks = [t for t in tasks if t["status"] == "blocked"]
-
-        # Tasks waiting for approval
-        approval_tasks = [t for t in tasks if t["status"] == "needs_approval"]
-
-        # Time series - tasks completed per day
-        completed_per_day = defaultdict(int)
-        for task in tasks:
-            if task["status"] == "done" and task["updated_at"]:
-                day_ts = int(task["updated_at"] / 86400) * 86400
-                completed_per_day[day_ts] += 1
-
-        daily_stats = sorted([{"day": int(ts), "completed": count} for ts, count in completed_per_day.items()])
-
-        # Cost trend over time
-        cost_per_day = defaultdict(float)
-        for msg in messages_list:
-            if msg["ts"]:
-                day_ts = int(msg["ts"] / 86400) * 86400
-                cost_per_day[day_ts] += msg["cost_usd"]
-
-        cost_trend = sorted([{"day": int(ts), "cost": cost} for ts, cost in cost_per_day.items()])
+        blocked_tasks = list_tasks(db(), status="blocked")
+        approval_tasks = list_tasks(db(), status="needs_approval")
+        merge_tasks = list_tasks(db(), status="ready_to_merge")
 
         return {
             "total_tasks": total_tasks,
@@ -1221,6 +1552,7 @@ def create_app(project_dir: Path):
             "in_progress": in_progress,
             "blocked": blocked,
             "needs_approval": needs_approval,
+            "ready_to_merge": ready_to_merge,
             "todo": todo,
             "agent_stats": agent_stats,
             "total_cost": total_cost,
@@ -1233,11 +1565,11 @@ def create_app(project_dir: Path):
             "cost_per_run": cost_per_run,
             "rounds_per_run": rounds_per_run,
             "cost_per_task": cost_per_task,
-            "task_durations": task_durations,
             "avg_duration_hours": avg_duration_hours,
-            "longest_tasks": longest_tasks,
+            "longest_tasks": longest,
             "blocked_tasks": blocked_tasks,
             "approval_tasks": approval_tasks,
+            "merge_tasks": merge_tasks,
         }
 
     @app.get("/stats")

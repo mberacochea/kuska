@@ -23,7 +23,7 @@ from .db import (
 from .export import export_markdown
 from .guardrails import RULES, check_command, check_tool, refusal_text
 from .markdown import as_markdown
-from .models import MODELS, Agent, Doc, Event, FileClaim, Message, Task, TaskDep
+from .models import MODELS, Agent, Doc, Event, Message, Task, TaskDep
 from .project import (
     AGENT_FIELD_KEYS,
     AGENT_FIELDS,
@@ -58,16 +58,12 @@ from .runtime import (
     store_workflow_context,
 )
 from .store import (
-    CLAIM_STALE_AFTER,
-    active_claims,
     add_dependency,
     add_task,
     blocking_dependencies,
     blocking_map,
     calculate_rolling_cost_average,
     check_cost_anomaly,
-    claim_files,
-    claim_holders,
     claim_task,
     delete_task,
     docs_get,
@@ -88,8 +84,6 @@ from .store import (
     recent_events,
     recent_runs,
     register_agent,
-    release_files,
-    release_run,
     remove_dependency,
     reply,
     run_events,

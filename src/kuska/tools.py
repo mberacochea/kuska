@@ -17,9 +17,6 @@ from .markdown import as_markdown
 from .store import (
     add_dependency,
     add_task,
-    claim_files,
-    claim_holders,
-    claim_task,
     docs_get,
     docs_list,
     docs_set,
@@ -28,7 +25,6 @@ from .store import (
     get_task,
     heartbeat,
     list_tasks,
-    release_files,
     reply,
     send_message,
 )
@@ -120,12 +116,6 @@ TOOL_SPECS: list[dict] = [
         },
     },
     {
-        "name": "claim_task",
-        "description": "Claim the next task assigned to me, or null if there is none.",
-        "schema": _obj({}),
-        "handler": lambda db, agent, a: claim_task(db, agent),
-    },
-    {
         "name": "reply",
         "description": "Log the result of a task back to the human coordinator and close it.",
         "schema": _obj(
@@ -176,47 +166,6 @@ TOOL_SPECS: list[dict] = [
         "description": "List all shared project docs, with their content.",
         "schema": _obj({}),
         "handler": lambda db, agent, a: docs_list(db),
-    },
-    {
-        "name": "claim_files",
-        "description": (
-            "Say which files you are about to change, before you change them. "
-            "Directories count as everything under them. Returns who else is "
-            "already holding any of them - if somebody is, message them rather "
-            "than editing on top of their work."
-        ),
-        "schema": _obj(
-            {
-                "paths": {
-                    "type": "array",
-                    "items": _STR,
-                    "description": "project-relative paths or directories",
-                },
-                "note": {**_STR, "description": "what you are doing to them"},
-            },
-            ["paths"],
-        ),
-        "handler": lambda db, agent, a: claim_files(
-            db, agent, a["paths"], note=a.get("note")
-        ),
-    },
-    {
-        "name": "release_files",
-        "description": (
-            "Let go of files you claimed, once you are done with them. Leaving "
-            "them claimed only blocks your colleagues; everything you hold is "
-            "released anyway when this run ends."
-        ),
-        "schema": _obj({"paths": {"type": "array", "items": _STR}}),
-        "handler": lambda db, agent, a: {
-            "released": release_files(db, agent, a.get("paths"))
-        },
-    },
-    {
-        "name": "who_has",
-        "description": "Who is holding a file or directory right now, if anyone.",
-        "schema": _obj({"path": _STR}, ["path"]),
-        "handler": lambda db, agent, a: claim_holders(db, a["path"], agent=agent),
     },
     {
         "name": "heartbeat",

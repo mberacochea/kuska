@@ -10,9 +10,12 @@ Each FTS table is populated with existing data from its source table, and AFTER
 INSERT/UPDATE/DELETE triggers are created to keep each index in sync with the
 source table.
 
-FTS5 is idempotent; CREATE TABLE IF NOT EXISTS is used for safety on
-re-runs or partial rollbacks. Trigger creation is also idempotent since
-SQLite allows DROP TRIGGER IF EXISTS.
+CREATE TABLE IF NOT EXISTS / CREATE TRIGGER IF NOT EXISTS make the schema
+half of this migration safe to re-run. The populate step is made idempotent
+with the FTS5 'rebuild' special command, which discards and rebuilds the
+index from the content table - not with INSERT OR IGNORE, which cannot
+dedupe an FTS5 index (there is no unique constraint for it to conflict on),
+so a second run under that scheme silently double-indexed every row.
 
 This migration is safe to run on both new and existing databases.
 """
@@ -37,11 +40,15 @@ def up(migrator, db):
                 )
             """)
 
-            # Populate docs_fts with existing data
-            db.execute_sql("""
-                INSERT OR IGNORE INTO docs_fts (rowid, key, content)
-                SELECT rowid, key, content FROM docs
-            """)
+            # Populate docs_fts with existing data. 'rebuild' is the documented
+            # external-content way to (re)populate an FTS5 index from its
+            # content table: it discards whatever the index currently holds
+            # and rebuilds from content, so it is idempotent on re-runs.
+            # `INSERT OR IGNORE ... SELECT` is NOT idempotent here - FTS5 has
+            # no unique constraint on rowid for OR IGNORE to conflict against,
+            # so a second run silently double-indexes every row instead of
+            # skipping it.
+            db.execute_sql("INSERT INTO docs_fts(docs_fts) VALUES('rebuild')")
 
             # Create triggers to keep docs_fts in sync. External content FTS5
             # tables must be written to through the special 'delete' command
@@ -86,11 +93,9 @@ def up(migrator, db):
                 )
             """)
 
-            # Populate messages_fts with existing data
-            db.execute_sql("""
-                INSERT OR IGNORE INTO messages_fts (rowid, payload, msg_type, sender)
-                SELECT id, payload, msg_type, sender FROM messages
-            """)
+            # Populate messages_fts with existing data. See docs_fts above for
+            # why 'rebuild' replaces the non-idempotent INSERT OR IGNORE.
+            db.execute_sql("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
 
             # Create triggers to keep messages_fts in sync
             db.execute_sql("""
@@ -131,11 +136,9 @@ def up(migrator, db):
                 )
             """)
 
-            # Populate events_fts with existing data
-            db.execute_sql("""
-                INSERT OR IGNORE INTO events_fts (rowid, body, label, kind)
-                SELECT id, body, label, kind FROM events
-            """)
+            # Populate events_fts with existing data. See docs_fts above for
+            # why 'rebuild' replaces the non-idempotent INSERT OR IGNORE.
+            db.execute_sql("INSERT INTO events_fts(events_fts) VALUES('rebuild')")
 
             # Create triggers to keep events_fts in sync
             db.execute_sql("""
@@ -175,11 +178,9 @@ def up(migrator, db):
                 )
             """)
 
-            # Populate tasks_fts with existing data
-            db.execute_sql("""
-                INSERT OR IGNORE INTO tasks_fts (rowid, title, description)
-                SELECT id, title, description FROM tasks
-            """)
+            # Populate tasks_fts with existing data. See docs_fts above for
+            # why 'rebuild' replaces the non-idempotent INSERT OR IGNORE.
+            db.execute_sql("INSERT INTO tasks_fts(tasks_fts) VALUES('rebuild')")
 
             # Create triggers to keep tasks_fts in sync
             db.execute_sql("""

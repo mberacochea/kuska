@@ -91,10 +91,13 @@ def describe_item(item) -> tuple[str, str, str]:
     return kind, label, dump
 
 
-def run_agent(codex, project: Path, agent_name: str, cfg: dict, prompt: str, mono):
+def run_agent(codex, project: Path, workdir: Path, agent_name: str, cfg: dict, prompt: str, mono):
     """One fresh thread per task, narrated as the turn streams back.
 
     Returns (text, usage). Nothing carries over between invocations.
+
+    `project` is the database location; `workdir` is where the agent runs
+    (the worktree for worktree agents, the project root otherwise).
     """
     from openai_codex.models import (
         ItemCompletedNotification,
@@ -103,7 +106,7 @@ def run_agent(codex, project: Path, agent_name: str, cfg: dict, prompt: str, mon
     )
 
     thread = codex.thread_start(
-        cwd=str(project),
+        cwd=str(workdir),
         model=cfg.get("model"),
         config=mcp_config(project, agent_name),
         developer_instructions=core.read_prompt(project, agent_name),
@@ -168,7 +171,21 @@ def run_daemon(
     core.init_db(db)
     core.sync_agents_from_config(db, project)
     cfg = core.agent_config(project, agent_name)
-    codex = Codex(CodexConfig(cwd=str(project), codex_bin=cfg.get("codex_bin")))
+
+    import kuska.worktree as worktree
+
+    # Git preflight for worktree mode
+    if cfg.get("worktree"):
+        if not worktree.is_git_repo(project):
+            raise SystemExit(
+                f"[{agent_name}] worktree=true but {project} is not inside a git work tree. "
+                f"Run `git init && git commit` or turn worktree off in .agents/config.toml"
+            )
+        if not worktree.has_commits(project):
+            raise SystemExit(
+                f"[{agent_name}] worktree=true but {project} has no commits. "
+                f"Run `git init && git commit` or turn worktree off in .agents/config.toml"
+            )
 
     log(f"[{agent_name}] codex daemon up on {project} (model={cfg.get('model') or 'default'})")
     core.heartbeat(db, agent_name, "idle")
@@ -180,12 +197,47 @@ def run_daemon(
             log(f"[{agent_name}] task {task['id']}: {task['title']}")
             core.heartbeat(db, agent_name, "working", task["id"])
             started = core.now()
-            prompt = core.compose_task_prompt(db, agent_name, task)
+
+            # Create monologue early so worktree rebase failures can be narrated
             mono = core.Monologue(db, agent_name, task["id"], quiet=quiet)
+
+            # Worktree setup
+            workdir_branch = None
+            if cfg.get("worktree"):
+                base = worktree.base_branch(project)
+                try:
+                    path, branch, created = worktree.ensure_worktree(project, task["id"], task["title"], base)
+                except RuntimeError as exc:
+                    mono.record("warning", str(exc), label="worktree setup failed - working directly in project")
+                    core.send_message(
+                        db, agent_name, core.HUMAN, task["id"], "note",
+                        f"could not set up a worktree for this task: {exc}. Working directly in the project checkout."
+                    )
+                    workdir = project
+                else:
+                    if not created:  # re-queued task: its base may be stale
+                        ok, detail = worktree.rebase_onto(path, base)
+                        if not ok:
+                            mono.record("warning", detail, label=f"rebase onto {base} failed - continuing on the old base")
+                            core.send_message(
+                                db, agent_name, core.HUMAN, task["id"], "note",
+                                f"branch {branch} could not be rebased onto {base}: {detail}. "
+                                f"Working from the old base; resolve by hand before merging."
+                            )
+                    core.update_task(db, task["id"], worktree_path=str(path))
+                    workdir = path
+                    workdir_branch = branch
+            else:
+                workdir = project
+
+            # Construct Codex per task so cwd is the worktree
+            codex = Codex(CodexConfig(cwd=str(workdir), codex_bin=cfg.get("codex_bin")))
+
+            prompt, inbox_message_ids = core.compose_task_prompt(db, agent_name, task)
             mono.record("prompt", prompt)
 
             try:
-                text, usage = run_agent(codex, project, agent_name, cfg, prompt, mono)
+                text, usage = run_agent(codex, project, workdir, agent_name, cfg, prompt, mono)
                 text = text.strip()
                 tok_in, tok_out, cost = usage_of(usage, cfg)
                 cache_read, cache_write = cache_of(usage)
@@ -201,16 +253,24 @@ def run_daemon(
                     db, agent_name, task["id"], text, started,
                     input_tokens=tok_in, output_tokens=tok_out, cost_usd=cost,
                     cache_read_tokens=cache_read, cache_write_tokens=cache_write,
+                    worktree_branch=workdir_branch,
                 )
+                # Mark inbox messages as read only after successful run
+                core.mark_messages_read(db, inbox_message_ids)
                 final = (core.get_task(db, task["id"]) or task)["status"]
+                # Record if status was coerced from done to ready_to_merge for worktree tasks
+                if final == "ready_to_merge" and workdir_branch is not None:
+                    mono.record("system", workdir_branch, label="ready to merge")
                 mono.record("result", text, label=f"{final} - ${cost:.4f}, {tok_in}/{tok_out} tok")
                 log(f"[{agent_name}] task {task['id']} {final} (${cost:.4f}, {tok_in}/{tok_out} tok)")
-            # codex has no per-tool callback to claim through, so its claims
-            # are whatever the agent took itself - released the same way
-            core.release_run(db, mono.run_id)
+            finally:
+                # Commit any uncommitted changes before finishing
+                if cfg.get("worktree") and workdir != project:
+                    worktree.commit_all(workdir, f"wip: task {task['id']} uncommitted changes")
+                # Close the codex instance for this task
+                codex.close()
+
             core.heartbeat(db, agent_name, "idle")
     finally:
-        core.release_files(db, agent_name)
         core.heartbeat(db, agent_name, "offline")
-        codex.close()
         db.close()

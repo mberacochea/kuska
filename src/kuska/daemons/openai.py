@@ -220,7 +220,7 @@ def run_daemon(
             log(f"[{agent_name}] task {task['id']}: {task['title']}")
             core.heartbeat(db, agent_name, "working", task["id"])
             started = core.now()
-            prompt = core.compose_task_prompt(db, agent_name, task)
+            prompt, inbox_message_ids = core.compose_task_prompt(db, agent_name, task)
             mono = core.Monologue(db, agent_name, task["id"], quiet=quiet)
             mono.record("prompt", prompt)
 
@@ -241,12 +241,12 @@ def run_daemon(
                     db, agent_name, task["id"], text, started,
                     input_tokens=tok_in, output_tokens=tok_out, cost_usd=cost,
                 )
+                # Mark inbox messages as read only after successful run
+                core.mark_messages_read(db, inbox_message_ids)
                 final = (core.get_task(db, task["id"]) or task)["status"]
                 mono.record("result", text, label=f"{final} - ${cost:.4f}, {tok_in}/{tok_out} tok")
                 log(f"[{agent_name}] task {task['id']} {final} (${cost:.4f}, {tok_in}/{tok_out} tok)")
-            core.release_run(db, mono.run_id)
             core.heartbeat(db, agent_name, "idle")
     finally:
-        core.release_files(db, agent_name)
         core.heartbeat(db, agent_name, "offline")
         db.close()

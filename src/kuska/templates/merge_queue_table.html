@@ -1,0 +1,18 @@
+{# Merge queue table #}
+<table id="merge-queue" style="width:100%">
+<thead><tr>
+  <th class="num">#</th>
+  <th>Title</th>
+  <th>Agent</th>
+  <th>Branch</th>
+  <th class="num">Ahead</th>
+  <th>Diff</th>
+  <th class="num">Blocks</th>
+  <th>Merged?</th>
+  <th>Actions</th>
+</tr></thead>
+<tbody>
+{% include "merge_queue_rows.html" %}
+{% if not tasks %}<tr><td colspan="9" class="muted">No tasks ready to merge.</td></tr>{% endif %}
+</tbody>
+</table>

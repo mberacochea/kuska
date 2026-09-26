@@ -1,0 +1,18 @@
+{# The [!...] condition skips the poll while any event is expanded, so
+   clicking one to read its detail doesn't get swapped out from under you a
+   few seconds later - the tick just resumes once it's collapsed again. #}
+<div id="activity" class="log" hx-get="/agents/activity{{ qs }}"
+     hx-trigger="every 3s [!document.querySelector('#activity details[open]')]" hx-swap="outerHTML">
+  {% for e in events %}
+    <details class="ev k-{{ e.kind }}" hx-get="/events/{{ e.id }}/detail" hx-trigger="click from:summary" hx-target="div.detail" hx-swap="innerHTML">
+      <summary><span class="g">{{ glyph(e.kind) }}</span>
+        <span class="muted small" title="{{ _fmt_ts(e.ts) }}">{{ clock(e.ts) }}</span>
+        <span class="what"><a href="/agents/{{ e.agent }}">{{ e.agent }}</a>{% if e.task_id %} <a href="/tasks/{{ e.task_id }}">{{ '#' }}{{ e.task_id }}</a>{% endif %}</span>
+        <span class="label">{{ e.label or e.kind }}</span>
+        <span class="sig">{{ summarize(e) }}</span></summary>
+      <div class="detail"></div>
+    </details>
+  {% else %}
+    <div class="muted">Nothing yet - agents narrate their work here while they run.</div>
+  {% endfor %}
+</div>

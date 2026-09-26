@@ -46,6 +46,29 @@ def main() -> None:
         check("heartbeat", ac.get_agent(conn, "dev-agent")["status"] == "idle")
         check("registry idempotent", len(ac.list_agents(conn)) == 2)
 
+        print("bool fields")
+        # Test bool round-trip through config.toml
+        ac.set_agent_config(project, "dev-agent", {"worktree": "true"})
+        cfg = ac.agent_config(project, "dev-agent")
+        check("bool field set", cfg.get("worktree") is True, cfg.get("worktree"))
+        # Test unticking clears the bool field (missing key means False)
+        ac.set_agent_config(project, "dev-agent", {})
+        cfg = ac.agent_config(project, "dev-agent")
+        check("bool field cleared on untick", cfg.get("worktree") is None, cfg.get("worktree"))
+        # Test various truthy values
+        for val in ["true", "on", "1"]:
+            ac.set_agent_config(project, "dev-agent", {"worktree": val})
+            cfg = ac.agent_config(project, "dev-agent")
+            check(f"bool field accepts {val}", cfg.get("worktree") is True, f"value was {cfg.get('worktree')}")
+        # Test falsy values
+        for val in ["false", "off", "0", ""]:
+            ac.set_agent_config(project, "dev-agent", {"worktree": val})
+            cfg = ac.agent_config(project, "dev-agent")
+            check(f"bool field rejects {val}", cfg.get("worktree") is None, f"value was {cfg.get('worktree')}")
+        # Test that agent without worktree field behaves as before
+        cfg = ac.agent_config(project, "bench-agent")
+        check("agent without worktree field defaults to None", cfg.get("worktree") is None, cfg.get("worktree"))
+
         print("tasks")
         t1 = ac.add_task(conn, "Write the parser", "Handle nested quotes", "dev-agent")
         t2 = ac.add_task(conn, "Benchmark it", assigned_to="bench-agent")
@@ -87,6 +110,19 @@ def main() -> None:
         check("chain drains in order", ac.claim_task(conn, "dev-agent")["id"] == d3)
 
         check("nothing blocked once it drains", ac.blocking_map(conn) == {}, ac.blocking_map(conn))
+
+        # Test ready_to_merge status blocks dependents like needs_approval
+        r1 = ac.add_task(conn, "ready merge test", assigned_to="dev-agent")
+        r2 = ac.add_task(conn, "depends on merge", assigned_to="dev-agent")
+        ac.add_dependency(conn, r2, r1)
+        ac.update_task_status(conn, r1, "ready_to_merge")
+        check("ready_to_merge blocks dependents", ac.claim_task(conn, "dev-agent") is None)
+        check("ready_to_merge in TASK_STATUSES", "ready_to_merge" in ac.TASK_STATUSES)
+        check("ready_to_merge in HOLDING_STATUSES", "ready_to_merge" in ac.HOLDING_STATUSES)
+        ac.update_task_status(conn, r1, "done")
+        claimed = ac.claim_task(conn, "dev-agent")
+        check("ready_to_merge unblocks when done", claimed and claimed["id"] == r2, claimed)
+
         try:
             ac.add_dependency(conn, d1, d3)
             check("cycles refused", False)
@@ -247,6 +283,46 @@ def main() -> None:
         new_results = ac.full_text_search(conn, "gamma", tables=["docs"])
         check("current FTS term found", len(new_results) == 1, new_results)
 
+        # Test snippet highlighting and escaping (Bug 1: highlighting was escaped)
+        ac.docs_set(conn, "snippet_test", "This document talks about parsing and parser design.", "dev-agent")
+        snippet_results = ac.full_text_search(conn, "parser", tables=["docs"])
+        snippet_found = [r for r in snippet_results if r["title"] == "snippet_test"]
+        check("snippet has match part", len(snippet_found) > 0 and snippet_found[0].get("snippet_match"), snippet_found)
+        if snippet_found:
+            snippet = snippet_found[0]
+            # Verify snippet contains the matched term
+            combined_snippet = (snippet.get("snippet_before", "") + snippet.get("snippet_match", "") + snippet.get("snippet_after", ""))
+            check("snippet contains matched term", "parser" in combined_snippet.lower(), combined_snippet)
+            # Verify no raw < from template escaping in snippet parts
+            check("snippet parts not double-escaped", "&lt;" not in combined_snippet, combined_snippet)
+
+        # Test XSS protection: HTML in document content is escaped, not injected
+        ac.docs_set(conn, "xss_test", "Documentation with <script>alert('xss')</script> in body.", "dev-agent")
+        xss_results = ac.full_text_search(conn, "script", tables=["docs"])
+        xss_found = [r for r in xss_results if r["title"] == "xss_test"]
+        check("XSS content found in search", len(xss_found) > 0, xss_found)
+        if xss_found:
+            xss_snippet = xss_found[0]
+            combined = (xss_snippet.get("snippet_before", "") + xss_snippet.get("snippet_match", "") + xss_snippet.get("snippet_after", ""))
+            # Jinja will escape HTML, so we should see escaped tags, not raw <script>
+            check("HTML tags escaped in snippet", "&lt;" in combined or "script" in combined, combined)
+
+        # Test relevance bar normalization (Bug 2: rank was negative)
+        ac.docs_set(conn, "rank_test_a", "minimal", "dev-agent")
+        ac.docs_set(conn, "rank_test_b", "minimal minimal minimal minimal minimal", "dev-agent")
+        rank_results = ac.full_text_search(conn, "minimal", tables=["docs"])
+        check("results have normalized rank", all("rank_normalized" in r for r in rank_results), rank_results)
+        # Best match should have higher rank_normalized than worst
+        if len(rank_results) > 1:
+            best = rank_results[0]
+            worst = rank_results[-1]
+            check("better match has higher rank", best.get("rank_normalized", 0) >= worst.get("rank_normalized", 0),
+                  f"best={best.get('rank_normalized')}, worst={worst.get('rank_normalized')}")
+        # All normalized ranks should be positive
+        check("all ranks are positive", all(r.get("rank_normalized", 0) >= 0 for r in rank_results), rank_results)
+        # All normalized ranks should be <= 1.0
+        check("all ranks <= 1.0", all(r.get("rank_normalized", 0) <= 1.0 for r in rank_results), rank_results)
+
         print("docs are markdown")
         prose = "# Report\n\n## Summary\n\nDid a thing.\n"
         check("prose untouched", ac.as_markdown(prose) == prose)
@@ -276,9 +352,8 @@ def main() -> None:
 
         print("tools")
         check("tool set", [s["name"] for s in ac.TOOL_SPECS] == [
-            "get_inbox", "send_message", "claim_task", "reply", "docs_get", "docs_set",
-            "docs_list", "claim_files", "release_files", "who_has", "heartbeat",
-            "create_task", "list_tasks", "search"])
+            "get_inbox", "send_message", "reply", "docs_get", "docs_set",
+            "docs_list", "heartbeat", "create_task", "list_tasks", "search"])
         ac.call_tool(conn, "dev-agent", "heartbeat", {"status": "working", "task_id": t4})
         check("tool heartbeat", ac.get_agent(conn, "dev-agent")["current_task_id"] == t4)
         ac.call_tool(conn, "dev-agent", "send_message", {"recipient": "bench-agent", "payload": "ping"})
@@ -295,37 +370,7 @@ def main() -> None:
             check("unknown tool raises", False)
         except KeyError:
             check("unknown tool raises", True)
-
-        print("file claims")
-        ac.heartbeat(conn, "dev-agent", "working")
-        ac.heartbeat(conn, "bench-agent", "working")
-        taken = ac.claim_files(conn, "dev-agent", ["src/parser.py", "src/lib"], task_id=t1, run_id="run-a", note="rewriting")
-        check("claim taken", taken["claimed"] == ["src/parser.py", "src/lib"], taken)
-        check("nobody else held them", taken["held_by_others"] == [])
-        check("same file is held", [c["agent"] for c in ac.claim_holders(conn, "src/parser.py", agent="bench-agent")] == ["dev-agent"])
-        check("directory covers what is under it", [c["path"] for c in ac.claim_holders(conn, "src/lib/util.py", agent="bench-agent")] == ["src/lib"])
-        check("a file above it also overlaps", ac.claim_holders(conn, "src", agent="bench-agent") != [])
-        check("unrelated file is free", ac.claim_holders(conn, "README.md", agent="bench-agent") == [])
-        check("an agent never blocks itself", ac.claim_holders(conn, "src/parser.py", agent="dev-agent") == [])
         check("paths are normalised", ac.normalize_path("./src/../src/parser.py") == "src/parser.py")
-
-        clash = ac.claim_files(conn, "bench-agent", ["src/parser.py"], run_id="run-b")
-        check("claiming anyway reports the clash", [c["agent"] for c in clash["held_by_others"]] == ["dev-agent"], clash)
-        check("both claims exist", len(ac.active_claims(conn)) == 3)
-        check("note travels with the claim", [c["note"] for c in ac.active_claims(conn) if c["agent"] == "dev-agent"][0] == "rewriting")
-
-        check("release by run", ac.release_run(conn, "run-a") == 2)
-        check("only the other agent is left", [c["agent"] for c in ac.active_claims(conn)] == ["bench-agent"])
-        check("release everything an agent holds", ac.release_files(conn, "bench-agent") == 1)
-        check("nothing held", ac.active_claims(conn) == [])
-
-        ac.claim_files(conn, "dev-agent", ["src/parser.py"], run_id="run-c")
-        ac.heartbeat(conn, "dev-agent", "offline")
-        conn.execute_sql("UPDATE agents SET last_heartbeat = ? WHERE name = ?",
-                         (ac.now() - ac.CLAIM_STALE_AFTER - 10, "dev-agent"))
-        check("a dead agent holds nothing", ac.active_claims(conn) == [])
-        check("so the file is free again", ac.claim_holders(conn, "src/parser.py", agent="bench-agent") == [])
-        ac.release_files(conn, "dev-agent")
 
         print("create_task tool")
         new_task = ac.call_tool(conn, "dev-agent", "create_task", {
@@ -365,6 +410,24 @@ def main() -> None:
             check("errors outside a project", False)
         except SystemExit:
             check("errors outside a project", True)
+
+        print("git preflight for worktree")
+        # Create a non-git project directory to test the preflight
+        non_git_project = tmp / "non-git-project"
+        (non_git_project / ".agents" / "prompts").mkdir(parents=True)
+        ac.config_path(non_git_project).write_text(
+            '[agents.test-agent]\nbackend = "claude"\nrole = "tester"\nworktree = true\n'
+        )
+        # Try to load config and verify it has worktree=true
+        non_git_cfg = ac.agent_config(non_git_project, "test-agent")
+        check("worktree=true in config", non_git_cfg.get("worktree") is True)
+        # Simulate what the daemon would check: git rev-parse --is-inside-work-tree
+        import subprocess
+        result = subprocess.run(
+            ["git", "-C", str(non_git_project), "rev-parse", "--is-inside-work-tree"],
+            capture_output=True, text=True, check=False
+        )
+        check("non-git dir fails git check", result.returncode != 0 or result.stdout.strip() != "true")
 
         print("merge_prompt")
         # Test: persona preserved

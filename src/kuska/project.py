@@ -129,6 +129,12 @@ AGENT_FIELDS = [
         "help": "codex/openai - price tokens when the model doesn't report cost",
     },
     {"key": "price_out_per_mtok", "label": "Output $/Mtok", "type": "number", "help": ""},
+    {
+        "key": "worktree",
+        "label": "Own worktree",
+        "type": "bool",
+        "help": "run this agent's tasks in a per-task git worktree on their own branch",
+    },
 ]
 
 AGENT_FIELD_KEYS = [f["key"] for f in AGENT_FIELDS]
@@ -187,6 +193,19 @@ def set_agent_config(project_dir: str | os.PathLike, agent_name: str, values: di
     table = dict(agents.get(agent_name, {}))
     for field in AGENT_FIELDS:
         key = field["key"]
+        if field["type"] == "bool":
+            # Unchecked checkboxes don't POST at all, so missing key means drop it.
+            # If the key is present, coerce to True for truthy values, drop for falsy.
+            if key in values:
+                raw = values[key]
+                raw = raw.strip() if isinstance(raw, str) else raw
+                if raw in ("true", "on", "1", True):
+                    table[key] = True
+                else:
+                    table.pop(key, None)
+            else:
+                table.pop(key, None)
+            continue
         if key not in values:
             continue
         raw = values[key]

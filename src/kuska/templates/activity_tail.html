@@ -1,11 +1,32 @@
-<div id="activity" class="log" hx-get="/agents/activity" hx-trigger="every 3s" hx-swap="outerHTML">
-{% for e in events %}
-  <div class="ev k-{{ e.kind }}"><span class="g">{{ glyph(e.kind) }}</span>
-    <span class="muted small">{{ ago(e.ts) }}</span>
-    <span class="what">{{ e.agent }}{% if e.task_id %} #{{ e.task_id }}{% endif %} {{ e.label or e.kind }}</span>
-    <span class="body">{{ brief(e.body) }}</span>
+<div class="activity-container">
+  <div class="activity-filters">
+    <form class="activity-filter-controls" hx-get="/agents/activity" hx-target="#activity" hx-trigger="change" hx-swap="outerHTML">
+      <div class="filter-group">
+        <label for="agent-filter">Agent</label>
+        <select id="agent-filter" name="agent" class="activity-filter-select">
+          <option value="">All agents</option>
+          {% for a in agents %}
+            <option value="{{ a.name }}"{% if agent_filter == a.name %} selected{% endif %}>{{ a.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="filter-group">
+        <label for="kind-filter">Kind</label>
+        <select id="kind-filter" name="kind" class="activity-filter-select">
+          <option value="">All kinds</option>
+          {% for k in kinds %}
+            <option value="{{ k }}"{% if kind_filter == k %} selected{% endif %}>{{ k }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="filter-group">
+        <label for="show-system">
+          <input type="checkbox" id="show-system" name="system" value="1"{% if show_system %} checked{% endif %}>
+          Show system events
+        </label>
+      </div>
+    </form>
   </div>
-{% else %}
-  <div class="muted">Nothing yet - agents narrate their work here while they run.</div>
-{% endfor %}
+
+  {% include "activity_log.html" %}
 </div>

@@ -13,7 +13,7 @@
   <div class="search-result-content">
     <div class="search-result-title">
       {% if result.table == 'tasks' %}
-      <a href="/tasks?open={{ result.id }}#task-{{ result.id }}" class="link">
+      <a href="/tasks/{{ result.id }}" class="link">
         {{ result.title[:60] }}{% if result.title|length > 60 %}...{% endif %}
       </a>
       {% elif result.table == 'docs' %}
@@ -22,7 +22,7 @@
       </a>
       {% elif result.table == 'events' %}
       {% if result.metadata and result.metadata.task_id %}
-      <a href="/tasks?open={{ result.metadata.task_id }}#task-{{ result.metadata.task_id }}" class="link">
+      <a href="/tasks/{{ result.metadata.task_id }}" class="link">
         {{ result.title[:60] }}{% if result.title|length > 60 %}...{% endif %}
       </a>
       {% else %}
@@ -33,17 +33,17 @@
       {% endif %}
     </div>
 
-    {% if result.snippet %}
+    {% if result.snippet_before or result.snippet_match or result.snippet_after %}
     <div class="search-snippet">
-      {{ result.snippet }}
+      {{ result.snippet_before }}<mark>{{ result.snippet_match }}</mark>{{ result.snippet_after }}
     </div>
     {% endif %}
 
     <div class="search-result-footer">
       <div class="search-rank">
-        <div class="search-rank-bar" style="width: {{ result.rank * 100 }}%"></div>
+        <div class="search-rank-bar" style="width: {{ (result.rank_normalized or 0) * 100 }}%"></div>
       </div>
-      <span class="search-rank-value">{{ "%.2f" | format(result.rank) }}</span>
+      <span class="search-rank-value">{{ "%.0f" | format((result.rank_normalized or 0) * 100) }}%</span>
     </div>
   </div>
 </div>

@@ -11,9 +11,11 @@
 <header>
   <h1>{{ project_name }}</h1>
   <nav>
-    <a href="/tasks" class="{{ 'on' if page == 'tasks' }}">Tasks</a>
     <a href="/" class="{{ 'on' if page == 'project' }}">Project</a>
+    <a href="/tasks" class="{{ 'on' if page == 'tasks' }}">Tasks</a>
     <a href="/agents" class="{{ 'on' if page == 'agents' }}">Agents</a>
+    <a href="/runs" class="{{ 'on' if page == 'runs' }}">Runs</a>
+    <a href="/merge-queue" class="{{ 'on' if page == 'merge-queue' }}">Merge Queue</a>
     <a href="/docs" class="{{ 'on' if page == 'docs' }}">Docs</a>
     <a href="/search" class="{{ 'on' if page == 'search' }}">Search</a>
     <a href="/stats" class="{{ 'on' if page == 'stats' }}">Stats</a>

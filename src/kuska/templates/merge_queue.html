@@ -1,0 +1,11 @@
+{% extends "layout.html" %}
+{% block body %}
+<h1>Merge Queue</h1>
+<p class="small muted">
+  Ready to review and merge. Ordered by blocking count (tasks that unblock the most other tasks come first).
+</p>
+
+<div id="merge-queue" hx-trigger="every 5s" hx-get="/merge-queue/rows" hx-swap="outerHTML">
+  {% include "merge_queue_table.html" with context %}
+</div>
+{% endblock %}

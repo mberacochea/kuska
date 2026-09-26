@@ -22,7 +22,6 @@ from .models import (
     Agent,
     Doc,
     Event,
-    FileClaim,
     Message,
     Task,
     TaskDep,
@@ -214,6 +213,8 @@ def update_task(db: SqliteDatabase, task_id: int, **fields: Any) -> None:
                   - status (str): Must be in TASK_STATUSES.
                   - feature (str | None): Free-text feature group, or None
                     to ungroup. Normalised via _norm_feature.
+                  - worktree_path (str | None): Path to the task's git
+                    worktree, or None once it's been removed.
 
     Raises:
         ValueError: If status is provided and not in TASK_STATUSES.
@@ -223,7 +224,7 @@ def update_task(db: SqliteDatabase, task_id: int, **fields: Any) -> None:
         >>> update_task(db, 42, assigned_to="alice")  # assign to alice
         >>> update_task(db, 42, assigned_to=None)  # unassign
     """
-    allowed = {"title", "description", "assigned_to", "status", "feature"}
+    allowed = {"title", "description", "assigned_to", "status", "feature", "worktree_path"}
     sets = {k: v for k, v in fields.items() if k in allowed}
     if not sets:
         return
@@ -1220,18 +1221,6 @@ def docs_list(db: SqliteDatabase) -> list[dict]:
     return rows(Doc.select().order_by(Doc.key))
 
 
-# --------------------------------------------------------------------------
-# file claims - "I am touching this file"
-#
-# Advisory and cooperative: a claim is a message to the other agents, not a
-# lock on the filesystem. The daemon takes them on the agent's behalf and
-# tells it who to talk to when something is already held.
-# --------------------------------------------------------------------------
-
-# an agent that stopped heartbeating this long ago is not holding anything
-CLAIM_STALE_AFTER = 180.0
-
-
 def normalize_path(path: str, project_dir: str | os.PathLike | None = None) -> str:
     """Normalize a file path to a consistent project-relative form.
 
@@ -1272,186 +1261,6 @@ def normalize_path(path: str, project_dir: str | os.PathLike | None = None) -> s
     if candidate.is_absolute() and project_dir:
         return result.rstrip("/") or "/"
     return result.strip("/") or "."
-
-
-def _overlaps(a: str, b: str) -> bool:
-    """Check if two normalized paths refer to the same file or overlap (directory containment).
-
-    Args:
-        a: Normalized path.
-        b: Normalized path.
-
-    Returns:
-        bool: True if a == b or one is a directory ancestor of the other.
-    """
-    return a == b or a.startswith(b + "/") or b.startswith(a + "/")
-
-
-@bound
-def active_claims(db: SqliteDatabase) -> list[dict]:
-    """Fetch all claims held by agents that are still alive (heartbeating).
-
-    Agents are considered alive if their last heartbeat was within CLAIM_STALE_AFTER
-    seconds. Stale claims (from dead agents) are excluded.
-
-    Args:
-        db: SqliteDatabase instance for this project.
-
-    Returns:
-        list[dict]: Claim records from live agents, ordered by claimed_at.
-                    Each has: id, path, agent, task_id, run_id, mode, note,
-                    claimed_at.
-    """
-    cutoff = now() - CLAIM_STALE_AFTER
-    query = (
-        FileClaim.select(
-            FileClaim.id, FileClaim.path, FileClaim.agent, FileClaim.task_id,
-            FileClaim.run_id, FileClaim.mode, FileClaim.note, FileClaim.claimed_at,
-        )
-        .join(Agent, JOIN.LEFT_OUTER, on=(Agent.name == FileClaim.agent))
-        .where(Agent.last_heartbeat.is_null(False) & (Agent.last_heartbeat >= cutoff))
-        .order_by(FileClaim.claimed_at)
-    )
-    return rows(query)
-
-
-def claim_holders(
-    db: SqliteDatabase,
-    path: str,
-    agent: str | None = None,
-    cached_claims: list[dict] | None = None,
-) -> list[dict]:
-    """Find live claims that overlap with a path, excluding one agent's own.
-
-    Useful for detecting conflicts: "who else is touching this file?" Returns
-    claims from other agents that overlap with the given path (exact match or
-    directory containment).
-
-    Args:
-        db: SqliteDatabase instance for this project.
-        path: File or directory to check.
-        agent: Optional agent name to exclude from the result.
-        cached_claims: Optional pre-fetched claims list to avoid redundant queries.
-
-    Returns:
-        list[dict]: Conflicting claim records from other agents.
-
-    Examples:
-        >>> conflicts = claim_holders(db, "src/foo.py", agent="me")
-        >>> if conflicts:
-        ...     print(f"{len(conflicts)} agent(s) touching src/foo.py")
-    """
-    target = normalize_path(path)
-    claims = cached_claims if cached_claims is not None else active_claims(db)
-    return [
-        claim
-        for claim in claims
-        if _overlaps(target, claim["path"]) and claim["agent"] != agent
-    ]
-
-
-@bound
-def claim_files(
-    db: SqliteDatabase,
-    agent: str,
-    paths: list[str] | str,
-    task_id: int | None = None,
-    run_id: str | None = None,
-    mode: str = "write",
-    note: str | None = None,
-) -> dict:
-    """Claim what this agent is about to touch.
-
-    An advisory lock: the agent is notifying the system "I am modifying these
-    paths." If other agents are already touching them, both sides get the
-    conflict info so they can coordinate. The claim always succeeds; the
-    returned conflicts are informational.
-
-    Args:
-        db: SqliteDatabase instance for this project.
-        agent: Agent claiming the paths.
-        paths: Path or list of paths to claim.
-        task_id: Associated task ID (optional).
-        run_id: Associated invocation ID (optional).
-        mode: Claim mode ("read" or "write", default "write").
-        note: Optional annotation (e.g., reason for the claim).
-
-    Returns:
-        dict: Result with keys:
-              - claimed (list): Normalized paths successfully claimed.
-              - held_by_others (list): Conflicting claims from other agents.
-
-    Examples:
-        >>> result = claim_files(db, "claude-worker", ["src/foo.py", "tests/"],
-        ...                       task_id=42, note="Refactoring")
-        >>> if result["held_by_others"]:
-        ...     print(f"Warning: {result['held_by_others']}")
-    """
-    wanted = [paths] if isinstance(paths, str) else list(paths)
-    claimed, conflicts = [], []
-    # Pre-fetch all active claims once, then filter per-file in Python
-    all_claims = active_claims(db)
-    for raw in wanted:
-        path = normalize_path(raw)
-        held = [c for c in claim_holders(db, path, agent=agent, cached_claims=all_claims) if c["mode"] == "write" or mode == "write"]
-        conflicts += held
-        mine = FileClaim.select().where(
-            (FileClaim.path == path) & (FileClaim.agent == agent)
-        ).first()
-        if mine:
-            FileClaim.update(
-                task_id=task_id, run_id=run_id, mode=mode, note=note, claimed_at=now()
-            ).where(FileClaim.id == mine.id).execute()
-        else:
-            FileClaim.create(
-                path=path, agent=agent, task_id=task_id, run_id=run_id,
-                mode=mode, note=note, claimed_at=now(),
-            )
-        claimed.append(path)
-    return {"claimed": claimed, "held_by_others": conflicts}
-
-
-@bound
-def release_files(db: SqliteDatabase, agent: str, paths: list[str] | str | None = None) -> int:
-    """Release file claims - let other agents know you're done with these paths.
-
-    If paths is None, releases all claims from this agent. Otherwise releases
-    only the specified paths.
-
-    Args:
-        db: SqliteDatabase instance for this project.
-        agent: Agent releasing the claims.
-        paths: Path or list of paths to release, or None for all.
-
-    Returns:
-        int: Number of claims deleted.
-
-    Examples:
-        >>> released = release_files(db, "claude-worker", ["src/foo.py"])
-        >>> released = release_files(db, "claude-worker")  # release all
-    """
-    query = FileClaim.delete().where(FileClaim.agent == agent)
-    if paths is not None:
-        wanted = [paths] if isinstance(paths, str) else list(paths)
-        query = query.where(FileClaim.path.in_([normalize_path(p) for p in wanted]))
-    return query.execute()
-
-
-@bound
-def release_run(db: SqliteDatabase, run_id: str) -> int:
-    """Release all file claims from a single invocation.
-
-    Called by the daemon when an agent run completes, to clean up stale claims.
-    Ensures claims never outlive the process that took them.
-
-    Args:
-        db: SqliteDatabase instance for this project.
-        run_id: Invocation ID whose claims to release.
-
-    Returns:
-        int: Number of claims deleted.
-    """
-    return FileClaim.delete().where(FileClaim.run_id == run_id).execute()
 
 
 # --------------------------------------------------------------------------
@@ -1586,67 +1395,47 @@ def check_cost_anomaly(
 # --------------------------------------------------------------------------
 
 
-def _generate_snippet(text: str, query: str, context_chars: int = 100) -> str:
-    """Extract context around query match and highlight matching terms.
 
-    Searches for the query term(s) in the text, extracts surrounding context,
-    and highlights matching terms with <mark> tags. If truncated, adds ellipsis.
+
+def _parse_fts_snippet(snippet_text: str) -> dict:
+    """Parse FTS5 snippet with markers into structured parts.
+
+    FTS5's snippet() function returns text with start/end markers around
+    matched content. This function splits the snippet into before/match/after
+    parts so the template can render each escaped, preventing both injection
+    and broken highlighting.
 
     Args:
-        text: Text to extract snippet from.
-        query: Query string (may contain multiple terms).
-        context_chars: Approximate characters of context around match (default 100).
+        snippet_text: Snippet from FTS5 with <MARK> delimiters.
 
     Returns:
-        str: Snippet with highlighted matches and ellipsis if truncated.
+        dict with keys: before, match, after (all escaped strings).
     """
-    if not text or not query:
-        return text[:context_chars] if text else ""
+    if not snippet_text:
+        return {"before": "", "match": "", "after": ""}
 
-    # Extract query terms (simple whitespace-based split, ignoring operators)
-    terms = [t.strip('"()').lower() for t in query.split() if t not in ('AND', 'OR', 'NOT')]
-    if not terms:
-        return text[:context_chars]
+    # Split on the markers FTS5 used
+    parts = snippet_text.split("<MARK>")
+    if len(parts) < 2:
+        # No match found (shouldn't happen, but handle it)
+        return {"before": snippet_text, "match": "", "after": ""}
 
-    # Find first occurrence of any term
-    text_lower = text.lower()
-    first_match_pos = len(text_lower)
-    for term in terms:
-        pos = text_lower.find(term)
-        if pos != -1 and pos < first_match_pos:
-            first_match_pos = pos
+    before = parts[0]
+    rest = "<MARK>".join(parts[1:])
 
-    if first_match_pos == len(text_lower):
-        # No match found, return beginning
-        snippet = text[:context_chars]
-        if len(text) > context_chars:
-            snippet += "..."
-        return snippet
+    match_parts = rest.split("</MARK>")
+    if len(match_parts) < 2:
+        # Malformed, treat all as before
+        return {"before": snippet_text, "match": "", "after": ""}
 
-    # Extract context around first match
-    start = max(0, first_match_pos - context_chars // 2)
-    end = min(len(text), first_match_pos + context_chars // 2)
+    match = match_parts[0]
+    after = "</MARK>".join(match_parts[1:])
 
-    snippet = text[start:end]
-
-    # Add ellipsis if truncated
-    if start > 0:
-        snippet = "..." + snippet
-    if end < len(text):
-        snippet = snippet + "..."
-
-    # Highlight all matching terms with <mark> tags
-    for term in terms:
-        # Case-insensitive replacement with preservation of original case
-        import re
-        snippet = re.sub(
-            rf'\b({re.escape(term)})\b',
-            lambda m: f'<mark>{m.group(1)}</mark>',
-            snippet,
-            flags=re.IGNORECASE,
-        )
-
-    return snippet
+    return {
+        "before": before,
+        "match": match,
+        "after": after,
+    }
 
 
 def _fts_search_table(
@@ -1657,8 +1446,7 @@ def _fts_search_table(
 ) -> list[dict]:
     """Search a single FTS5 table and return results with full context.
 
-    Queries the FTS table with MATCH operator, joins back to source table
-    for complete metadata, and generates snippets using context extraction.
+    Uses FTS5's snippet() and bm25() functions for highlighting and scoring.
     Returns all matching results (no limit), allowing the caller to handle
     pagination across multiple tables.
 
@@ -1669,67 +1457,86 @@ def _fts_search_table(
         limit: Optional maximum results per table (for performance tuning).
 
     Returns:
-        list[dict]: Result dicts with keys: table, id, title, snippet, rank, metadata.
+        list[dict]: Result dicts with keys: table, id, title, snippet_before,
+                    snippet_match, snippet_after, rank, metadata.
     """
     fts_table = f"{table}_fts"
     results = []
 
-    # Build table-specific query with joins
-    if table == "docs":
-        fts_query = f"""
-            SELECT f.rowid, f.rank, f.content, d.key, d.updated_by, d.updated_at
-            FROM {fts_table} f
-            JOIN docs d ON d.rowid = f.rowid
-            WHERE f.{fts_table} MATCH ?
-            ORDER BY f.rank
-        """
-        if limit:
-            fts_query += f" LIMIT {limit}"
+    # Map of table to (join_table, search_columns, text_column)
+    table_specs = {
+        "docs": {
+            "join_table": "docs",
+            "join_on": "d.rowid = f.rowid",
+            "search_col": "content",
+            "join_select": "d.key, d.updated_by, d.updated_at",
+        },
+        "messages": {
+            "join_table": "messages",
+            "join_on": "m.id = f.rowid",
+            "search_col": "payload",
+            "join_select": "m.sender, m.recipient, m.task_id, m.msg_type, m.ts, m.input_tokens, m.output_tokens, m.cache_read_tokens, m.cache_write_tokens, m.tool_rounds, m.cost_usd, m.read_at",
+        },
+        "tasks": {
+            "join_table": "tasks",
+            "join_on": "t.id = f.rowid",
+            "search_col": "title",
+            "join_select": "t.title, t.assigned_to, t.status, t.created_at, t.updated_at",
+        },
+        "events": {
+            "join_table": "events",
+            "join_on": "e.id = f.rowid",
+            "search_col": "body",
+            "join_select": "e.ts, e.agent, e.task_id, e.run_id, e.kind, e.label",
+        },
+    }
 
-        fts_results = db.execute_sql(fts_query, (query,)).fetchall()
+    if table not in table_specs:
+        return results
 
-        for row_id, rank, text_content, key, updated_by, updated_at in fts_results:
-            source_record = {
+    spec = table_specs[table]
+
+    # Use FTS5's snippet() and bm25() functions
+    # Note: FTS5 functions require the actual table name, not an alias, so we use fts_table directly
+    fts_query = f"""
+        SELECT f.rowid, bm25({fts_table}) as rank,
+               snippet({fts_table}, -1, '<MARK>', '</MARK>', '…', 32) as snippet,
+               {spec['join_select']}
+        FROM {fts_table} f
+        JOIN {spec['join_table']} {spec['join_table'][0]} ON {spec['join_on']}
+        WHERE f.{fts_table} MATCH ?
+        ORDER BY rank
+    """
+    if limit:
+        fts_query += f" LIMIT {limit}"
+
+    fts_results = db.execute_sql(fts_query, (query,)).fetchall()
+
+    for row in fts_results:
+        row_id = row[0]
+        bm25_score = row[1]
+        snippet_text = row[2]
+
+        # Parse remaining columns based on table
+        if table == "docs":
+            key, updated_by, updated_at = row[3], row[4], row[5]
+            title = key if key else f"Doc #{row_id}"
+            metadata = {
                 "key": key,
-                "content": text_content,
                 "updated_by": updated_by,
                 "updated_at": updated_at,
             }
-            title = key if key else f"Doc #{row_id}"
-            snippet = _generate_snippet(text_content, query, context_chars=150)
-            metadata = {k: v for k, v in source_record.items() if k not in ["content"]}
-
-            results.append({
-                "table": table,
-                "id": row_id,
-                "title": title,
-                "snippet": snippet,
-                "rank": rank,
-                "metadata": metadata,
-            })
-
-    elif table == "messages":
-        fts_query = f"""
-            SELECT f.rowid, f.rank, f.payload, m.sender, m.recipient, m.task_id, m.msg_type, m.ts, m.input_tokens, m.output_tokens, m.cache_read_tokens, m.cache_write_tokens, m.tool_rounds, m.cost_usd, m.read_at
-            FROM {fts_table} f
-            JOIN messages m ON m.id = f.rowid
-            WHERE f.{fts_table} MATCH ?
-            ORDER BY f.rank
-        """
-        if limit:
-            fts_query += f" LIMIT {limit}"
-
-        fts_results = db.execute_sql(fts_query, (query,)).fetchall()
-
-        for row_id, rank, text_content, sender, recipient, task_id, msg_type, ts, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, tool_rounds, cost_usd, read_at in fts_results:
-            source_record = {
-                "id": row_id,
+        elif table == "messages":
+            sender, recipient, task_id, msg_type, ts, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, tool_rounds, cost_usd, read_at = row[3:15]
+            sender_name = sender if sender else "unknown"
+            first_50 = (snippet_text or "")[:50]
+            title = f"From {sender_name}: {first_50}"
+            metadata = {
                 "sender": sender,
                 "recipient": recipient,
                 "task_id": task_id,
                 "msg_type": msg_type,
                 "ts": ts,
-                "payload": text_content,
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
                 "cache_read_tokens": cache_read_tokens,
@@ -1738,99 +1545,43 @@ def _fts_search_table(
                 "cost_usd": cost_usd,
                 "read_at": read_at,
             }
-            sender_name = sender if sender else "unknown"
-            first_50 = text_content[:50] if text_content else ""
-            title = f"From {sender_name}: {first_50}"
-            snippet = _generate_snippet(text_content, query, context_chars=150)
-            metadata = {k: v for k, v in source_record.items() if k not in ["payload"]}
-
-            results.append({
-                "table": table,
-                "id": row_id,
-                "title": title,
-                "snippet": snippet,
-                "rank": rank,
-                "metadata": metadata,
-            })
-
-    elif table == "tasks":
-        fts_query = f"""
-            SELECT f.rowid, f.rank, f.title, f.description, t.assigned_to, t.status, t.created_at, t.updated_at
-            FROM {fts_table} f
-            JOIN tasks t ON t.id = f.rowid
-            WHERE f.{fts_table} MATCH ?
-            ORDER BY f.rank
-        """
-        if limit:
-            fts_query += f" LIMIT {limit}"
-
-        fts_results = db.execute_sql(fts_query, (query,)).fetchall()
-
-        for row_id, rank, title_text, description_text, assigned_to, status, created_at, updated_at in fts_results:
-            source_record = {
-                "id": row_id,
-                "title": title_text,
-                "description": description_text,
+        elif table == "tasks":
+            title_text, assigned_to, status, created_at, updated_at = row[3], row[4], row[5], row[6], row[7]
+            title = title_text if title_text else f"Task #{row_id}"
+            metadata = {
                 "assigned_to": assigned_to,
                 "status": status,
                 "created_at": created_at,
                 "updated_at": updated_at,
             }
-            title = title_text if title_text else f"Task #{row_id}"
-            # Generate snippet from title (primary indexed field)
-            text_content = title_text or ""
-            snippet = _generate_snippet(text_content, query, context_chars=150)
-            metadata = {k: v for k, v in source_record.items() if k not in ["title", "description"]}
-
-            results.append({
-                "table": table,
-                "id": row_id,
-                "title": title,
-                "snippet": snippet,
-                "rank": rank,
-                "metadata": metadata,
-            })
-
-    elif table == "events":
-        fts_query = f"""
-            SELECT f.rowid, f.rank, f.body, e.ts, e.agent, e.task_id, e.run_id, e.kind, e.label
-            FROM {fts_table} f
-            JOIN events e ON e.id = f.rowid
-            WHERE f.{fts_table} MATCH ?
-            ORDER BY f.rank
-        """
-        if limit:
-            fts_query += f" LIMIT {limit}"
-
-        fts_results = db.execute_sql(fts_query, (query,)).fetchall()
-
-        for row_id, rank, text_content, ts, agent, task_id, run_id, kind, label in fts_results:
-            source_record = {
-                "id": row_id,
+        elif table == "events":
+            ts, agent, task_id, run_id, kind, label = row[3:9]
+            first_50 = (snippet_text or "")[:50]
+            if task_id:
+                title = f"Task #{task_id}: {first_50}"
+            else:
+                title = f"Event #{row_id}: {first_50}"
+            metadata = {
                 "ts": ts,
                 "agent": agent,
                 "task_id": task_id,
                 "run_id": run_id,
                 "kind": kind,
                 "label": label,
-                "body": text_content,
             }
-            first_50 = text_content[:50] if text_content else ""
-            if task_id:
-                title = f"Task #{task_id}: {first_50}"
-            else:
-                title = f"Event #{row_id}: {first_50}"
-            snippet = _generate_snippet(text_content, query, context_chars=150)
-            metadata = {k: v for k, v in source_record.items() if k not in ["body"]}
 
-            results.append({
-                "table": table,
-                "id": row_id,
-                "title": title,
-                "snippet": snippet,
-                "rank": rank,
-                "metadata": metadata,
-            })
+        snippet_parts = _parse_fts_snippet(snippet_text or "")
+
+        results.append({
+            "table": table,
+            "id": row_id,
+            "title": title,
+            "snippet_before": snippet_parts["before"],
+            "snippet_match": snippet_parts["match"],
+            "snippet_after": snippet_parts["after"],
+            "rank": bm25_score,
+            "metadata": metadata,
+        })
 
     return results
 
@@ -1901,6 +1652,28 @@ def full_text_search(
 
     # Sort by rank ascending across all tables (negative scores, more negative = better match)
     all_results.sort(key=lambda x: x["rank"])
+
+    # Normalize ranks for display: convert from raw BM25 scores to normalized 0-1 range
+    # BM25 scores are negative (e.g., -1e-06), with more negative = better match.
+    # After sorting, the first result has the best (most negative) score.
+    if all_results:
+        best_rank = all_results[0]["rank"]  # Most negative = best match
+        # Normalize: map best_rank to 1.0 and worst to 0.0
+        # Since both best_rank and worst are negative, use them as divisor
+        worst_rank = all_results[-1]["rank"] if len(all_results) > 1 else best_rank
+        rank_range = worst_rank - best_rank
+        if rank_range == 0:
+            # All results have same score, all get normalized value of 1.0
+            normalized_rank = 1.0
+        else:
+            normalized_rank = 1.0
+        for result in all_results:
+            if rank_range == 0:
+                result["rank_normalized"] = 1.0
+            else:
+                # Map score to 0-1: (score - worst) / (best - worst)
+                # Since best is most negative, we reverse: (worst - score) / (worst - best)
+                result["rank_normalized"] = max(0.0, min(1.0, (worst_rank - result["rank"]) / rank_range))
 
     # Apply offset and limit across combined results
     end_idx = offset + limit
