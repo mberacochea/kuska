@@ -440,16 +440,16 @@ def test_web(project: Path) -> None:
     rows = c.get("/merge-queue/rows", headers=HX).get_data(as_text=True)
     check("merge queue rows fragment renders", "tr" in rows)
 
-    # Test marking merged
-    marked = c.post(f"/tasks/{merge_task_1}/merged").get_data(as_text=True)
-    check("POST /tasks/<id>/merged sets done", ac.get_task(conn, merge_task_1)["status"] == "done")
-
     # Test ordering: merge_task_1 (1 blocks) should come before merge_task_2 (0 blocks)
     # because higher blocking count comes first, so task 1 should appear before task 2
     merge_queue_page = c.get("/merge-queue").get_data(as_text=True)
     task_1_pos = merge_queue_page.find(str(merge_task_1))
     task_2_pos = merge_queue_page.find(str(merge_task_2))
     check("ordering puts blocking task above non-blocking one", task_1_pos < task_2_pos and task_1_pos > 0)
+
+    # Test marking merged
+    marked = c.post(f"/tasks/{merge_task_1}/merged").get_data(as_text=True)
+    check("POST /tasks/<id>/merged sets done", ac.get_task(conn, merge_task_1)["status"] == "done")
 
     # Test that diff command in task detail has three dots, not two
     task_detail = c.get(f"/tasks/{merge_task_2}", headers=HX).get_data(as_text=True)
