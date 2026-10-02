@@ -1,0 +1,14 @@
+<div id="board" class="board">
+  {% for col in columns %}
+  <section class="kcol" data-column="{{ col.key }}" {% if col.drop %}data-drop="1"{% endif %}>
+    <h2>{{ col.title }} <span class="muted small">{{ col.cards|length }}</span></h2>
+    <div class="kcol-body">
+      {% for t in col.cards %}
+        {% with picker = (t.id == picker_id), show_status = (col.key == 'finished') %}
+          {% include "board_card.html" %}
+        {% endwith %}
+      {% else %}<p class="muted small">Nothing here.</p>{% endfor %}
+    </div>
+  </section>
+  {% endfor %}
+</div>

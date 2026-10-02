@@ -1,0 +1,53 @@
+{% extends "layout.html" %}
+{% block body %}
+<h1>Board</h1>
+<p class="small muted">
+  Drag a card to another column to move it. Todo to Ready hands the task to its agent;
+  Finished marks it done. Only an agent starts work, so In progress is read-only.
+</p>
+{{ board|safe }}
+<script>
+// Native HTML5 drag and drop. The listeners sit on document because #board is
+// swapped out on every move, so they never need re-attaching.
+(function () {
+  var dragged = null;
+  function dropColumn(event) {
+    var el = event.target.closest ? event.target.closest('.kcol') : null;
+    return el && el.dataset.drop ? el : null;
+  }
+  document.addEventListener('dragstart', function (e) {
+    var card = e.target.closest && e.target.closest('.kcard');
+    if (!card || card.dataset.status === 'in_progress') { e.preventDefault(); return; }
+    dragged = card;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', card.dataset.id);
+    card.classList.add('dragging');
+  });
+  document.addEventListener('dragend', function () {
+    if (dragged) dragged.classList.remove('dragging');
+    dragged = null;
+    document.querySelectorAll('.kcol.over').forEach(function (c) { c.classList.remove('over'); });
+  });
+  document.addEventListener('dragover', function (e) {
+    var col = dropColumn(e);
+    if (dragged && col) { e.preventDefault(); col.classList.add('over'); }
+  });
+  document.addEventListener('dragleave', function (e) {
+    var col = dropColumn(e);
+    if (col && !col.contains(e.relatedTarget)) col.classList.remove('over');
+  });
+  document.addEventListener('drop', function (e) {
+    var col = dropColumn(e);
+    if (!dragged || !col) return;
+    e.preventDefault();
+    var id = dragged.dataset.id;
+    // dropping within a column is a no-op, except a waiting card dropped on
+    // Finished, which marks it done
+    if (dragged.closest('.kcol') === col &&
+        !(col.dataset.column === 'finished' && dragged.dataset.status !== 'done')) return;
+    htmx.ajax('POST', '/tasks/' + id + '/move',
+              {target: '#board', swap: 'outerHTML', values: {column: col.dataset.column}});
+  });
+})();
+</script>
+{% endblock %}

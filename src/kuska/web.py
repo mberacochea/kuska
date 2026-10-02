@@ -957,6 +957,93 @@ def create_app(project_dir: Path):
             return panel
         return render_template("task.html", page="tasks", t=task, task_panel=panel)
 
+    # ========== ROUTES: Board ==========
+
+    # statuses shown in the Finished column; waiting ones sort ahead of done
+    waiting_statuses = ("needs_approval", "ready_to_merge", "blocked")
+    finished_statuses = waiting_statuses + ("done",)
+    done_shown = 20
+
+    def board_html(picker_id: int | None = None, toast: str | None = None) -> str:
+        """Render the whole #board (plus an optional toast).
+
+        Every board response is the full board: there are only four short
+        columns, and swapping all of it means a refused or completed move can
+        never leave the source and target columns out of step.
+        """
+        tasks = list_tasks(db())
+        by_status: dict[str, list[dict]] = {}
+        for t in tasks:
+            by_status.setdefault(t["status"], []).append(t)
+        waiting = [t for s in waiting_statuses for t in by_status.get(s, [])]
+        done = sorted(by_status.get("done", []), key=lambda t: (t["updated_at"] or 0, t["id"]), reverse=True)
+        columns = [
+            {"key": "todo", "title": "Todo", "drop": True, "cards": by_status.get("todo", [])},
+            {"key": "ready", "title": "Ready", "drop": True, "cards": by_status.get("ready", [])},
+            {"key": "in_progress", "title": "In progress", "drop": False, "cards": by_status.get("in_progress", [])},
+            {"key": "finished", "title": "Finished", "drop": True, "cards": waiting + done[:done_shown]},
+        ]
+        html = render_template(
+            "board_columns.html", columns=columns, picker_id=picker_id, agents=list_agents(db())
+        )
+        return html + _toast(toast) if toast else html
+
+    @app.get("/board")
+    def board_page() -> str:
+        """GET /board - the Kanban board. An htmx request gets just #board."""
+        if wants_fragment():
+            return board_html()
+        return render_template("board.html", page="board", board=board_html())
+
+    @app.post("/tasks/<int:task_id>/move")
+    def move_task(task_id: int) -> tuple[str, int] | str:
+        """POST /tasks/<id>/move - move a card to a column (form field `column`).
+
+        Rules (plan_kanban_board): todo<->ready; finished->todo/ready;
+        todo/ready/waiting->finished sets done. In progress is agent-only, in
+        both directions. Moving to ready needs an agent: with none on the
+        task and no `assigned_to` posted, the card comes back with an agent
+        picker that posts here again. A refused move re-renders the board
+        unchanged with a toast, so the dragged card snaps back.
+        """
+        task = get_task(db(), task_id)
+        if not task:
+            return "", 404
+        column = request.form.get("column", "")
+        status = task["status"]
+
+        if status == "in_progress":
+            return board_html(toast=f"task {task_id} is in progress - only an agent moves it")
+        if column not in ("todo", "ready", "finished"):
+            return board_html(toast="that column does not accept cards")
+
+        # a waiting card is already in Finished; dropping it there approves it
+        if column == "finished":
+            if status == "done":
+                return board_html()
+            update_task_status(db(), task_id, "done")
+            return board_html(toast=f"task {task_id} marked done")
+        if column == status:
+            return board_html()
+
+        if column == "todo":
+            update_task_status(db(), task_id, "todo")
+            return board_html(toast=f"task {task_id} moved to todo")
+
+        # column == "ready": needs an agent
+        assigned_to = request.form.get("assigned_to", "").strip() or None
+        if "assigned_to" in request.form:
+            if not assigned_to:
+                return board_html(picker_id=task_id, toast="choose an agent first")
+            agent_error = validate_task_assigned_to(assigned_to, db())
+            if agent_error:
+                return board_html(picker_id=task_id, toast=agent_error)
+            update_task(db(), task_id, assigned_to=assigned_to)
+        elif not task["assigned_to"]:
+            return board_html(picker_id=task_id, toast="choose an agent to make it ready")
+        update_task_status(db(), task_id, "ready")
+        return board_html(toast=f"task {task_id} is ready")
+
     @app.post("/tasks/<int:task_id>/merged")
     def mark_task_merged(task_id: int) -> str:
         """POST /tasks/<id>/merged - Mark a task as done (merged)."""
