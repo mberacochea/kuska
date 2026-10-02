@@ -482,3 +482,17 @@ input.has-error:focus, textarea.has-error:focus, select.has-error:focus {
     flex-wrap:wrap; gap:.6rem;
   }
 }
+
+/* Kanban board */
+.board { display:grid; grid-template-columns:repeat(4, minmax(14rem, 1fr)); gap:.9rem; align-items:start; margin-top:.9rem; overflow-x:auto; }
+.kcol { background:var(--shade); border:1px solid var(--line); border-radius:8px; padding:.6rem; min-height:12rem; }
+.kcol h2 { font-size:.9rem; margin:.1rem .2rem .6rem; }
+.kcol.over { outline:2px dashed var(--accent); outline-offset:-2px; }
+.kcol-body { display:flex; flex-direction:column; gap:.5rem; }
+.kcard { background:var(--card); border:1px solid var(--line); border-radius:6px; padding:.55rem .7rem; cursor:grab; }
+.kcard-fixed { cursor:default; }
+.kcard.dragging { opacity:.5; }
+.kcard-head { display:flex; justify-content:space-between; align-items:center; gap:.4rem; }
+.kcard-title { display:block; margin:.15rem 0; font-weight:600; word-break:break-word; }
+.kcard-pick { display:flex; gap:.4rem; align-items:center; margin-top:.4rem; }
+.kcard-pick select { flex:1; min-width:0; }

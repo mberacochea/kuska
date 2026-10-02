@@ -584,6 +584,87 @@ def test_web(project: Path) -> None:
     conn.close()
 
 
+def test_board(project: Path) -> None:
+    app = ac.create_app(project)
+    app.config.update(TESTING=True)
+    c = app.test_client()
+    conn = ac.connect(ac.db_path(project))
+
+    def status(tid: int) -> str:
+        return ac.get_task(conn, tid)["status"]
+
+    def move(tid: int, column: str, **extra) -> str:
+        return c.post(f"/tasks/{tid}/move", data={"column": column, **extra}).get_data(as_text=True)
+
+    print("board")
+    plain = ac.add_task(conn, "Plain card", "", None)
+    owned = ac.add_task(conn, "Owned card", "", "dev-agent")
+    running = ac.add_task(conn, "Running card", "", "dev-agent")
+    ac.update_task_status(conn, running, "in_progress")
+    waiting = ac.add_task(conn, "Waiting card", "", "dev-agent")
+    ac.update_task_status(conn, waiting, "needs_approval")
+    old_done = [ac.add_task(conn, f"Done {i}", "", "dev-agent") for i in range(22)]
+    for tid in old_done:
+        ac.update_task_status(conn, tid, "done")
+
+    page = c.get("/board").get_data(as_text=True)
+    check("board renders", "<h1>Board</h1>" in page and 'href="/board"' in page)
+    for key in ("todo", "ready", "in_progress", "finished"):
+        check(f"column {key}", f'data-column="{key}"' in page)
+    check("in progress column takes no drops", "data-drop" not in page.split('data-column="in_progress"')[1].split(">")[0])
+    check("todo column takes drops", "data-drop" in page.split('data-column="todo"')[1].split(">")[0])
+    check("card links to task page", f'href="/tasks/{plain}"' in page and "Plain card" in page)
+    check("running card not draggable", "draggable" not in page.split(f'id="card-{running}"')[1].split(">")[0])
+    check("other cards draggable", "draggable" in page.split(f'id="card-{plain}"')[1].split(">")[0])
+    check("finished shows status label", "needs_approval" in page)
+    check("waiting card sits above done cards", page.index("Waiting card") < page.index("Done 21"))
+    check("only 20 done cards", page.count("Done ") == 20 and "Done 0<" not in page and "Done 1<" not in page)
+    check("fragment is bare board", c.get("/board", headers={"HX-Request": "true"}).get_data(as_text=True).lstrip().startswith('<div id="board"'))
+
+    print("board moves")
+    move(plain, "ready")
+    check("unassigned to ready shows picker", "choose an agent" in move(plain, "ready") and status(plain) == "todo")
+    check("picker lists agents", 'name="assigned_to"' in move(plain, "ready") and "dev-agent" in move(plain, "ready"))
+    html = move(plain, "ready", assigned_to="dev-agent")
+    check("assigned_to assigns and readies", status(plain) == "ready" and ac.get_task(conn, plain)["assigned_to"] == "dev-agent")
+    check("unknown agent refused", "does not exist" in move(owned, "ready", assigned_to="nobody") and status(owned) == "todo")
+    check("empty pick refused", status(owned) == "todo" and "choose an agent" in move(owned, "ready", assigned_to=""))
+    move(owned, "ready")
+    check("todo -> ready with agent", status(owned) == "ready")
+    move(owned, "todo")
+    check("ready -> todo", status(owned) == "todo")
+    move(owned, "ready")
+    move(owned, "finished")
+    check("ready -> finished is done", status(owned) == "done")
+    move(owned, "todo")
+    check("finished -> todo", status(owned) == "todo")
+    move(owned, "finished")
+    check("todo -> finished is done", status(owned) == "done")
+    move(owned, "ready")
+    check("finished -> ready with agent", status(owned) == "ready")
+    move(waiting, "finished")
+    check("waiting -> finished is done", status(waiting) == "done")
+    ac.update_task_status(conn, waiting, "blocked")
+    move(waiting, "todo")
+    check("waiting -> todo", status(waiting) == "todo")
+    ac.update_task_status(conn, waiting, "blocked")
+    unowned_done = ac.add_task(conn, "Unowned done", "", None)
+    ac.update_task_status(conn, unowned_done, "done")
+    check("finished unassigned -> ready needs picker",
+          "choose an agent" in move(unowned_done, "ready") and status(unowned_done) == "done")
+
+    print("board refused moves")
+    toast = move(owned, "in_progress")
+    check("move into in_progress refused", status(owned) == "ready" and 'id="toast"' in toast and "does not accept" in toast)
+    toast = move(running, "todo")
+    check("in_progress card cannot move", status(running) == "in_progress" and 'id="toast"' in toast)
+    check("in_progress card cannot finish", "only an agent" in move(running, "finished") and status(running) == "in_progress")
+    check("refusal still returns board", 'id="board"' in toast and "Running card" in toast)
+    check("unknown column refused", "does not accept" in move(owned, "bogus") and status(owned) == "ready")
+    check("missing task is 404", c.post("/tasks/9999/move", data={"column": "todo"}).status_code == 404)
+    conn.close()
+
+
 def test_mcp(project: Path) -> None:
     import anyio
     from mcp import ClientSession, StdioServerParameters
@@ -638,6 +719,10 @@ def main() -> None:
     tmp = Path(tempfile.mkdtemp(prefix="kuska-web-"))
     try:
         test_web(make_project(tmp))
+        board_project = tmp / "boardproject"
+        (board_project / ".agents" / "prompts").mkdir(parents=True)
+        ac.config_path(board_project).write_text('[agents.dev-agent]\nbackend = "claude"\nrole = "builder"\n')
+        test_board(board_project)
         mcp_project = tmp / "mcpproject"
         (mcp_project / ".agents" / "prompts").mkdir(parents=True)
         ac.config_path(mcp_project).write_text('[agents.codex-1]\nbackend = "codex"\nrole = "second opinion"\n')
