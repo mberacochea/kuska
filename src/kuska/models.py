@@ -106,6 +106,13 @@ class Doc(Base):
     content = TextField(null=True)
     updated_by = CharField(null=True)
     updated_at = FloatField(default=time.time)
+    # optional link to the task this doc belongs to (e.g. a plan or a
+    # handover report); NULL for project-wide docs like "architecture".
+    # dies with its task (ON DELETE CASCADE) rather than becoming orphaned.
+    task_id = ForeignKeyField(
+        Task, field="id", column_name="task_id", null=True, backref="docs",
+        on_delete="CASCADE", lazy_load=False,
+    )
 
     class Meta:
         table_name = "docs"

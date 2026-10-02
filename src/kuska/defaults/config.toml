@@ -1,10 +1,29 @@
 # agent registry for this project
 # one [agents.<name>] table per agent; the prompt lives in .agents/prompts/<name>.md
+#
+# Three flavors ship by default - dev, reviewer and planner - each seeded
+# from its own prompt template (defaults/prompt_<flavor>.md). planning-agent
+# breaks goals into tasks, dev-agent implements them, review-agent checks the
+# result before a human looks at it. Delete any of them you don't want, or
+# add more agents with the same flavor for parallel capacity.
+
+[agents.planning-agent]
+backend = "claude"
+model = "claude-opus-5"
+role = "Breaks goals into tasks for dev-agent and review-agent"
+flavor = "planner"
 
 [agents.dev-agent]
 backend = "claude"
 model = "claude-opus-5"
 role = "Implements features and fixes bugs"
+flavor = "dev"
+
+[agents.review-agent]
+backend = "claude"
+model = "claude-opus-5"
+role = "Reviews dev-agent's changes before they merge"
+flavor = "reviewer"
 
 # [agents.codex-1]
 # backend = "codex"

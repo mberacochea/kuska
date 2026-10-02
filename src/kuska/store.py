@@ -9,6 +9,7 @@ working against the same small vocabulary they always did.
 from __future__ import annotations
 
 import functools
+import operator
 import os
 import time
 from pathlib import Path
@@ -351,19 +352,13 @@ def filter_tasks(
             query = query.where(Task.feature.in_(feature))
 
     if tags:
+        named = [t for t in tags if t]
+        conditions = [Task.tags.contains(tag) for tag in named]
         if "" in tags:
-            # Match tasks that have any of the selected tags OR have no tags
-            tag_conditions = [Task.tags.is_null()]
-            for tag in [t for t in tags if t]:  # filter out empty strings
-                tag_conditions.append(Task.tags.contains(tag))
-            query = query.where(SQL(" OR ").join([c for c in tag_conditions]))
-        else:
-            # Match tasks that have any of the selected tags
-            tag_conditions = []
-            for tag in tags:
-                tag_conditions.append(Task.tags.contains(tag))
-            if tag_conditions:
-                query = query.where(SQL(" OR ").join(tag_conditions))
+            # also match untagged tasks
+            conditions.append(Task.tags.is_null())
+        if conditions:
+            query = query.where(functools.reduce(operator.or_, conditions))
 
     # ungrouped sorts last: "~~~" sorts after any lowercase feature name
     group = fn.COALESCE(Task.feature, "~~~")
@@ -513,6 +508,7 @@ def claim_task(db: SqliteDatabase, agent_name: str) -> dict | None:
         return row(Task.select().where(Task.id == candidate.id))
 
 
+@bound
 def wait_for_task(db: SqliteDatabase, agent_name: str, poll_interval: float = 2) -> dict:
     """Block until a runnable task is assigned to this agent, then claim it.
 
@@ -545,21 +541,21 @@ def wait_for_task(db: SqliteDatabase, agent_name: str, poll_interval: float = 2)
 
 
 def _reaches(db: SqliteDatabase, start: int, target: int) -> bool:
-    """Does `start` reach `target` by following dependency edges?"""
-    edges: dict[int, list[int]] = {}
-    # .dicts() keys are field names, so the foreign key reads as "task"
-    for edge in rows(TaskDep.select(TaskDep.task.alias("task"), TaskDep.depends_on)):
-        edges.setdefault(edge["task"], []).append(edge["depends_on"])
-    seen, queue = set(), list(edges.get(start, []))
-    while queue:
-        current = queue.pop()
-        if current == target:
-            return True
-        if current in seen:
-            continue
-        seen.add(current)
-        queue += edges.get(current, [])
-    return False
+    """Does `start` reach `target` by following dependency edges?
+
+    A recursive CTE walks the graph in SQL rather than pulling every edge in
+    the project into Python to BFS over.
+    """
+    sql = """
+        WITH RECURSIVE reachable(node) AS (
+            SELECT depends_on FROM task_deps WHERE task_id = ?
+            UNION ALL
+            SELECT d.depends_on FROM task_deps d
+            JOIN reachable r ON d.task_id = r.node
+        )
+        SELECT 1 FROM reachable WHERE node = ? LIMIT 1
+    """
+    return db.execute_sql(sql, (start, target)).fetchone() is not None
 
 
 @bound
@@ -648,6 +644,7 @@ def task_dependents(db: SqliteDatabase, task_id: int) -> list[dict]:
     )
 
 
+@bound
 def blocking_dependencies(db: SqliteDatabase, task_id: int) -> list[dict]:
     """Fetch the dependencies that are blocking this task from running.
 
@@ -817,6 +814,44 @@ def reply(
     )
     if task_id is not None:
         update_task_status(db, task_id, status)
+    return msg_id
+
+
+def reply_to_task(db: SqliteDatabase, task_id: int, payload: str, sender: str = HUMAN) -> int:
+    """Send a human's reply on a task's thread, and reopen it if it was resting.
+
+    This is the human side of the async back-and-forth `reply()` and
+    `send_message()` describe for agents: a message alone is invisible until
+    the next time the assigned agent's daemon claims a task, and a closed or
+    holding task (done, needs_approval, blocked, ready_to_merge) never gets
+    reclaimed on its own (see claim_task - it only ever picks up "todo"). So
+    a plain note left on a finished task would just sit there unread forever.
+
+    Requeuing to "todo" costs nothing extra: compose_task_prompt() rebuilds
+    the next run's prompt from the task's own message thread, so the agent
+    sees its prior work plus this reply without re-deriving anything from the
+    project itself. A task already "todo" or "in_progress" is left alone -
+    the agent is already working it or about to.
+
+    Args:
+        db: SqliteDatabase instance for this project.
+        task_id: Task to reply on.
+        payload: The reply text.
+        sender: Who is replying (default "human").
+
+    Returns:
+        int: New message ID.
+
+    Raises:
+        ValueError: If the task does not exist.
+    """
+    task = get_task(db, task_id)
+    if not task:
+        raise ValueError(f"task {task_id} not found")
+    recipient = task["assigned_to"] or HUMAN
+    msg_id = send_message(db, sender, recipient, task_id, "note", payload)
+    if task["assigned_to"] and task["status"] not in ("todo", "in_progress"):
+        update_task_status(db, task_id, "todo")
     return msg_id
 
 
@@ -1221,8 +1256,11 @@ def recent_runs(db: SqliteDatabase, limit: int = 20) -> list[dict]:
 # --------------------------------------------------------------------------
 
 
+_UNSET = object()  # docs_set's task_id sentinel: "leave the link as it is"
+
+
 @bound
-def docs_get(db: SqliteDatabase, key: str) -> str | None:
+def docs_get(db: SqliteDatabase, key: str, task_id: int | None = None) -> str | None:
     """Fetch a shared project knowledge document.
 
     Agents and humans write documentation here that persists across invocations.
@@ -1231,21 +1269,36 @@ def docs_get(db: SqliteDatabase, key: str) -> str | None:
     Args:
         db: SqliteDatabase instance for this project.
         key: Document identifier (e.g., "architecture", "conventions").
+        task_id: If given, the doc must be linked to this task - a doc with
+            no link, or linked to a different task, returns None instead of
+            its content. Omit for project-wide docs (e.g. "architecture"),
+            or when the key alone is enough to identify the doc.
 
     Returns:
-        str: Document content, or None if not found.
+        str: Document content, or None if not found or not linked to task_id.
 
     Examples:
         >>> arch = docs_get(db, "architecture")
         >>> if arch:
         ...     print("Architecture notes:", arch)
+        >>> plan = docs_get(db, "task_42_planning-agent_context", task_id=42)
     """
-    doc = row(Doc.select(Doc.content).where(Doc.key == key))
-    return doc["content"] if doc else None
+    doc = row(Doc.select(Doc.content, Doc.task_id).where(Doc.key == key))
+    if not doc:
+        return None
+    if task_id is not None and doc["task_id"] != task_id:
+        return None
+    return doc["content"]
 
 
 @bound
-def docs_set(db: SqliteDatabase, key: str, content: str, updated_by: str = HUMAN) -> None:
+def docs_set(
+    db: SqliteDatabase,
+    key: str,
+    content: str,
+    updated_by: str = HUMAN,
+    task_id: int | None = _UNSET,
+) -> None:
     """Write or update a shared project knowledge document.
 
     Creates a new document or replaces an existing one. Tracks who updated
@@ -1256,34 +1309,45 @@ def docs_set(db: SqliteDatabase, key: str, content: str, updated_by: str = HUMAN
         key: Document identifier.
         content: Document text (markdown, JSON, or any format).
         updated_by: Who is updating this (default "human").
+        task_id: Task this doc belongs to (e.g. a plan or handover report);
+            the doc is deleted when that task is. Omit to leave an existing
+            doc's link untouched, or pass None to explicitly clear it - a
+            bare positional call never touches the link.
 
     Examples:
         >>> docs_set(db, "conventions", "# Code Conventions\\n\\n- Use snake_case...",
         ...          updated_by="claude-reviewer")
+        >>> docs_set(db, "task_42_context", "# Plan for task 42...", "planning-agent", task_id=42)
     """
     # Use insert().on_conflict() instead of .replace() to ensure the UPDATE trigger
     # fires on the FTS5 index. INSERT OR REPLACE only fires the DELETE trigger if
     # PRAGMA recursive_triggers is ON (it defaults OFF), leaving orphaned index entries.
     # See migration 005's docs_fts_update for the trigger that this must invoke.
     now_val = now()
-    Doc.insert(key=key, content=content, updated_by=updated_by, updated_at=now_val).on_conflict(
-        conflict_target=[Doc.key],
-        update={Doc.content: content, Doc.updated_by: updated_by, Doc.updated_at: now_val},
-    ).execute()
+    fields = {"key": key, "content": content, "updated_by": updated_by, "updated_at": now_val}
+    update = {Doc.content: content, Doc.updated_by: updated_by, Doc.updated_at: now_val}
+    if task_id is not _UNSET:
+        fields["task_id"] = task_id
+        update[Doc.task_id] = task_id
+    Doc.insert(**fields).on_conflict(conflict_target=[Doc.key], update=update).execute()
 
 
 @bound
-def docs_list(db: SqliteDatabase) -> list[dict]:
-    """List all shared project documents, ordered by key.
+def docs_list(db: SqliteDatabase, task_id: int | None = None) -> list[dict]:
+    """List shared project documents, ordered by key.
 
     Args:
         db: SqliteDatabase instance for this project.
+        task_id: If given, only docs linked to this task.
 
     Returns:
         list[dict]: Document records with keys: key, content, updated_by,
-                    updated_at.
+                    updated_at, task_id.
     """
-    return rows(Doc.select().order_by(Doc.key))
+    query = Doc.select().order_by(Doc.key)
+    if task_id is not None:
+        query = query.where(Doc.task_id == task_id)
+    return rows(query)
 
 
 def normalize_path(path: str, project_dir: str | os.PathLike | None = None) -> str:
@@ -1718,27 +1782,19 @@ def full_text_search(
     # Sort by rank ascending across all tables (negative scores, more negative = better match)
     all_results.sort(key=lambda x: x["rank"])
 
-    # Normalize ranks for display: convert from raw BM25 scores to normalized 0-1 range
-    # BM25 scores are negative (e.g., -1e-06), with more negative = better match.
-    # After sorting, the first result has the best (most negative) score.
+    # Normalize BM25 scores (negative, more negative = better match) to a 0-1
+    # range for display: best match -> 1.0, worst -> 0.0.
     if all_results:
-        best_rank = all_results[0]["rank"]  # Most negative = best match
-        # Normalize: map best_rank to 1.0 and worst to 0.0
-        # Since both best_rank and worst are negative, use them as divisor
-        worst_rank = all_results[-1]["rank"] if len(all_results) > 1 else best_rank
+        best_rank = all_results[0]["rank"]
+        worst_rank = all_results[-1]["rank"]
         rank_range = worst_rank - best_rank
-        if rank_range == 0:
-            # All results have same score, all get normalized value of 1.0
-            normalized_rank = 1.0
-        else:
-            normalized_rank = 1.0
         for result in all_results:
             if rank_range == 0:
                 result["rank_normalized"] = 1.0
             else:
-                # Map score to 0-1: (score - worst) / (best - worst)
-                # Since best is most negative, we reverse: (worst - score) / (worst - best)
-                result["rank_normalized"] = max(0.0, min(1.0, (worst_rank - result["rank"]) / rank_range))
+                result["rank_normalized"] = max(
+                    0.0, min(1.0, (worst_rank - result["rank"]) / rank_range)
+                )
 
     # Apply offset and limit across combined results
     end_idx = offset + limit

@@ -137,7 +137,7 @@ def store_workflow_context(
     """
     doc_key = f"task_{task_id}_{agent_name}_context"
     title = f"Task {task_id}: {agent_name} report"
-    docs_set(db, doc_key, as_markdown(context, title=title), updated_by=agent_name)
+    docs_set(db, doc_key, as_markdown(context, title=title), updated_by=agent_name, task_id=task_id)
 
 
 def compose_task_prompt(

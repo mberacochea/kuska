@@ -85,6 +85,15 @@ def _search_handler(db, agent, args):
     }
 
 
+def _docs_set_handler(db, agent, args):
+    """Handler for the docs_set tool. Only touches the task link if given."""
+    kwargs = {}
+    if "task_id" in args:
+        kwargs["task_id"] = args["task_id"]
+    docs_set(db, args["key"], as_markdown(args["content"]), agent, **kwargs)
+    return {"ok": True}
+
+
 def _add_tag_handler(db, agent, args):
     """Handler for the add_tag tool."""
     task_id = args["task_id"]
@@ -205,27 +214,47 @@ TOOL_SPECS: list[dict] = [
     },
     {
         "name": "docs_get",
-        "description": "Read a shared project doc by key (e.g. 'description', 'architecture').",
-        "schema": _obj({"key": _STR}, ["key"]),
-        "handler": lambda db, agent, a: {"key": a["key"], "content": docs_get(db, a["key"])},
+        "description": (
+            "Read a shared project doc by key (e.g. 'description', 'architecture'). "
+            "Pass task_id for a doc that belongs to a task (e.g. a plan or handover "
+            "report) to make sure you're reading the one linked to that task, not a "
+            "same-named doc from somewhere else."
+        ),
+        "schema": _obj(
+            {
+                "key": _STR,
+                "task_id": {**_INT, "description": "Optional: the doc must be linked to this task"},
+            },
+            ["key"],
+        ),
+        "handler": lambda db, agent, a: {
+            "key": a["key"], "content": docs_get(db, a["key"], a.get("task_id")),
+        },
     },
     {
         "name": "docs_set",
         "description": (
             "Write a shared project doc, as Markdown. Overwrites the whole value for "
             "that key. Docs are reports other agents and humans read: headings, prose "
-            "and bullets - not a JSON dump (JSON content is rewritten into Markdown)."
+            "and bullets - not a JSON dump (JSON content is rewritten into Markdown). "
+            "Pass task_id to link this doc to a task (e.g. your plan for it) - it is "
+            "then deleted along with the task, and visible to task_id-scoped lookups."
         ),
-        "schema": _obj({"key": _STR, "content": _STR}, ["key", "content"]),
-        "handler": lambda db, agent, a: (
-            docs_set(db, a["key"], as_markdown(a["content"]), agent) or {"ok": True}
+        "schema": _obj(
+            {
+                "key": _STR,
+                "content": _STR,
+                "task_id": {**_INT, "description": "Optional: link this doc to a task"},
+            },
+            ["key", "content"],
         ),
+        "handler": lambda db, agent, a: _docs_set_handler(db, agent, a),
     },
     {
         "name": "docs_list",
-        "description": "List all shared project docs, with their content.",
-        "schema": _obj({}),
-        "handler": lambda db, agent, a: docs_list(db),
+        "description": "List shared project docs, with their content. Pass task_id to see only docs linked to that task.",
+        "schema": _obj({"task_id": {**_INT, "description": "Optional: only docs linked to this task"}}),
+        "handler": lambda db, agent, a: docs_list(db, a.get("task_id")),
     },
     {
         "name": "heartbeat",

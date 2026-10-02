@@ -19,19 +19,33 @@ from .store import register_agent
 # so a project's .agents/ is entirely its own state and can be deleted.
 DEFAULTS_DIR = Path(__file__).parent / "defaults"
 
+# The three first-class agent flavors, each with its own prompt template in
+# defaults/prompt_<flavor>.md: dev-agent implements, review-agent checks what
+# it built, planning-agent breaks goals into tasks for the other two.
+FLAVORS = ["dev", "reviewer", "planner"]
+DEFAULT_FLAVOR = "dev"
+
 
 def default_config() -> str:
     """The config.toml `kuska init` writes into a new project."""
     return (DEFAULTS_DIR / "config.toml").read_text()
 
 
-def default_prompt(name: str, role: str) -> str:
+def prompt_template_path(flavor: str) -> Path:
+    """Template file for a flavor, falling back to the dev template for an
+    unknown or blank flavor rather than raising - a typo in config.toml
+    shouldn't stop an agent from getting a usable prompt."""
+    path = DEFAULTS_DIR / f"prompt_{flavor}.md"
+    return path if flavor in FLAVORS and path.exists() else DEFAULTS_DIR / "prompt_dev.md"
+
+
+def default_prompt(name: str, role: str, flavor: str = DEFAULT_FLAVOR) -> str:
     """The system prompt seeded for an agent that has no prompt file yet."""
     # .replace, not .format: the template is markdown documentation, and any
     # brace someone later adds to a code sample or a tool signature would be
     # read by str.format as a field name and blow up seeding a prompt.
     return (
-        (DEFAULTS_DIR / "prompt.md")
+        prompt_template_path(flavor)
         .read_text()
         .replace("{name}", name)
         .replace("{role}", role)
@@ -90,6 +104,13 @@ AGENT_FIELDS = [
         "help": "blank uses the backend's own default",
     },
     {"key": "role", "label": "Role", "type": "text", "help": "shown in the agents table"},
+    {
+        "key": "flavor",
+        "label": "Flavor",
+        "type": "choice",
+        "choices": FLAVORS,
+        "help": "which prompt template to seed - dev implements, reviewer checks, planner breaks work into tasks",
+    },
     {
         "key": "permission_mode",
         "label": "Permission mode",
@@ -217,6 +238,7 @@ def set_agent_config(project_dir: str | os.PathLike, agent_name: str, values: di
         else:
             table[key] = raw
     table.setdefault("backend", "claude")
+    table.setdefault("flavor", DEFAULT_FLAVOR)
     agents[agent_name] = table
     write_config(project_dir, config)
     return table
@@ -293,7 +315,9 @@ def sync_agents_from_config(db: SqliteDatabase, project_dir: str | os.PathLike) 
         register_agent(db, name, cfg.get("backend", "claude"), cfg.get("role", ""))
         names.append(name)
         if not prompt_path(project_dir, name).exists():
-            seeded = default_prompt(name, cfg.get("role", "a coding agent"))
+            seeded = default_prompt(
+                name, cfg.get("role", "a coding agent"), cfg.get("flavor", DEFAULT_FLAVOR)
+            )
             write_prompt(project_dir, name, seeded)
     return names
 

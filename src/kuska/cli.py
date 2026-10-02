@@ -24,6 +24,7 @@ from .db import HUMAN, connect, init_db
 from .export import export_markdown
 from .migration import get_current_version, run_migrations
 from .project import (
+    DEFAULT_FLAVOR,
     REGISTRY,
     agent_config,
     config_path,
@@ -34,6 +35,7 @@ from .project import (
     load_config,
     merge_prompt,
     prompt_path,
+    prompt_template_path,
     read_prompt,
     registry_add,
     sync_agents_from_config,
@@ -117,7 +119,6 @@ def cmd_prompts(args: argparse.Namespace) -> None:
     import difflib
 
     project = find_project(args.project)
-    template = (Path(__file__).parent / "defaults" / "prompt.md").read_text()
     config = load_config(project)
     agents = config.get("agents", {})
 
@@ -128,23 +129,27 @@ def cmd_prompts(args: argparse.Namespace) -> None:
     if args.write:
         # Merge and write
         for name, cfg in agents.items():
+            flavor = cfg.get("flavor", DEFAULT_FLAVOR)
             existing = read_prompt(project, name)
             if not existing:
                 # If no prompt exists, seed it fresh
-                seeded = default_prompt(name, cfg.get("role", "a coding agent"))
+                seeded = default_prompt(name, cfg.get("role", "a coding agent"), flavor)
                 write_prompt(project, name, seeded)
             else:
-                # Merge the existing prompt with the template
+                # Merge the existing prompt with its flavor's current template
+                template = prompt_template_path(flavor).read_text()
                 merged = merge_prompt(existing, template)
                 write_prompt(project, name, merged)
                 print(f"merged {name}")
     else:
         # Show diffs (default behavior)
         for name, cfg in agents.items():
+            flavor = cfg.get("flavor", DEFAULT_FLAVOR)
             existing = read_prompt(project, name)
             if not existing:
-                merged = default_prompt(name, cfg.get("role", "a coding agent"))
+                merged = default_prompt(name, cfg.get("role", "a coding agent"), flavor)
             else:
+                template = prompt_template_path(flavor).read_text()
                 merged = merge_prompt(existing, template)
 
             # Show unified diff

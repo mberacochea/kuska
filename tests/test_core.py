@@ -346,9 +346,13 @@ def main() -> None:
         ac.call_tool(conn, "dev-agent", "docs_set",
                      {"key": "handover", "content": '{"summary": "via the tool"}'})
         check("tool docs_set coerces", ac.docs_get(conn, "handover") == "## Summary\n\nvia the tool\n")
-        ac.store_workflow_context(conn, "dev-agent", 7, '{"summary": "handover"}')
-        stored = ac.docs_get(conn, "task_7_dev-agent_context")
-        check("workflow context coerced", stored.startswith("# Task 7: dev-agent report"), stored)
+        t7 = ac.add_task(conn, "context handover test", assigned_to="dev-agent")
+        ac.store_workflow_context(conn, "dev-agent", t7, '{"summary": "handover"}')
+        doc_key = f"task_{t7}_dev-agent_context"
+        stored = ac.docs_get(conn, doc_key)
+        check("workflow context coerced", stored.startswith(f"# Task {t7}: dev-agent report"), stored)
+        check("workflow context linked to its task", ac.docs_get(conn, doc_key, task_id=t7) == stored)
+        check("workflow context not linked to another task", ac.docs_get(conn, doc_key, task_id=t7 + 1) is None)
 
         print("tools")
         check("tool set", [s["name"] for s in ac.TOOL_SPECS] == [
@@ -361,8 +365,9 @@ def main() -> None:
         check("tool docs", ac.call_tool(conn, "dev-agent", "docs_get", {"key": "architecture"})["content"].endswith("WAL on."))
         docs_list = [d["key"] for d in ac.call_tool(conn, "dev-agent", "docs_list", {})]
         # FTS tests added several docs, so just check that the expected ones are present
-        check("tool docs_list", all(k in docs_list for k in ["architecture", "handover", "task_7_dev-agent_context"]),
+        check("tool docs_list", all(k in docs_list for k in ["architecture", "handover", doc_key]),
               f"docs_list: {docs_list}")
+        check("tool docs_list scoped to task", [d["key"] for d in ac.call_tool(conn, "dev-agent", "docs_list", {"task_id": t7})] == [doc_key])
         check("tool list_tasks", len(ac.call_tool(conn, "dev-agent", "list_tasks", {})) >= 1)
         check("tool result is json", ac.tool_result_text({"a": 1}) == '{"a": 1}')
         try:

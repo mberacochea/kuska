@@ -27,7 +27,9 @@ from .models import MODELS, Agent, Doc, Event, Message, Task, TaskDep
 from .project import (
     AGENT_FIELD_KEYS,
     AGENT_FIELDS,
+    DEFAULT_FLAVOR,
     DEFAULTS_DIR,
+    FLAVORS,
     REGISTRY,
     agent_config,
     config_path,
@@ -38,6 +40,7 @@ from .project import (
     load_config,
     merge_prompt,
     prompt_path,
+    prompt_template_path,
     read_prompt,
     registry_add,
     registry_load,

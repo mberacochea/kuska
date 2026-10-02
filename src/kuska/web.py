@@ -59,8 +59,8 @@ from .store import (
     recent_events,
     recent_runs,
     remove_dependency,
+    reply_to_task,
     run_events,
-    send_message,
     task_counts_by_agent,
     task_dependencies,
     task_dependents,
@@ -914,16 +914,19 @@ def create_app(project_dir: Path):
 
     @app.post("/tasks/<int:task_id>/message")
     def task_message(task_id: int) -> str:
-        """POST /tasks/<id>/message - Send a message on a task thread."""
+        """POST /tasks/<id>/message - Reply on a task thread.
+
+        Reopens the task for its assigned agent if it was done/holding, so
+        the reply doesn't just sit unread - see reply_to_task().
+        """
         task = get_task(db(), task_id)
         if not task:
             return ""
         payload = (request.form.get("payload") or "").strip()
         if payload:
-            send_message(
-                db(), HUMAN, task["assigned_to"] or HUMAN, task_id, "note", payload
-            )
-        return task_panel(task)
+            reply_to_task(db(), task_id, payload, HUMAN)
+            task = get_task(db(), task_id)
+        return task_panel(task) if task else ""
 
     @app.get("/tasks/<int:task_id>/row")
     def task_row(task_id: int) -> str:

@@ -102,6 +102,9 @@
     <input type="text" name="payload" placeholder="Reply to the assigned agent" required>
     <button type="submit">Send</button>
   </form>
+  {% if t.assigned_to and t.status not in ('todo', 'in_progress') %}
+  <div class="muted small">Sending re-queues this task for {{ t.assigned_to }}.</div>
+  {% endif %}
 
   <h2 class="small">Activity
     <a href="/tasks/{{ t.id }}" class="link" hx-get="/tasks/{{ t.id }}" hx-target="#task-detail"
