@@ -1,7 +1,10 @@
 <div id="tasks-container">
+  {# Triggers stay scoped to this form: `from:select` / `from:input` are
+     document-wide selectors, so they also fired on the new-task form and the
+     per-row selects, refreshing the table (and stealing focus) mid-edit. #}
   <form id="task-filters-container" class="task-filters"
         hx-get="/tasks" hx-target="#tasks-container" hx-swap="outerHTML" hx-push-url="true"
-        hx-trigger="change from:select, input changed delay:400ms from:input"
+        hx-trigger="change, input changed delay:400ms from:#task-search-input"
         hx-include="#task-filters-container">
     <input type="hidden" name="sort" value="{{ sort_by }}">
     <input type="hidden" name="direction" value="{{ sort_dir }}">
