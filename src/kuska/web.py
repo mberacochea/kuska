@@ -838,10 +838,14 @@ def create_app(project_dir: Path):
             return task_panel(task) + _toast(f"task {task_id} saved"), 200
         return render_row(task), 200
 
+    def _queue_status(task_id: int) -> str:
+        task = get_task(db(), task_id)
+        return "ready" if task and task["assigned_to"] else "todo"
+
     @app.post("/tasks/<int:task_id>/requeue")
     def requeue_task(task_id: int) -> str:
-        """POST /tasks/<id>/requeue - Re-queue a task (set status to todo)."""
-        update_task_status(db(), task_id, "todo")
+        """POST /tasks/<id>/requeue - Re-queue a task (set status to ready, or todo if unassigned)."""
+        update_task_status(db(), task_id, _queue_status(task_id))
         task = get_task(db(), task_id)
         return task_panel(task) if task else ""
 
@@ -854,8 +858,8 @@ def create_app(project_dir: Path):
 
     @app.post("/tasks/<int:task_id>/send-back")
     def send_back_task(task_id: int) -> str:
-        """POST /tasks/<id>/send-back - Send a task back (set status to todo)."""
-        update_task_status(db(), task_id, "todo")
+        """POST /tasks/<id>/send-back - Send a task back (set status to ready, or todo if unassigned)."""
+        update_task_status(db(), task_id, _queue_status(task_id))
         task = get_task(db(), task_id)
         return (task_panel(task) + _toast(f"task {task_id} sent back")) if task else ""
 
@@ -1494,6 +1498,7 @@ def create_app(project_dir: Path):
         needs_approval = status_counts.get("needs_approval", 0)
         ready_to_merge = status_counts.get("ready_to_merge", 0)
         todo = status_counts.get("todo", 0)
+        ready = status_counts.get("ready", 0)
 
         completed_pct = int((completed / total_tasks * 100) if total_tasks > 0 else 0)
 
@@ -1564,6 +1569,7 @@ def create_app(project_dir: Path):
             "needs_approval": needs_approval,
             "ready_to_merge": ready_to_merge,
             "todo": todo,
+            "ready": ready,
             "agent_stats": agent_stats,
             "total_cost": total_cost,
             "total_input_tokens": total_input_tokens,

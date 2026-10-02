@@ -13,6 +13,13 @@ import kuska as ac
 PASSED = 0
 
 
+def add_ready(conn, *args, **kw):
+    """add_task, then move it to "ready" so an agent can claim it."""
+    tid = ac.add_task(conn, *args, **kw)
+    ac.update_task_status(conn, tid, "ready")
+    return tid
+
+
 def check(label: str, cond: bool, detail: str = "") -> None:
     global PASSED
     if cond:
@@ -78,6 +85,12 @@ def main() -> None:
         check("filter", [t["id"] for t in ac.list_tasks(conn, "todo")] == [1, 2, 3])
 
         print("claiming")
+        check("todo task is not claimed", ac.claim_task(conn, "dev-agent") is None)
+        for tid in (t1, t2):
+            ac.update_task_status(conn, tid, "ready")
+        check("ready task is claimed", ac.claim_task(conn, "dev-agent")["id"] == t1)
+        ac.update_task_status(conn, t1, "ready")
+        check("ready in TASK_STATUSES after todo", ac.TASK_STATUSES[:2] == ("todo", "ready"))
         claimed = ac.claim_task(conn, "dev-agent")
         check("claimed own task", claimed["id"] == t1, claimed)
         check("claim is atomic", ac.claim_task(conn, "dev-agent") is None)
@@ -85,10 +98,10 @@ def main() -> None:
         check("other agent unaffected", ac.claim_task(conn, "bench-agent")["id"] == t2)
 
         print("dependencies and approval")
-        d1 = ac.add_task(conn, "design", assigned_to="dev-agent")
-        d2 = ac.add_task(conn, "implement", assigned_to="dev-agent")
-        d3 = ac.add_task(conn, "document", assigned_to="dev-agent")
-        loose = ac.add_task(conn, "unrelated chore", assigned_to="dev-agent")
+        d1 = add_ready(conn, "design", assigned_to="dev-agent")
+        d2 = add_ready(conn, "implement", assigned_to="dev-agent")
+        d3 = add_ready(conn, "document", assigned_to="dev-agent")
+        loose = add_ready(conn, "unrelated chore", assigned_to="dev-agent")
         ac.add_dependency(conn, d2, d1)
         ac.add_dependency(conn, d3, d2)
         check("dependency recorded", [d["id"] for d in ac.task_dependencies(conn, d2)] == [d1])
@@ -112,8 +125,8 @@ def main() -> None:
         check("nothing blocked once it drains", ac.blocking_map(conn) == {}, ac.blocking_map(conn))
 
         # Test ready_to_merge status blocks dependents like needs_approval
-        r1 = ac.add_task(conn, "ready merge test", assigned_to="dev-agent")
-        r2 = ac.add_task(conn, "depends on merge", assigned_to="dev-agent")
+        r1 = add_ready(conn, "ready merge test", assigned_to="dev-agent")
+        r2 = add_ready(conn, "depends on merge", assigned_to="dev-agent")
         ac.add_dependency(conn, r2, r1)
         ac.update_task_status(conn, r1, "ready_to_merge")
         check("ready_to_merge blocks dependents", ac.claim_task(conn, "dev-agent") is None)
@@ -149,7 +162,7 @@ def main() -> None:
         waiter.start()
         time.sleep(0.2)
         check("still blocked", not got)
-        t4 = ac.add_task(conn, "Late arrival", assigned_to="dev-agent")
+        t4 = add_ready(conn, "Late arrival", assigned_to="dev-agent")
         waiter.join(timeout=5)
         check("woke on new task", got and got[0]["id"] == t4, got)
 
@@ -346,7 +359,7 @@ def main() -> None:
         ac.call_tool(conn, "dev-agent", "docs_set",
                      {"key": "handover", "content": '{"summary": "via the tool"}'})
         check("tool docs_set coerces", ac.docs_get(conn, "handover") == "## Summary\n\nvia the tool\n")
-        t7 = ac.add_task(conn, "context handover test", assigned_to="dev-agent")
+        t7 = add_ready(conn, "context handover test", assigned_to="dev-agent")
         ac.store_workflow_context(conn, "dev-agent", t7, '{"summary": "handover"}')
         doc_key = f"task_{t7}_dev-agent_context"
         stored = ac.docs_get(conn, doc_key)
@@ -453,6 +466,22 @@ def main() -> None:
         planning_persona = "# planning-agent\n\nCustom line 1.\n\nCustom line 2.\n\nCustom line 3.\n\n"
         planning_merged = ac.merge_prompt(planning_persona + "## Old\n\nOld.\n", template)
         check("planning-agent header survives", "Custom line 1." in planning_merged and planning_merged.startswith("# planning-agent"))
+
+        print("migration 012 (ready status)")
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "m012", Path(ac.__file__).parent / "migrations" / "012_add_ready_status.py")
+        m012 = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m012)
+        m_assigned = ac.add_task(conn, "old queued", assigned_to="dev-agent")
+        m_loose = ac.add_task(conn, "old idea")
+        m_deleted = ac.add_task(conn, "old deleted", assigned_to="dev-agent")
+        conn.execute_sql("UPDATE tasks SET deleted_at = 1 WHERE id = ?", (m_deleted,))
+        m012.up(None, conn)
+        check("assigned todo becomes ready", ac.get_task(conn, m_assigned)["status"] == "ready")
+        check("unassigned todo stays todo", ac.get_task(conn, m_loose)["status"] == "todo")
+        check("soft-deleted todo untouched",
+              conn.execute_sql("SELECT status FROM tasks WHERE id = ?", (m_deleted,)).fetchone()[0] == "todo")
 
         conn.close()
     finally:

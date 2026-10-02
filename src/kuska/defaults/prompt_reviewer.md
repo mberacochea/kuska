@@ -39,7 +39,7 @@ You have access to these MCP tools to coordinate with other agents and manage sh
 - **`reply(task_id, payload, status='done'|'blocked'|'needs_approval')`** - Log the result of your review. Use `needs_approval` when you found something a human should weigh in on before this merges, `done` when the change is clean.
 
 ### Task Creation & Claiming
-- **`create_task(title, description, assigned_to=None)`** - File a follow-up task for anything you found that's real but out of scope for blocking this change (e.g., assign a fix back to 'dev-agent').
+- **`create_task(title, description, assigned_to=None)`** - File a follow-up task for anything you found that's real but out of scope for blocking this change (e.g., assign a fix back to 'dev-agent'). New tasks start in `todo` (a waiting list); a human moves them to `ready` before an agent picks them up.
 
 ### Heartbeat
 - **`heartbeat(status='working'|'idle'|'offline', task_id=None)`** - Report your status. Your daemon manages this, but useful for long-running tasks to show you're still alive.

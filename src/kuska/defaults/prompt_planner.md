@@ -39,7 +39,7 @@ You have access to these MCP tools to coordinate with other agents and manage sh
 - **`reply(task_id, payload, status='done'|'blocked'|'needs_approval')`** - Log the result of your planning. Use `needs_approval` when the plan itself (scope, sequencing, an architectural choice) should be signed off before dev-agent starts building against it.
 
 ### Task Creation & Claiming
-- **`create_task(title, description, assigned_to=None)`** - This is your primary tool. Break the goal into tasks sized for one invocation each, and assign them to 'dev-agent' or 'review-agent' as appropriate. Prefer several small, clearly-scoped tasks over one big one nobody can pick up cold.
+- **`create_task(title, description, assigned_to=None)`** - This is your primary tool. Break the goal into tasks sized for one invocation each, and assign them to 'dev-agent' or 'review-agent' as appropriate. Prefer several small, clearly-scoped tasks over one big one nobody can pick up cold. New tasks start in `todo` (a waiting list); a human moves them to `ready` before an agent picks them up.
 
 ### Heartbeat
 - **`heartbeat(status='working'|'idle'|'offline', task_id=None)`** - Report your status. Your daemon manages this, but useful for long-running tasks to show you're still alive.

@@ -21,6 +21,13 @@ import kuska as core
 from kuska.daemons import claude as daemon_claude
 from kuska.daemons import codex as daemon_codex
 
+
+def add_ready(conn, *args, **kw):
+    """add_task, then move it to "ready" so an agent can claim it."""
+    tid = core.add_task(conn, *args, **kw)
+    core.update_task_status(conn, tid, "ready")
+    return tid
+
 PASSED = 0
 
 
@@ -139,8 +146,8 @@ def check_tools_in_process(project: Path) -> None:
 def check_loop(project: Path) -> None:
     print("daemon loop")
     conn = core.connect(core.db_path(project))
-    t1 = core.add_task(conn, "Add the parser", "handle quotes", "dev-agent")
-    t2 = core.add_task(conn, "Ask about scope", "", "dev-agent")
+    t1 = add_ready(conn, "Add the parser", "handle quotes", "dev-agent")
+    t2 = add_ready(conn, "Ask about scope", "", "dev-agent")
     msg_id = core.send_message(conn, core.HUMAN, "dev-agent", t1, "note", "start from the old branch")
     seen: list[str] = []
 
@@ -178,7 +185,7 @@ def check_loop(project: Path) -> None:
 
     print("re-queue after a reply")
     core.send_message(conn, "codex-1", "dev-agent", t2, "result", "scope is the CLI only")
-    core.update_task_status(conn, t2, "todo")
+    core.update_task_status(conn, t2, "ready")
     seen.clear()
 
     async def fake2(prompt, options, mono):
@@ -191,7 +198,7 @@ def check_loop(project: Path) -> None:
     check("earlier turn also in context", "Asked codex-1, waiting." in seen[0])
 
     print("failure path")
-    t3 = core.add_task(conn, "Explodes", "", "dev-agent")
+    t3 = add_ready(conn, "Explodes", "", "dev-agent")
 
     async def boom(prompt, options, mono):
         raise RuntimeError("model unavailable")
@@ -380,10 +387,10 @@ def check_task_claiming_race(project: Path) -> None:
     core.heartbeat(db, "racer-2", "working")
 
     # Create tasks for each agent
-    r1_t1 = core.add_task(db, "Racer1-A", "first", "racer-1")
-    r1_t2 = core.add_task(db, "Racer1-B", "second", "racer-1")
-    r2_t1 = core.add_task(db, "Racer2-A", "third", "racer-2")
-    r2_t2 = core.add_task(db, "Racer2-B", "fourth", "racer-2")
+    r1_t1 = add_ready(db, "Racer1-A", "first", "racer-1")
+    r1_t2 = add_ready(db, "Racer1-B", "second", "racer-1")
+    r2_t1 = add_ready(db, "Racer2-A", "third", "racer-2")
+    r2_t2 = add_ready(db, "Racer2-B", "fourth", "racer-2")
 
     results = run_in_processes(_claim_task_worker, project, ("racer-1", "racer-2"))
 
@@ -405,7 +412,7 @@ def check_message_ordering(project: Path) -> None:
     core.heartbeat(db, "msg-1", "working")
     core.heartbeat(db, "msg-2", "working")
 
-    task_id = core.add_task(db, "collaboration", "", "msg-1")
+    task_id = add_ready(db, "collaboration", "", "msg-1")
 
     messages = []
     lock = threading.Lock()
@@ -457,9 +464,9 @@ def check_dependency_satisfaction(project: Path) -> None:
     core.heartbeat(db, "dep-2", "working")
 
     # Create task A assigned to dep-1
-    task_a = core.add_task(db, "Design API", "", "dep-1")
+    task_a = add_ready(db, "Design API", "", "dep-1")
     # Create task B assigned to dep-2, depends on A
-    task_b = core.add_task(db, "Implement API", "", "dep-2")
+    task_b = add_ready(db, "Implement API", "", "dep-2")
     core.add_dependency(db, task_b, task_a)
 
     results = {}
@@ -514,7 +521,7 @@ def check_approval_workflow_race(project: Path) -> None:
     core.register_agent(db, "approval-1", "claude", "builder")
     core.heartbeat(db, "approval-1", "working")
 
-    task_id = core.add_task(db, "Risky change", "", "approval-1")
+    task_id = add_ready(db, "Risky change", "", "approval-1")
     core.update_task_status(db, task_id, "needs_approval")
 
     results = {}
@@ -538,7 +545,7 @@ def check_approval_workflow_race(project: Path) -> None:
     def human_approves():
         """Human approves the task."""
         time.sleep(0.04)  # Let agent poll first while blocked
-        core.update_task_status(db, task_id, "todo")
+        core.update_task_status(db, task_id, "ready")
 
     t1 = threading.Thread(target=agent_polls)
     t2 = threading.Thread(target=human_approves)
@@ -563,7 +570,7 @@ def check_lazy_load_history(project: Path) -> None:
     core.register_agent(db, "history-agent", "claude", "builder")
     core.heartbeat(db, "history-agent", "working")
 
-    task_id = core.add_task(db, "Multi-turn task", "requires multiple interactions", "history-agent")
+    task_id = add_ready(db, "Multi-turn task", "requires multiple interactions", "history-agent")
 
     # Create 12 messages to test summarization (7 old + 5 recent)
     # Sent from agent to human so they won't be in inbox
@@ -600,7 +607,7 @@ def check_lazy_load_history(project: Path) -> None:
     check("full prompt doesn't use prior context", "Prior context" not in prompt_full)
 
     # Test 3: With 5 or fewer messages, all should be in full (no summarization)
-    task_id_short = core.add_task(db, "Short task", "", "history-agent")
+    task_id_short = add_ready(db, "Short task", "", "history-agent")
     for i in range(1, 4):
         core.send_message(db, "history-agent", core.HUMAN, task_id_short, "result", f"short msg {i}")
 
@@ -628,7 +635,7 @@ def check_prompt_stays_small(project: Path) -> None:
     core.heartbeat(db, "limit-agent", "working")
     core.heartbeat(db, "other-agent", "working")
 
-    task_id = core.add_task(db, "Long-running task", "very long description with lots of content" * 50, "limit-agent")
+    task_id = add_ready(db, "Long-running task", "very long description with lots of content" * 50, "limit-agent")
 
     long_message = "This is a test message. " * 100  # ~2400 chars
     for i in range(20):
@@ -669,7 +676,7 @@ def check_workflow_context(project: Path) -> None:
 
     # Test 1: Store context from planning-agent
     # Create a planning task, then a dev task that depends on it
-    task_id_planning = core.add_task(db, "Plan feature X", "Complex feature planning", "planning-agent")
+    task_id_planning = add_ready(db, "Plan feature X", "Complex feature planning", "planning-agent")
     plan_context = """{
         "phase": 1,
         "approach": "Modular architecture with dependency injection",
@@ -683,7 +690,7 @@ def check_workflow_context(project: Path) -> None:
     check("planning context stored", core.docs_get(db, f"task_{task_id_planning}_planning-agent_context") is not None)
 
     # Create a dev task that depends on the planning task
-    task_id = core.add_task(db, "Implement feature X", "Complex feature requiring multiple agents", "dev-agent")
+    task_id = add_ready(db, "Implement feature X", "Complex feature requiring multiple agents", "dev-agent")
     core.add_dependency(db, task_id, task_id_planning)
 
     # Test 2: dev-agent retrieves context from planning-agent in prompt (via dependency)
@@ -704,7 +711,7 @@ def check_workflow_context(project: Path) -> None:
     check("dev context stored", core.docs_get(db, f"task_{task_id}_dev-agent_context") is not None)
 
     # Test 4: review-agent gets context from dev-agent via dependency
-    task_id_review = core.add_task(db, "Review implementation", "Code review", "review-agent")
+    task_id_review = add_ready(db, "Review implementation", "Code review", "review-agent")
     core.add_dependency(db, task_id_review, task_id)
     prompt_for_review, _ = core.compose_task_prompt(db, "review-agent", core.get_task(db, task_id_review))
     check("dev context appears in review prompt", "Context from dev-agent" in prompt_for_review)
@@ -713,7 +720,7 @@ def check_workflow_context(project: Path) -> None:
 
     # Test 5: Context is included in prompt (explicit check)
     # This verifies that when both history and context exist, the context is available
-    task_id_2_planning = core.add_task(db, "Plan second feature", "Second planning task", "planning-agent")
+    task_id_2_planning = add_ready(db, "Plan second feature", "Second planning task", "planning-agent")
     long_message = "This is a detailed message about implementation strategy. " * 30  # ~1500 chars
     for i in range(10):
         core.send_message(db, "human", "planning-agent", task_id_2_planning, "note", f"Iteration {i}: {long_message}")
@@ -723,7 +730,7 @@ def check_workflow_context(project: Path) -> None:
     core.docs_set(db, f"task_{task_id_2_planning}_planning-agent_context", ctx, updated_by="planning-agent")
 
     # Create dependent task
-    task_id_2 = core.add_task(db, "Another task", "Testing token savings", "dev-agent")
+    task_id_2 = add_ready(db, "Another task", "Testing token savings", "dev-agent")
     core.add_dependency(db, task_id_2, task_id_2_planning)
 
     # Verify context is accessible
@@ -742,10 +749,10 @@ def check_workflow_context(project: Path) -> None:
     core.register_agent(db, "custom-analyzer", "claude", "analyzer")
 
     # Create task_3 with custom-analyzer as the assigned agent
-    task_id_3 = core.add_task(db, "Analysis task", "Perform custom analysis", "custom-analyzer")
+    task_id_3 = add_ready(db, "Analysis task", "Perform custom analysis", "custom-analyzer")
 
     # Create task_4 that depends on task_3 (assigned to review-agent)
-    task_id_4 = core.add_task(db, "Dependent task", "Review the analysis", "review-agent")
+    task_id_4 = add_ready(db, "Dependent task", "Review the analysis", "review-agent")
     core.add_dependency(db, task_id_4, task_id_3)
 
     # Store context from custom-analyzer on task_3
@@ -771,7 +778,7 @@ def check_unread_messages_preserved_on_failure(project: Path) -> None:
     db = core.connect(core.db_path(project))
     core.register_agent(db, "test-agent", "claude", "builder")
 
-    task_id = core.add_task(db, "Test task", "Test description", "test-agent")
+    task_id = add_ready(db, "Test task", "Test description", "test-agent")
 
     # Send a message to the agent
     msg_id = core.send_message(db, "human", "test-agent", task_id, "question", "Can you help?")
@@ -843,7 +850,7 @@ def check_worktree_agent(tmp: Path) -> None:
     conn = core.connect(core.db_path(project))
     core.init_db(conn)
     core.sync_agents_from_config(conn, project)
-    task_id = core.add_task(conn, "Test task", "test description", "dev-agent")
+    task_id = add_ready(conn, "Test task", "test description", "dev-agent")
 
     # Verify worktree doesn't exist yet
     wt_path = worktree.worktree_path(project, task_id)
@@ -885,7 +892,7 @@ def check_non_worktree_agent(tmp: Path) -> None:
     conn = core.connect(core.db_path(project))
     core.init_db(conn)
     core.sync_agents_from_config(conn, project)
-    task_id = core.add_task(conn, "Test task", "test description", "dev-agent")
+    task_id = add_ready(conn, "Test task", "test description", "dev-agent")
 
     # Simulate what the daemon does
     cfg = core.agent_config(project, "dev-agent")
@@ -934,7 +941,7 @@ def check_worktree_ready_to_merge(tmp: Path) -> None:
     conn = core.connect(core.db_path(project))
     core.init_db(conn)
     core.sync_agents_from_config(conn, project)
-    task_id = core.add_task(conn, "Test task", "test description", "dev-agent")
+    task_id = add_ready(conn, "Test task", "test description", "dev-agent")
 
     # Simulate finish_task with worktree_branch set and no prior reply
     # This should coerce "done" to "ready_to_merge"
@@ -969,7 +976,7 @@ def check_non_worktree_done(tmp: Path) -> None:
     conn = core.connect(core.db_path(project))
     core.init_db(conn)
     core.sync_agents_from_config(conn, project)
-    task_id = core.add_task(conn, "Test task", "test description", "dev-agent")
+    task_id = add_ready(conn, "Test task", "test description", "dev-agent")
 
     # Simulate finish_task without worktree_branch
     # This should result in "done"
@@ -1004,7 +1011,7 @@ def check_worktree_blocked_stays_blocked(tmp: Path) -> None:
     conn = core.connect(core.db_path(project))
     core.init_db(conn)
     core.sync_agents_from_config(conn, project)
-    task_id = core.add_task(conn, "Test task", "test description", "dev-agent")
+    task_id = add_ready(conn, "Test task", "test description", "dev-agent")
 
     # Set the task to blocked first (simulating an agent that called reply(status="blocked"))
     core.update_task_status(conn, task_id, "blocked")

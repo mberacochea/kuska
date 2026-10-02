@@ -17,11 +17,13 @@ from .models import init_db as _init_db
 
 HUMAN = "human"
 
+# 'todo' is a waiting list nothing runs from; a human (or a requeue/reply)
+# moves a task to 'ready', and agents claim only 'ready' tasks.
 # 'needs_approval' and 'ready_to_merge' are holds: the task does not run, and
 # neither does anything depending on it, until a human approves/merges it or
 # sends it back. 'needs_approval' is for agent decisions; 'ready_to_merge' means
 # the agent committed its work to a branch and a human must review and merge.
-TASK_STATUSES = ("todo", "in_progress", "needs_approval", "ready_to_merge", "blocked", "done")
+TASK_STATUSES = ("todo", "ready", "in_progress", "needs_approval", "ready_to_merge", "blocked", "done")
 HOLDING_STATUSES = ("needs_approval", "ready_to_merge", "blocked")
 AGENT_STATUSES = ("idle", "working", "offline")
 

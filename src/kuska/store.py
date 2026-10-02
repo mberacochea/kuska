@@ -163,8 +163,8 @@ def add_task(
 ) -> int:
     """Create a new task.
 
-    Creates a new "todo" task. If assigned_to is given, the task is placed in
-    that agent's queue; otherwise it waits unassigned.
+    Creates a new "todo" task (a waiting list; it must be moved to "ready"
+    before an agent will claim it). assigned_to names the agent it is for.
 
     Args:
         db: SqliteDatabase instance for this project.
@@ -460,7 +460,7 @@ def _unmet_dependency_tasks():
 
 @bound
 def claim_task(db: SqliteDatabase, agent_name: str) -> dict | None:
-    """Atomically take the oldest runnable 'todo' task for this agent, or None.
+    """Atomically take the oldest runnable 'ready' task for this agent, or None.
 
     Runnable means every task it depends on is done - so a dependency waiting
     for approval (or blocked, or simply not finished) holds this one back,
@@ -485,12 +485,15 @@ def claim_task(db: SqliteDatabase, agent_name: str) -> dict | None:
         ... else:
         ...     print("No runnable tasks")
     """
-    with db.atomic():
+    # IMMEDIATE takes the write lock up front: a deferred transaction that
+    # reads, then upgrades to a write, fails at once with "database is locked"
+    # when another process wrote in between - busy_timeout does not cover it.
+    with db.atomic("IMMEDIATE"):
         candidate = (
             Task.select()
             .where(
                 (Task.assigned_to == agent_name)
-                & (Task.status == "todo")
+                & (Task.status == "ready")
                 & (Task.id.not_in(_unmet_dependency_tasks()))
             )
             .order_by(Task.id)
@@ -500,7 +503,7 @@ def claim_task(db: SqliteDatabase, agent_name: str) -> dict | None:
             return None
         taken = (
             Task.update(status="in_progress", updated_at=now())
-            .where((Task.id == candidate.id) & (Task.status == "todo"))
+            .where((Task.id == candidate.id) & (Task.status == "ready"))
             .execute()
         )
         if not taken:  # another daemon claimed it between the select and here
@@ -824,14 +827,14 @@ def reply_to_task(db: SqliteDatabase, task_id: int, payload: str, sender: str = 
     `send_message()` describe for agents: a message alone is invisible until
     the next time the assigned agent's daemon claims a task, and a closed or
     holding task (done, needs_approval, blocked, ready_to_merge) never gets
-    reclaimed on its own (see claim_task - it only ever picks up "todo"). So
+    reclaimed on its own (see claim_task - it only ever picks up "ready"). So
     a plain note left on a finished task would just sit there unread forever.
 
-    Requeuing to "todo" costs nothing extra: compose_task_prompt() rebuilds
+    Requeuing to "ready" costs nothing extra: compose_task_prompt() rebuilds
     the next run's prompt from the task's own message thread, so the agent
     sees its prior work plus this reply without re-deriving anything from the
-    project itself. A task already "todo" or "in_progress" is left alone -
-    the agent is already working it or about to.
+    project itself. A task already "todo", "ready" or "in_progress" is left alone -
+    it is waiting for a human, or the agent is working it or about to.
 
     Args:
         db: SqliteDatabase instance for this project.
@@ -850,8 +853,8 @@ def reply_to_task(db: SqliteDatabase, task_id: int, payload: str, sender: str = 
         raise ValueError(f"task {task_id} not found")
     recipient = task["assigned_to"] or HUMAN
     msg_id = send_message(db, sender, recipient, task_id, "note", payload)
-    if task["assigned_to"] and task["status"] not in ("todo", "in_progress"):
-        update_task_status(db, task_id, "todo")
+    if task["assigned_to"] and task["status"] not in ("todo", "ready", "in_progress"):
+        update_task_status(db, task_id, "ready")
     return msg_id
 
 

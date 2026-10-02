@@ -66,7 +66,8 @@ null
 
 - **Task polling loop**: In the daemon, repeatedly call `claim_task()` on a poll interval (2s default) until one is available, then execute it.
 - **Dependency awareness**: `claim_task()` automatically skips tasks whose dependencies are not `"done"` yet, so you never run into unmet dependencies.
-- **Status transitions**: The tool atomically moves a task from `"todo"` to `"in_progress"` in a single database transaction. If another agent claims it between your check and the update, you get `null` instead.
+- **Only `ready` tasks are claimed.** `todo` is a waiting list: a task stays there until a human (or a requeue/reply) moves it to `ready`.
+- **Status transitions**: The tool atomically moves a task from `"ready"` to `"in_progress"` in a single database transaction. If another agent claims it between your check and the update, you get `null` instead.
 
 **Errors:**
 
@@ -768,7 +769,7 @@ You complete a task but it must be reviewed before dependent tasks run.
 4. Human reviews the work and either:
    a) Approves: human updates task to "done" in the UI or via the CLI
       → Dependent tasks become runnable
-   b) Sends it back: human marks it "todo" and/or messages you with feedback
+   b) Sends it back: human marks it "ready" and/or messages you with feedback
       → You claim it again and redo
 
 5. If human approves, dependent tasks can now claim

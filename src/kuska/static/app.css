@@ -67,6 +67,7 @@ button.link:hover, a.link:hover { color:var(--fg); }
 /* task / agent status, readable in both themes */
 .s { font-weight:600; }
 .s-todo { color:var(--muted); }
+.s-ready { color:var(--accent, var(--muted)); }
 .s-in_progress { color:var(--warn); }
 .s-needs_approval { color:var(--info); }
 .s-ready_to_merge { color:var(--warn); }

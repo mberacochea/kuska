@@ -64,9 +64,9 @@ def test_web(project: Path) -> None:
 
     detail = c.get("/tasks/1", headers=HX).get_data(as_text=True)
     check("task page shows detail", "carefully" in detail and "No messages yet." in detail)
-    check("requeue offered when not todo", "Re-queue" in detail)
+    check("requeue offered when not todo/ready", "Re-queue" in detail)
     c.post("/tasks/1/requeue")
-    check("requeued", ac.get_task(conn, 1)["status"] == "todo")
+    check("requeued", ac.get_task(conn, 1)["status"] == "ready")
 
     thread = c.post("/tasks/1/message", data={"payload": "check the edge case"}).get_data(as_text=True)
     check("human message posted", "check the edge case" in thread)
@@ -92,7 +92,8 @@ def test_web(project: Path) -> None:
     check("filters by status - blocked", len([t for t in blocked_tasks if t["title"].startswith("filter test")]) >= 1)
 
     print("task transitions to in_progress")
-    # Task 1 is still unmodified, so claiming it should work
+    check("todo tasks are not claimed", ac.claim_task(conn, "dev-agent") is None)
+    ac.update_task_status(conn, ftest_ready := ac.add_task(conn, "filter test ready", "", "dev-agent"), "ready")
     claimed = ac.claim_task(conn, "dev-agent")
     check("claim_task puts task in_progress", claimed and claimed.get("status") == "in_progress", f"claimed: {claimed}")
     claimed_id = claimed["id"]
@@ -104,6 +105,10 @@ def test_web(project: Path) -> None:
     c.post("/tasks", data={"title": "build on it", "assigned_to": "dev-agent"})
     ids = [t["id"] for t in ac.list_tasks(conn)]
     first, second = ids[-2], ids[-1]
+    check("new assigned task starts as todo", ac.get_task(conn, first)["status"] == "todo")
+    check("assigned todo task is not claimed", ac.claim_task(conn, "dev-agent") is None)
+    for tid in (first, second):
+        ac.update_task_status(conn, tid, "ready")
     panel = c.post(f"/tasks/{second}/deps", data={"depends_on": first}).get_data(as_text=True)
     check("dependency added", [d["id"] for d in ac.task_dependencies(conn, second)] == [first])
     check("panel lists it", f"#{first} design the schema" in panel, panel[:0])
@@ -119,7 +124,7 @@ def test_web(project: Path) -> None:
     check("both resolutions offered", "Approve (mark done)" in detail and "Send back (re-queue)" in detail)
 
     sent_back = c.post(f"/tasks/{first}/send-back").get_data(as_text=True)
-    check("send back re-queues", ac.get_task(conn, first)["status"] == "todo")
+    check("send back re-queues", ac.get_task(conn, first)["status"] == "ready")
     check("said so", "sent back" in sent_back)
     check("dependent still waits", ac.claim_task(conn, "dev-agent")["id"] == first)
     ac.update_task_status(conn, first, "needs_approval")

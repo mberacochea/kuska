@@ -25,7 +25,7 @@ You have access to these MCP tools to coordinate with other agents and manage sh
 - **`reply(task_id, payload, status='done'|'blocked'|'needs_approval')`** - Log the result of your task. Status 'blocked' means you're waiting on someone else; the coordinator will re-queue after they reply. 'needs_approval' means the human should review before the next agent starts work.
 
 ### Task Creation & Claiming
-- **`create_task(title, description, assigned_to=None)`** - Create a new task. Rarely used by dev-agent (that's planning-agent's job), but available if you discover critical work that blocks you.
+- **`create_task(title, description, assigned_to=None)`** - Create a new task. Rarely used by dev-agent (that's planning-agent's job), but available if you discover critical work that blocks you. New tasks start in `todo` (a waiting list); a human moves them to `ready` before an agent picks them up.
 
 ### Heartbeat
 - **`heartbeat(status='working'|'idle'|'offline', task_id=None)`** - Report your status. Your daemon manages this, but useful for long-running tasks to show you're still alive.
