@@ -370,7 +370,8 @@ def main() -> None:
         print("tools")
         check("tool set", [s["name"] for s in ac.TOOL_SPECS] == [
             "get_inbox", "send_message", "reply", "docs_get", "docs_set",
-            "docs_list", "heartbeat", "create_task", "list_tasks", "search"])
+            "docs_list", "heartbeat", "create_task", "list_tasks", "search",
+            "add_tag", "remove_tag", "list_tags"])
         ac.call_tool(conn, "dev-agent", "heartbeat", {"status": "working", "task_id": t4})
         check("tool heartbeat", ac.get_agent(conn, "dev-agent")["current_task_id"] == t4)
         ac.call_tool(conn, "dev-agent", "send_message", {"recipient": "bench-agent", "payload": "ping"})
@@ -467,6 +468,23 @@ def main() -> None:
         planning_merged = ac.merge_prompt(planning_persona + "## Old\n\nOld.\n", template)
         check("planning-agent header survives", "Custom line 1." in planning_merged and planning_merged.startswith("# planning-agent"))
 
+        print("reply_to_task requeue")
+        from kuska.store import reply_to_task
+        for st in ("done", "blocked", "needs_approval", "ready_to_merge"):
+            rt = ac.add_task(conn, f"reply to {st}", assigned_to="dev-agent")
+            ac.update_task_status(conn, rt, st)
+            reply_to_task(conn, rt, "one more thing")
+            check(f"reply reopens {st}", ac.get_task(conn, rt)["status"] == "ready")
+        for st in ("todo", "ready", "in_progress"):
+            rt = ac.add_task(conn, f"reply to {st}", assigned_to="dev-agent")
+            ac.update_task_status(conn, rt, st)
+            reply_to_task(conn, rt, "fyi")
+            check(f"reply leaves {st} alone", ac.get_task(conn, rt)["status"] == st)
+        rt = ac.add_task(conn, "reply to unassigned")
+        ac.update_task_status(conn, rt, "done")
+        reply_to_task(conn, rt, "anyone?")
+        check("reply leaves unassigned done task alone", ac.get_task(conn, rt)["status"] == "done")
+
         print("migration 012 (ready status)")
         import importlib.util
         spec = importlib.util.spec_from_file_location(
@@ -477,7 +495,14 @@ def main() -> None:
         m_loose = ac.add_task(conn, "old idea")
         m_deleted = ac.add_task(conn, "old deleted", assigned_to="dev-agent")
         conn.execute_sql("UPDATE tasks SET deleted_at = 1 WHERE id = ?", (m_deleted,))
+        m_done = ac.add_task(conn, "old done", assigned_to="dev-agent")
+        ac.update_task_status(conn, m_done, "done")
+        m_running = ac.add_task(conn, "old running", assigned_to="dev-agent")
+        ac.update_task_status(conn, m_running, "in_progress")
         m012.up(None, conn)
+        m012.up(None, conn)  # rerunning must be harmless
+        check("done task untouched", ac.get_task(conn, m_done)["status"] == "done")
+        check("in_progress task untouched", ac.get_task(conn, m_running)["status"] == "in_progress")
         check("assigned todo becomes ready", ac.get_task(conn, m_assigned)["status"] == "ready")
         check("unassigned todo stays todo", ac.get_task(conn, m_loose)["status"] == "todo")
         check("soft-deleted todo untouched",

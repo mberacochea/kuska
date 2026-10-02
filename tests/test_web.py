@@ -136,6 +136,26 @@ def test_web(project: Path) -> None:
     for tid in (first, second):
         c.post(f"/tasks/{tid}/delete")
 
+    print("requeue, send-back and reply on tasks")
+    for st in ("done", "blocked", "needs_approval", "ready_to_merge"):
+        rid = ac.add_task(conn, f"reply {st}", "", "dev-agent")
+        ac.update_task_status(conn, rid, st)
+        c.post(f"/tasks/{rid}/message", data={"payload": "more please"})
+        check(f"web reply reopens {st}", ac.get_task(conn, rid)["status"] == "ready")
+        c.post(f"/tasks/{rid}/delete")
+    for st in ("todo", "ready", "in_progress"):
+        rid = ac.add_task(conn, f"reply {st}", "", "dev-agent")
+        ac.update_task_status(conn, rid, st)
+        c.post(f"/tasks/{rid}/message", data={"payload": "fyi"})
+        check(f"web reply leaves {st} alone", ac.get_task(conn, rid)["status"] == st)
+        c.post(f"/tasks/{rid}/delete")
+    for action in ("requeue", "send-back"):
+        uid = ac.add_task(conn, f"unassigned {action}", "")
+        ac.update_task_status(conn, uid, "blocked")
+        c.post(f"/tasks/{uid}/{action}")
+        check(f"{action} of unassigned task gives todo", ac.get_task(conn, uid)["status"] == "todo")
+        c.post(f"/tasks/{uid}/delete")
+
     print("markdown rendering")
     c.post("/tasks/1", data={"title": "Ship it", "description": "## Plan\n\n- one\n- two\n\n`code`"})
     detail = c.get("/tasks/1", headers=HX).get_data(as_text=True)
@@ -702,8 +722,12 @@ def test_mcp(project: Path) -> None:
 
                 # Verify reply schema no longer has cost fields
                 reply_schema = next(t for t in tools.tools if t.name == "reply").input_schema
-                check("reply schema no cost fields", "cost_usd" not in reply_schema.get("properties", {}))
-                check("reply schema no token fields", all(k not in reply_schema.get("properties", {}) for k in ["input_tokens", "output_tokens"]))
+                # cost/token fields are optional on purpose: the daemon overwrites
+                # them with the backend's figures when the run ends (see runtime.py)
+                reply_props = reply_schema.get("properties", {})
+                check("reply cost/token fields are optional",
+                      all(k in reply_props and k not in reply_schema["required"]
+                          for k in ["cost_usd", "input_tokens", "output_tokens"]))
 
                 await session.call_tool("reply", {"task_id": 1, "payload": "done"})
                 check("reply via mcp", ac.get_task(conn, 1)["status"] == "done")
