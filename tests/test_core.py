@@ -641,6 +641,81 @@ def main() -> None:
               "feature" in {c.name for c in old.get_columns("tasks")})
         old.close()
 
+        print("lifecycle")
+        from kuska.store import TRANSITIONS, InvalidTransition, transition
+
+        def task_in(status, agent="dev-agent", worktree=None):
+            tid = ac.add_task(conn, "lifecycle probe", assigned_to=agent)
+            if worktree:
+                ac.update_task(conn, tid, worktree_path=worktree)
+            ac.update_task_status(conn, tid, status)
+            return tid
+
+        def status_of(tid):
+            return ac.get_task(conn, tid)["status"]
+
+        simple = {
+            "make_ready": "ready", "park": "todo", "claim": "in_progress", "hold": "needs_approval",
+            "block": "blocked", "await_answer": "ready", "approve": "done", "merged": "done", "close": "done",
+        }
+        for event, expected in simple.items():
+            start = TRANSITIONS[event][0][0]
+            tid = task_in(start if event != "hold" else "in_progress")
+            check(f"{event}: {start} -> {expected}", transition(conn, tid, event)["status"] == expected)
+        for event in ("hold", "block", "await_answer", "finish"):
+            check(f"{event} starts only from in_progress", TRANSITIONS[event][0] == ("in_progress",))
+
+        tid = task_in("in_progress")
+        check("finish without worktree -> done", transition(conn, tid, "finish")["status"] == "done")
+        tid = task_in("in_progress", worktree="/tmp/wt")
+        check("finish with worktree -> ready_to_merge", transition(conn, tid, "finish")["status"] == "ready_to_merge")
+        tid = task_in("blocked")
+        check("requeue assigned -> ready", transition(conn, tid, "requeue")["status"] == "ready")
+        tid = ac.add_task(conn, "unassigned probe")
+        ac.update_task_status(conn, tid, "blocked")
+        check("requeue unassigned -> todo", transition(conn, tid, "requeue")["status"] == "todo")
+
+        def refuses(tid, event, **kw):
+            try:
+                transition(conn, tid, event, **kw)
+            except InvalidTransition:
+                return True
+            return False
+
+        tid = ac.add_task(conn, "unassigned probe")
+        check("make_ready without an agent refused", refuses(tid, "make_ready") and status_of(tid) == "todo")
+        tid = task_in("ready_to_merge")
+        check("close on ready_to_merge refused, status unchanged",
+              refuses(tid, "close") and status_of(tid) == "ready_to_merge")
+        tid = task_in("in_progress")
+        check("approve on in_progress refused", refuses(tid, "approve") and status_of(tid) == "in_progress")
+
+        tid = task_in("todo")
+        forced = transition(conn, tid, "force", to="in_progress")
+        check("force by human sets any status", forced["status"] == "in_progress")
+        check("force leaves a note",
+              any(m["msg_type"] == "note" and "forced" in m["payload"] for m in ac.task_messages(conn, tid)))
+        check("force by an agent refused", refuses(tid, "force", actor="dev-agent", to="done")
+              and status_of(tid) == "in_progress")
+        try:
+            transition(conn, tid, "force", to="nonsense")
+            bad_to = False
+        except ValueError:
+            bad_to = True
+        check("force to an unknown status raises ValueError", bad_to)
+        try:
+            transition(conn, tid, "explode")
+            unknown = False
+        except ValueError:
+            unknown = True
+        check("unknown event raises ValueError", unknown)
+        try:
+            transition(conn, 999999, "approve")
+            missing = False
+        except ValueError as e:
+            missing = "not found" in str(e)
+        check("missing task raises ValueError", missing)
+
         conn.close()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
