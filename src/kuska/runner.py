@@ -16,6 +16,8 @@ from pathlib import Path
 
 from .daemons import run as run_daemon
 from .db import connect, init_db
+from .runtime import fail_task
+from .store import end_run, get_agent, get_task, task_runs
 from .project import agent_config, config_path, db_path, find_project
 from .web import create_app
 
@@ -30,6 +32,25 @@ def select_agents(configured: list[str], requested: list[str] | None) -> list[st
                 f"Agent '{agent}' not configured. Available: {', '.join(configured)}"
             )
     return list(requested)
+
+
+def _block_interrupted(project: Path, agent_name: str) -> None:
+    """Fail the task an agent was running when run-all stopped, and close its run."""
+    db = connect(db_path(project))
+    try:
+        agent = get_agent(db, agent_name) or {}
+        task_id = agent.get("current_task_id")
+        task = get_task(db, task_id) if task_id else None
+        if not task or task["status"] != "in_progress":
+            return
+        fail_task(db, agent_name, task_id, "interrupted: kuska run-all stopped mid-run")
+        for run in reversed(task_runs(db, task_id)):
+            if run["status"] == "running":
+                end_run(db, run["id"], "failed", exit_reason="interrupted")
+                break
+        print(f"[runner] {agent_name}: task {task_id} interrupted, now blocked")
+    finally:
+        db.close()
 
 
 def run_all(
@@ -106,29 +127,16 @@ def run_all(
             backend = cfg.get("backend", "claude")
             print(f"[{agent_name}] Starting daemon (backend: {backend})")
 
-            # Wrap to watch for stop_event
-            while not stop_event.is_set():
-                try:
-                    run_daemon(
-                        backend,
-                        project,
-                        agent_name,
-                        poll_interval=poll_interval,
-                        max_tasks=1,  # Process one task at a time
-                        quiet=False,
-                    )
-                except KeyboardInterrupt:
-                    break
-                except (FileNotFoundError, ImportError) as exc:
-                    print(f"[{agent_name}] Error: cannot start {backend} backend - {exc}")
-                    stop_event.set()
-                    break
-
-                # Brief pause before polling again
-                if not stop_event.wait(poll_interval):
-                    continue
-                else:
-                    break
+            try:
+                run_daemon(
+                    backend, project, agent_name,
+                    poll_interval=poll_interval, quiet=False, stop=stop_event,
+                )
+            except KeyboardInterrupt:
+                pass
+            except (FileNotFoundError, ImportError) as exc:
+                print(f"[{agent_name}] Error: cannot start {backend} backend - {exc}")
+                stop_event.set()
         except Exception as e:
             exceptions.append(e)
             stop_event.set()
@@ -172,7 +180,12 @@ def run_all(
 
     # Wait for threads to finish
     for t in threads:
-        t.join(timeout=2)
+        t.join(timeout=10 if t.name in agents_to_run else 2)
+
+    # An agent thread still alive is mid-run: block its task rather than leave it in_progress
+    for t in threads:
+        if t.name in agents_to_run and t.is_alive():
+            _block_interrupted(project, t.name)
 
     if exceptions:
         print("[runner] Errors occurred:")

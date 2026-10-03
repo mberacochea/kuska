@@ -174,7 +174,8 @@ by feature, and `list_features` reports each one's done/total count.
    depended on it.
 7. A run that fails, times out or hits a limit (`max_turns`,
    `max_budget_usd`, `timeout_minutes`) blocks its task, with a note saying
-   why and whatever it spent.
+   why and whatever it spent. A daemon stopped mid-run (Ctrl+C) blocks its
+   task the same way, with an "interrupted" note.
 
 An agent that needs something from another agent asks with a `question`
 message and replies `blocked`, rather than waiting inline. The question

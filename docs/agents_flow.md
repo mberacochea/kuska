@@ -81,6 +81,9 @@ stateDiagram-v2
   done --> [*]
 ```
 
+A daemon that is stopped mid-run (Ctrl+C, or `kuska run-all` shutting down)
+blocks its in-flight task with an "interrupted" note.
+
 Every status change goes through `store/lifecycle.transition()`, which holds
 the one table of allowed moves. The events behind the arrows: `make_ready`
 (todo to ready), `claim` (ready to in_progress, done inline by `claim_task` to

@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import threading
+import time
 from pathlib import Path
 
 import kuska as core
@@ -117,6 +118,21 @@ def prepare_workdir(db, project: Path, agent_name: str, task: dict, mono) -> tup
     return path, branch
 
 
+def _next_task(db, agent_name: str, poll_interval: float, stop: threading.Event | None) -> dict | None:
+    """Claim the next ready task, polling until one turns up; None once `stop` is set."""
+    while True:
+        if stop is not None and stop.is_set():
+            return None
+        task = core.claim_task(db, agent_name)
+        if task:
+            return task
+        if stop is not None:
+            if stop.wait(poll_interval):
+                return None
+        else:
+            time.sleep(poll_interval)
+
+
 async def serve(
     project: Path,
     agent_name: str,
@@ -126,6 +142,7 @@ async def serve(
     max_tasks: int | None = None,
     quiet: bool = False,
     heartbeat_interval: float = RUN_HEARTBEAT_S,
+    stop: threading.Event | None = None,
 ) -> None:
     db = core.connect(core.db_path(project))
     core.init_db(db)
@@ -141,7 +158,9 @@ async def serve(
     handled = 0
     try:
         while max_tasks is None or handled < max_tasks:
-            task = core.wait_for_task(db, agent_name, poll_interval)
+            task = _next_task(db, agent_name, poll_interval, stop)
+            if task is None:
+                break
             handled += 1
             log(f"[{agent_name}] task {task['id']}: {task['title']}")
             core.heartbeat(db, agent_name, "working", task["id"])
@@ -165,6 +184,11 @@ async def serve(
                         raise core.RunAborted(
                             f"timed out after {limits['timeout_s'] / 60:g} minutes", dict(mono.spent)
                         ) from None
+                except (KeyboardInterrupt, asyncio.CancelledError):
+                    # stopped mid-run: say so on the task rather than leave it in_progress
+                    core.fail_task(db, agent_name, task["id"], "interrupted: the daemon was stopped mid-run", **mono.spent)
+                    core.end_run(db, mono.run_id, "failed", exit_reason="interrupted", **mono.spent)
+                    raise
                 except Exception as exc:
                     mono.record("error", f"run failed: {exc}")
                     core.fail_task(db, agent_name, task["id"], str(exc), **getattr(exc, "usage", {}))
@@ -200,6 +224,8 @@ async def serve(
                         ))
 
             core.heartbeat(db, agent_name, "idle")
+            if stop is not None and stop.is_set():
+                break
     finally:
         core.heartbeat(db, agent_name, "offline")
         db.close()
@@ -214,7 +240,8 @@ def run_daemon(
     max_tasks: int | None = None,
     quiet: bool = False,
     heartbeat_interval: float = RUN_HEARTBEAT_S,
+    stop: threading.Event | None = None,
 ) -> None:
     asyncio.run(serve(
-        project, agent_name, backend, make_runner, poll_interval, max_tasks, quiet, heartbeat_interval
+        project, agent_name, backend, make_runner, poll_interval, max_tasks, quiet, heartbeat_interval, stop
     ))
