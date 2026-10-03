@@ -27,6 +27,7 @@ sequenceDiagram
   end
   DB-->>D: task now in_progress
   D->>DB: heartbeat working
+  D->>DB: start_run (runs row, heartbeat every 30s)
   opt worktree = true
     D->>G: worktree add kuska/N-slug (rebase if requeued)
   end
@@ -45,8 +46,10 @@ sequenceDiagram
   A-->>D: text + usage
   alt success
     D->>DB: finish_task — usage on result msg, mark inbox read
+    D->>DB: end_run (finished/failed + usage)
   else error, timeout or limit
     D->>DB: fail_task — blocker msg + usage, status blocked
+    D->>DB: end_run (finished/failed + usage)
   end
   opt worktree
     D->>G: commit leftovers (wip)

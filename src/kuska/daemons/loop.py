@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import threading
 from pathlib import Path
 
 import kuska as core
@@ -28,6 +29,45 @@ from kuska import worktree
 def log(line: str, error: bool = False) -> None:
     """Daemons usually run under nohup or systemd, so never buffer their log."""
     print(line, file=sys.stderr if error else sys.stdout, flush=True)
+
+
+# how often a running run proves it is alive; a supervisor reads a much older
+# heartbeat_at as a dead daemon
+RUN_HEARTBEAT_S = 30.0
+
+
+class RunHeartbeat:
+    """Touches a run's heartbeat_at every `interval` seconds on its own thread, so a run that is busy
+    (a long tool call, or the codex backend blocking the event loop) still reads as alive."""
+
+    def __init__(self, db_path, run_id: str, interval: float = RUN_HEARTBEAT_S):
+        self.db_path, self.run_id, self.interval = db_path, run_id, interval
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._beat, name=f"heartbeat-{run_id}", daemon=True)
+
+    def _beat(self) -> None:
+        # its own connection: the daemon's is not safe to share across threads
+        conn = None
+        try:
+            conn = core.connect(self.db_path)
+            while not self._stop.wait(self.interval):
+                try:
+                    core.touch_run(conn, self.run_id)
+                except Exception as exc:  # a locked database must not end the heartbeat
+                    log(f"run {self.run_id} heartbeat failed: {exc}", error=True)
+        except Exception as exc:
+            log(f"run {self.run_id} heartbeat stopped: {exc}", error=True)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    def __enter__(self) -> RunHeartbeat:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._stop.set()
+        self._thread.join(timeout=5)
 
 
 def check_git(project: Path, agent_name: str) -> None:
@@ -77,6 +117,7 @@ async def serve(
     poll_interval: float = 2.0,
     max_tasks: int | None = None,
     quiet: bool = False,
+    heartbeat_interval: float = RUN_HEARTBEAT_S,
 ) -> None:
     db = core.connect(core.db_path(project))
     core.init_db(db)
@@ -98,53 +139,57 @@ async def serve(
             core.heartbeat(db, agent_name, "working", task["id"])
             started = core.now()
             mono = core.Monologue(db, agent_name, task["id"], quiet=quiet)
+            core.start_run(db, mono.run_id, task["id"], agent_name)
 
             workdir, branch, finished = project, None, False
-            try:
-                # an answer is a message, not code: it needs no branch to review
-                if cfg.get("worktree") and not core.is_answer_task(task):
-                    workdir, branch = prepare_workdir(db, project, agent_name, task, mono)
-                prompt, inbox_message_ids = core.compose_task_prompt(db, agent_name, task)
-                mono.record("prompt", prompt)
+            with RunHeartbeat(core.db_path(project), mono.run_id, heartbeat_interval):
                 try:
-                    text, usage = await asyncio.wait_for(run(prompt, workdir, mono), limits["timeout_s"])
-                except TimeoutError:
-                    # cancelled mid-stream: the run's final usage never came,
-                    # so record what the backend had reported so far
-                    raise core.RunAborted(
-                        f"timed out after {limits['timeout_s'] / 60:g} minutes", dict(mono.spent)
-                    ) from None
-            except Exception as exc:
-                mono.record("error", f"run failed: {exc}")
-                core.fail_task(db, agent_name, task["id"], str(exc), **getattr(exc, "usage", {}))
-                log(f"[{agent_name}] task {task['id']} failed: {exc}", error=True)
-            else:
-                finished = True
-                text = text.strip() or "(no output)"
-                core.finish_task(db, agent_name, task["id"], text, started, **usage)
-                # read only once a run has actually used them
-                core.mark_messages_read(db, inbox_message_ids)
-                final = (core.get_task(db, task["id"]) or task)["status"]
-                if final == "ready_to_merge" and branch is not None:
-                    mono.record("system", branch, label="ready to merge")
-                # cost and round count are the honest summary; token volume is
-                # dominated by cache reads at a tenth the price
-                summary = (
-                    f"${usage.get('cost_usd', 0.0):.4f}, {usage.get('tool_rounds', 0)} rounds, "
-                    f"{usage.get('input_tokens', 0)}+{usage.get('cache_read_tokens', 0)}c/"
-                    f"{usage.get('output_tokens', 0)} tok"
-                )
-                mono.record("result", text, label=f"{final} - {summary}")
-                log(f"[{agent_name}] task {task['id']} {final} ({summary})")
-            finally:
-                # leftovers are committed either way - an uncommitted tree would
-                # fail the next run's rebase - but a failed run's are labelled
-                # as such so a reviewer never mistakes them for finished work
-                if branch is not None:
-                    worktree.commit_all(workdir, (
-                        f"wip: task {task['id']} uncommitted changes" if finished
-                        else f"wip: task {task['id']} partial work from a failed run"
-                    ))
+                    # an answer is a message, not code: it needs no branch to review
+                    if cfg.get("worktree") and not core.is_answer_task(task):
+                        workdir, branch = prepare_workdir(db, project, agent_name, task, mono)
+                    prompt, inbox_message_ids = core.compose_task_prompt(db, agent_name, task)
+                    mono.record("prompt", prompt)
+                    try:
+                        text, usage = await asyncio.wait_for(run(prompt, workdir, mono), limits["timeout_s"])
+                    except TimeoutError:
+                        # cancelled mid-stream: the run's final usage never came,
+                        # so record what the backend had reported so far
+                        raise core.RunAborted(
+                            f"timed out after {limits['timeout_s'] / 60:g} minutes", dict(mono.spent)
+                        ) from None
+                except Exception as exc:
+                    mono.record("error", f"run failed: {exc}")
+                    core.fail_task(db, agent_name, task["id"], str(exc), **getattr(exc, "usage", {}))
+                    core.end_run(db, mono.run_id, "failed", exit_reason=str(exc), **getattr(exc, "usage", {}))
+                    log(f"[{agent_name}] task {task['id']} failed: {exc}", error=True)
+                else:
+                    finished = True
+                    text = text.strip() or "(no output)"
+                    msg_id = core.finish_task(db, agent_name, task["id"], text, started, **usage)
+                    core.end_run(db, mono.run_id, "finished", result_message_id=msg_id, **usage)
+                    # read only once a run has actually used them
+                    core.mark_messages_read(db, inbox_message_ids)
+                    final = (core.get_task(db, task["id"]) or task)["status"]
+                    if final == "ready_to_merge" and branch is not None:
+                        mono.record("system", branch, label="ready to merge")
+                    # cost and round count are the honest summary; token volume is
+                    # dominated by cache reads at a tenth the price
+                    summary = (
+                        f"${usage.get('cost_usd', 0.0):.4f}, {usage.get('tool_rounds', 0)} rounds, "
+                        f"{usage.get('input_tokens', 0)}+{usage.get('cache_read_tokens', 0)}c/"
+                        f"{usage.get('output_tokens', 0)} tok"
+                    )
+                    mono.record("result", text, label=f"{final} - {summary}")
+                    log(f"[{agent_name}] task {task['id']} {final} ({summary})")
+                finally:
+                    # leftovers are committed either way - an uncommitted tree would
+                    # fail the next run's rebase - but a failed run's are labelled
+                    # as such so a reviewer never mistakes them for finished work
+                    if branch is not None:
+                        worktree.commit_all(workdir, (
+                            f"wip: task {task['id']} uncommitted changes" if finished
+                            else f"wip: task {task['id']} partial work from a failed run"
+                        ))
 
             core.heartbeat(db, agent_name, "idle")
     finally:
@@ -160,5 +205,8 @@ def run_daemon(
     poll_interval: float = 2.0,
     max_tasks: int | None = None,
     quiet: bool = False,
+    heartbeat_interval: float = RUN_HEARTBEAT_S,
 ) -> None:
-    asyncio.run(serve(project, agent_name, backend, make_runner, poll_interval, max_tasks, quiet))
+    asyncio.run(serve(
+        project, agent_name, backend, make_runner, poll_interval, max_tasks, quiet, heartbeat_interval
+    ))

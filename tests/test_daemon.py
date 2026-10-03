@@ -1209,6 +1209,72 @@ def check_shared_loop_worktree(tmp: Path) -> None:
     check("task blocked instead", core.get_task(conn, stuck)["status"] == "blocked")
     blocker = [m for m in core.task_messages(conn, stuck) if m["msg_type"] == "blocker"]
     check("blocker explains it", blocker and "disk full" in blocker[0]["payload"], blocker)
+    stuck_runs = core.task_runs(conn, stuck)
+    check("failed worktree setup leaves a failed run",
+          len(stuck_runs) == 1 and stuck_runs[0]["status"] == "failed" and "disk full" in stuck_runs[0]["exit_reason"],
+          stuck_runs)
+    conn.close()
+
+
+def check_run_ledger(tmp: Path) -> None:
+    """Every run leaves a runs row, and its heartbeat moves on its own thread."""
+    print("run ledger: finished, failed, heartbeat")
+    project = tmp / "run-ledger-project"
+    (project / ".agents" / "prompts").mkdir(parents=True)
+    core.config_path(project).write_text('[agents.dev-agent]\nbackend = "openai"\nrole = "builder"\n')
+    conn = core.connect(core.db_path(project))
+    core.init_db(conn)
+    core.sync_agents_from_config(conn, project)
+
+    def serve_one(run, **kw):
+        loop.run_daemon(project, "dev-agent", "fake", lambda db, project_, agent_name, cfg: run,
+                        poll_interval=0.02, max_tasks=1, quiet=True, **kw)
+
+    async def succeeds(prompt, workdir, mono):
+        return "Done.", {"input_tokens": 10, "output_tokens": 5, "cost_usd": 0.25, "tool_rounds": 3}
+
+    ok = add_ready(conn, "Succeeds", "", "dev-agent")
+    serve_one(succeeds)
+    runs = core.task_runs(conn, ok)
+    result = [m for m in core.task_messages(conn, ok) if m["msg_type"] == "result"]
+    check("one run for a finished task", len(runs) == 1, runs)
+    check("it finished", runs[0]["status"] == "finished" and runs[0]["ended_at"] is not None, runs[0])
+    check("it kept the reported usage",
+          runs[0]["cost_usd"] == 0.25 and runs[0]["input_tokens"] == 10 and runs[0]["tool_rounds"] == 3, runs[0])
+    check("it points at the result message", result and runs[0]["result_message_id"] == result[0]["id"],
+          (runs[0], result))
+
+    async def aborts(prompt, workdir, mono):
+        raise core.RunAborted("x", {"cost_usd": 0.5})
+
+    bad = add_ready(conn, "Aborts", "", "dev-agent")
+    serve_one(aborts)
+    runs = core.task_runs(conn, bad)
+    check("an aborted run is failed with its reason and spend",
+          len(runs) == 1 and runs[0]["status"] == "failed" and "x" in runs[0]["exit_reason"]
+          and runs[0]["cost_usd"] == 0.5 and runs[0]["result_message_id"] is None, runs)
+
+    seen = {}
+
+    async def sleeps(prompt, workdir, mono):
+        seen["run_id"] = mono.run_id
+        seen["before"] = core.get_run(conn, mono.run_id)
+        await asyncio.sleep(0.3)
+        seen["during"] = core.get_run(conn, mono.run_id)
+        seen["threads"] = [t.name for t in threading.enumerate()]
+        return "Slept.", {}
+
+    add_ready(conn, "Sleeps", "", "dev-agent")
+    serve_one(sleeps, heartbeat_interval=0.05)
+    check("running run starts with heartbeat at its start",
+          seen["before"]["status"] == "running" and seen["before"]["heartbeat_at"] == seen["before"]["started_at"],
+          seen["before"])
+    check("heartbeat advances while the run is busy",
+          seen["during"]["heartbeat_at"] > seen["during"]["started_at"], seen["during"])
+    check("heartbeat thread is named for its run", f"heartbeat-{seen['run_id']}" in seen["threads"], seen["threads"])
+    check("heartbeat thread stopped after the run",
+          not [t for t in threading.enumerate() if t.name.startswith("heartbeat-")], threading.enumerate())
+    check("slow run still finished", core.get_run(conn, seen["run_id"])["status"] == "finished")
     conn.close()
 
 
@@ -1518,6 +1584,7 @@ def main() -> None:
         check_worktree_reply_tool_done(tmp)
         check_run_limits(tmp)
         check_shared_loop_worktree(tmp)
+        check_run_ledger(tmp)
         check_question_round_trip(tmp)
         check_codex_run()
         check_openai_converse()
