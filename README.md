@@ -18,14 +18,14 @@ It is an experiment, but if someone finds this useful please let me know.
 ```bash
 uv sync
 task init        # create .agents/, config.toml, database
-task dev         # run web UI + MCP + all agents (or see docs/DEVELOPMENT.md for more)
+task dev         # run web UI + all agents (or see docs/DEVELOPMENT.md for more)
 ```
 
 **For single-binary / production:**
 ```bash
 uv sync
 uv run kuska init            # create .agents/
-uv run kuska run-all         # run web server + MCP + agents
+uv run kuska run-all         # run web server + all agents
 ```
 
 **Manual / step-by-step:**
@@ -61,7 +61,7 @@ src/kuska/
   mcp_server.py  # those tools over stdio, for Codex and other external clients
   web/           # Flask + HTMX: context.py (open project, shared rendering) and one
                  # module per page area (pages, agents, docs, data, insights)
-  runner.py      # run-all: web server + MCP + daemons in one command
+  runner.py      # run-all: web server + daemons in one command
   templates/     # Jinja templates, layout.html plus one file per page/fragment
   static/app.css # the whole stylesheet
   defaults/      # config.toml and the prompt `kuska init` seeds a project with

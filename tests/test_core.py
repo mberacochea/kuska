@@ -900,3 +900,14 @@ LAZY_IMPORT_PROBES = [
 def test_lazy_imports(label, code):
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_run_all_agent_selection():
+    import kuska.runner as runner
+
+    assert runner.select_agents(["a", "b"], None) == ["a", "b"], "none -> all"
+    assert runner.select_agents(["a", "b"], ["*"]) == ["a", "b"], "star -> all"
+    assert runner.select_agents(["a", "b"], ["b"]) == ["b"], "subset"
+    with pytest.raises(SystemExit):
+        runner.select_agents(["a"], ["zzz"])
+    assert not hasattr(runner, "run_mcp"), "runner has no run_mcp"
