@@ -89,6 +89,17 @@ def main() -> None:
 
         print("claiming")
         check("todo task is not claimed", ac.claim_task(conn, "dev-agent") is None)
+        # an idle poll must not wait for the write lock another process holds
+        conn2 = ac.connect(ac.db_path(project))
+        conn2.execute_sql("BEGIN IMMEDIATE")
+        try:
+            t0 = time.monotonic()
+            idle = ac.claim_task(conn, "dev-agent")
+            elapsed = time.monotonic() - t0
+        finally:
+            conn2.execute_sql("ROLLBACK")
+            conn2.close()
+        check("idle claim takes no write lock", idle is None and elapsed < 1, elapsed)
         for tid in (t1, t2):
             ac.update_task_status(conn, tid, "ready")
         check("ready task is claimed", ac.claim_task(conn, "dev-agent")["id"] == t1)

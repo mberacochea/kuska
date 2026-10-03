@@ -357,6 +357,20 @@ def _unmet_dependency_tasks():
     )
 
 
+def _claimable(agent_name: str) -> Task | None:
+    """Oldest 'ready' task for this agent whose dependencies are all done."""
+    return (
+        Task.select()
+        .where(
+            (Task.assigned_to == agent_name)
+            & (Task.status == "ready")
+            & (Task.id.not_in(_unmet_dependency_tasks()))
+        )
+        .order_by(Task.id)
+        .first()
+    )
+
+
 @bound
 def claim_task(db: SqliteDatabase, agent_name: str) -> dict | None:
     """Atomically take the oldest runnable 'ready' task for this agent, or None.
@@ -384,20 +398,16 @@ def claim_task(db: SqliteDatabase, agent_name: str) -> dict | None:
         ... else:
         ...     print("No runnable tasks")
     """
+    # Idle polls find nothing, and finding nothing needs no write lock: look
+    # first without a transaction. This read only skips work, it is not
+    # trusted - the select is repeated under the lock below.
+    if _claimable(agent_name) is None:
+        return None
     # IMMEDIATE takes the write lock up front: a deferred transaction that
     # reads, then upgrades to a write, fails at once with "database is locked"
     # when another process wrote in between - busy_timeout does not cover it.
     with db.atomic("IMMEDIATE"):
-        candidate = (
-            Task.select()
-            .where(
-                (Task.assigned_to == agent_name)
-                & (Task.status == "ready")
-                & (Task.id.not_in(_unmet_dependency_tasks()))
-            )
-            .order_by(Task.id)
-            .first()
-        )
+        candidate = _claimable(agent_name)
         if candidate is None:
             return None
         # the `claim` transition of store/lifecycle.TRANSITIONS, done inline to keep the claim atomic
