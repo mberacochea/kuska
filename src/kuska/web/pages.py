@@ -372,14 +372,15 @@ def register(app, ctx) -> None:
     waiting_statuses = ("needs_approval", "ready_to_merge", "blocked")
     done_shown = 20
 
-    def board_html(picker_id: int | None = None, toast: str | None = None) -> str:
+    def board_html(picker_id: int | None = None, toast: str | None = None, feature: str = "") -> str:
         """Render the whole #board (plus an optional toast).
 
         Every board response is the full board: there are only four short
         columns, and swapping all of it means a refused or completed move can
-        never leave the source and target columns out of step.
+        never leave the source and target columns out of step. `feature` limits
+        the cards to one feature ("" shows all).
         """
-        tasks = list_tasks(db())
+        tasks = list_tasks(db(), feature=feature or None)
         by_status: dict[str, list[dict]] = {}
         for t in tasks:
             by_status.setdefault(t["status"], []).append(t)
@@ -392,16 +393,28 @@ def register(app, ctx) -> None:
             {"key": "finished", "title": "Finished", "drop": True, "cards": waiting + done[:done_shown]},
         ]
         html = render_template(
-            "board_columns.html", columns=columns, picker_id=picker_id, agents=list_agents(db())
+            "board_columns.html",
+            columns=columns,
+            picker_id=picker_id,
+            agents=list_agents(db()),
+            feature=feature,
+            features=list_features(db()),
         )
         return html + _toast(toast) if toast else html
 
     @app.get("/board")
     def board_page() -> str:
         """GET /board - the Kanban board. An htmx request gets just #board."""
+        feature = request.args.get("feature", "")
         if wants_fragment():
-            return board_html()
-        return render_template("board.html", page="board", board=board_html())
+            return board_html(feature=feature)
+        return render_template(
+            "board.html",
+            page="board",
+            board=board_html(feature=feature),
+            feature=feature,
+            features=list_features(db()),
+        )
 
     @app.post("/tasks/<int:task_id>/move")
     def move_task(task_id: int) -> tuple[str, int] | str:
@@ -418,39 +431,40 @@ def register(app, ctx) -> None:
         if not task:
             return "", 404
         column = request.form.get("column", "")
+        feature = request.form.get("feature", "")
         status = task["status"]
 
         if status == "in_progress":
-            return board_html(toast=f"task {task_id} is in progress - only an agent moves it")
+            return board_html(toast=f"task {task_id} is in progress - only an agent moves it", feature=feature)
         if column not in ("todo", "ready", "finished"):
-            return board_html(toast="that column does not accept cards")
+            return board_html(toast="that column does not accept cards", feature=feature)
 
         # a waiting card is already in Finished; dropping it there approves it
         if column == "finished":
             if status == "done":
-                return board_html()
+                return board_html(feature=feature)
             update_task_status(db(), task_id, "done")
-            return board_html(toast=f"task {task_id} marked done")
+            return board_html(toast=f"task {task_id} marked done", feature=feature)
         if column == status:
-            return board_html()
+            return board_html(feature=feature)
 
         if column == "todo":
             update_task_status(db(), task_id, "todo")
-            return board_html(toast=f"task {task_id} moved to todo")
+            return board_html(toast=f"task {task_id} moved to todo", feature=feature)
 
         # column == "ready": needs an agent
         assigned_to = request.form.get("assigned_to", "").strip() or None
         if "assigned_to" in request.form:
             if not assigned_to:
-                return board_html(picker_id=task_id, toast="choose an agent first")
+                return board_html(picker_id=task_id, toast="choose an agent first", feature=feature)
             agent_error = validate_task_assigned_to(assigned_to, db())
             if agent_error:
-                return board_html(picker_id=task_id, toast=agent_error)
+                return board_html(picker_id=task_id, toast=agent_error, feature=feature)
             update_task(db(), task_id, assigned_to=assigned_to)
         elif not task["assigned_to"]:
-            return board_html(picker_id=task_id, toast="choose an agent to make it ready")
+            return board_html(picker_id=task_id, toast="choose an agent to make it ready", feature=feature)
         update_task_status(db(), task_id, "ready")
-        return board_html(toast=f"task {task_id} is ready")
+        return board_html(toast=f"task {task_id} is ready", feature=feature)
 
     @app.post("/tasks/<int:task_id>/merged")
     def mark_task_merged(task_id: int) -> str:

@@ -11,12 +11,13 @@
   {% if picker %}
   <form class="kcard-pick small" hx-post="/tasks/{{ t.id }}/move" hx-target="#board" hx-swap="outerHTML">
     <input type="hidden" name="column" value="ready">
+    <input type="hidden" name="feature" value="{{ feature }}">
     <select name="assigned_to" required hx-post="/tasks/{{ t.id }}/move" hx-trigger="change"
             hx-target="#board" hx-swap="outerHTML" hx-include="closest form">
       <option value="">choose an agent...</option>
       {% for a in agents %}<option value="{{ a.name }}">{{ a.name }}</option>{% endfor %}
     </select>
-    <button type="button" class="link small" hx-get="/board" hx-target="#board" hx-swap="outerHTML">cancel</button>
+    <button type="button" class="link small" hx-get="/board" hx-include="#board-feature" hx-target="#board" hx-swap="outerHTML">cancel</button>
   </form>
   {% endif %}
 </div>

@@ -764,6 +764,22 @@ def test_board(project: Path) -> None:
     check("refusal still returns board", 'id="board"' in toast and "Running card" in toast)
     check("unknown column refused", "does not accept" in move(owned, "bogus") and status(owned) == "ready")
     check("missing task is 404", c.post("/tasks/9999/move", data={"column": "todo"}).status_code == 404)
+
+    print("board feature filter")
+    a1 = ac.add_task(conn, "Alpha one", "", "dev-agent", feature="alpha")
+    ac.add_task(conn, "Alpha two", "", "dev-agent", feature="alpha")
+    ac.add_task(conn, "Beta one", "", "dev-agent", feature="beta")
+    hx = {"HX-Request": "true"}
+    html = c.get("/board?feature=alpha", headers=hx).get_data(as_text=True)
+    check("filter shows alpha cards", "Alpha one" in html and "Alpha two" in html)
+    check("filter hides beta card", "Beta one" not in html and "Plain card" not in html)
+    html = move(a1, "ready", assigned_to="dev-agent", feature="alpha")
+    check("move keeps filter", status(a1) == "ready" and "Alpha one" in html and "Beta one" not in html)
+    html = c.get("/board").get_data(as_text=True)
+    check("no filter shows all", all(t in html for t in ("Alpha one", "Alpha two", "Beta one")))
+    check("select on page", 'id="board-feature"' in html and ">All features<" in html and 'value="beta"' in html)
+    page = c.get("/board?feature=beta").get_data(as_text=True)
+    check("current feature selected", 'value="beta" selected' in page and "Alpha one" not in page)
     conn.close()
 
 
