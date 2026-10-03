@@ -15,6 +15,7 @@ from ..project import find_project, registry_load
 from ..store import (
     add_dependency,
     add_task,
+    bulk_update_status,
     delete_task,
     docs_get,
     docs_set,
@@ -63,6 +64,34 @@ def register(app, ctx) -> None:
             description_html=md(docs_get(db(), "description")),
         )
 
+    def filtered_container(args) -> str:
+        """The tasks container for the filter/sort fields in `args`.
+
+        `args` is the query string of a GET /tasks, or the form of a bulk
+        move, which re-sends the filter form so the table comes back showing
+        the same view.
+        """
+        search = args.get("search", "").strip()
+        status_list = args.getlist("status")
+        agent_list = args.getlist("agent")
+        tag_list = args.getlist("tag")
+        feature_list = args.getlist("feature")
+        sort_by = args.get("sort") or None
+        sort_dir = args.get("direction", "asc")
+        filtered = filter_tasks(
+            db(),
+            search,
+            status=status_list or None,
+            agent=agent_list or None,
+            feature=feature_list or None,
+            tags=tag_list or None,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+        )
+        return tasks_container(
+            filtered, search, status_list, agent_list, tag_list, sort_by, sort_dir, feature_list
+        )
+
     @app.get("/tasks")
     def tasks_page() -> str:
         """GET /tasks - the tasks page, and also the target of every filter,
@@ -76,26 +105,7 @@ def register(app, ctx) -> None:
         those two cases always render identically - there is no separate
         fragment-only endpoint that a reload could land on and get bare HTML.
         """
-        search = request.args.get("search", "").strip()
-        status_list = request.args.getlist("status")
-        agent_list = request.args.getlist("agent")
-        tag_list = request.args.getlist("tag")
-        feature_list = request.args.getlist("feature")
-        sort_by = request.args.get("sort") or None
-        sort_dir = request.args.get("direction", "asc")
-        filtered = filter_tasks(
-            db(),
-            search,
-            status=status_list or None,
-            agent=agent_list or None,
-            feature=feature_list or None,
-            tags=tag_list or None,
-            sort_by=sort_by,
-            sort_dir=sort_dir,
-        )
-        container = tasks_container(
-            filtered, search, status_list, agent_list, tag_list, sort_by, sort_dir, feature_list
-        )
+        container = filtered_container(request.args)
 
         if wants_fragment():
             return container
@@ -162,6 +172,35 @@ def register(app, ctx) -> None:
             return _bad_request(tasks_container(), "form", f"Failed to create task: {exc}")
 
         return tasks_container(), 200
+
+    @app.post("/tasks/bulk")
+    def bulk_move_tasks() -> str:
+        """POST /tasks/bulk - move the ticked tasks (`ids`) to one status
+        (`to_status`).
+
+        Follows the board's rules (see bulk_update_status): in progress is
+        agent-only both ways and ready needs an agent. Tasks that cannot go
+        are left as they are and named in the toast, so one bad pick never
+        fails the whole batch. The container comes back filtered the way the
+        page was, since the filter form is posted along.
+        """
+        status = request.form.get("to_status", "")
+        ids = [int(i) for i in request.form.getlist("ids") if i.isdigit()]
+        if not ids:
+            return filtered_container(request.form) + _toast("tick some tasks first")
+        try:
+            result = bulk_update_status(db(), ids, status)
+        except ValueError as exc:
+            return filtered_container(request.form) + _toast(str(exc))
+        message = f"{len(result['moved'])} moved to {status}"
+        if result["skipped"]:
+            why: dict[str, list[int]] = {}
+            for task_id, reason in result["skipped"]:
+                why.setdefault(reason, []).append(task_id)
+            message += "; skipped " + ", ".join(
+                f"{reason}: " + " ".join(f"#{i}" for i in task_ids) for reason, task_ids in why.items()
+            )
+        return filtered_container(request.form) + _toast(message)
 
     @app.post("/tasks/<int:task_id>")
     def patch_task(task_id: int) -> tuple[str, int]:

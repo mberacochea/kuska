@@ -1,4 +1,5 @@
 <tr id="task-{{ t.id }}">
+  <td class="sel"><input type="checkbox" class="bulk-pick" name="ids" value="{{ t.id }}" aria-label="Select task {{ t.id }}"></td>
   <td class="num muted">{{ t.id }}</td>
   <td><a href="/tasks/{{ t.id }}">{{ t.title }}</a></td>
   <td>

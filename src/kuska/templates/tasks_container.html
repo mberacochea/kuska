@@ -17,51 +17,50 @@
            aria-label="Search tasks by title or description" value="{{ search }}" autofocus
            hx-preserve="true">
 
-    <div class="filter-group">
-      <label for="task-status">Status:</label>
-      <select id="task-status" name="status" multiple class="task-filter-select" aria-label="Filter by status">
-        {% for s in statuses %}
-        <option value="{{ s }}" {{ 'selected' if s in status_list }}>{{ s }}</option>
+    {# Facets: one row of toggle chips per field. Chips in a row are OR, rows
+       are AND. The count on a chip is what ticking it would show given the
+       other rows (see task_facets), so a 0 means "nothing there". Plain
+       checkboxes with the filter's own query-string name, so old URLs and
+       the Feature chip links on each row keep working. #}
+    {% for facet in facets %}
+    <div class="facet" role="group" aria-labelledby="facet-label-{{ facet.param }}">
+      <span class="facet-label" id="facet-label-{{ facet.param }}">{{ facet.label }}</span>
+      <div class="facet-chips">
+        {% for o in facet.options %}
+        <label class="facet-chip{{ ' is-zero' if o.count == 0 and not o.selected }}"
+               {% if o.title %}title="{{ o.title }}"{% endif %}>
+          <input type="checkbox" id="facet-{{ facet.param }}-{{ loop.index }}" name="{{ facet.param }}"
+                 value="{{ o.value }}" {{ 'checked' if o.selected }}>
+          <span class="{{ 's-' ~ o.value if facet.param == 'status' }}">{{ o.label }}</span>
+          <span class="facet-count">{{ o.count }}</span>
+        </label>
         {% endfor %}
-      </select>
+      </div>
     </div>
+    {% endfor %}
 
-    <div class="filter-group">
-      <label for="task-agent">Agent:</label>
-      <select id="task-agent" name="agent" multiple class="task-filter-select" aria-label="Filter by assigned agent">
-        <option value="" {{ 'selected' if '' in agent_list }}>Unassigned</option>
-        {% for a in agents %}
-        <option value="{{ a.name }}" {{ 'selected' if a.name in agent_list }}>{{ a.name }}</option>
-        {% endfor %}
-      </select>
+    <div class="facet-footer">
+      <span class="muted small" id="task-shown">Showing {{ shown }} of {{ total }} task{{ '' if total == 1 else 's' }}</span>
+      <button type="button" class="filter-reset" aria-label="Clear all filters"
+              hx-get="/tasks" hx-target="#tasks-container" hx-swap="outerHTML" hx-push-url="true"
+              hx-params="none">Reset</button>
     </div>
-
-    <div class="filter-group">
-      <label for="task-feature">Feature:</label>
-      <select id="task-feature" name="feature" multiple class="task-filter-select" aria-label="Filter by feature">
-        <option value="" {{ 'selected' if '' in feature_list }}>No feature</option>
-        {% for f in features %}
-        <option value="{{ f.name }}" {{ 'selected' if f.name in feature_list }}>{{ f.name }} ({{ f.done }}/{{ f.total }})</option>
-        {% endfor %}
-      </select>
-    </div>
-
-    <div class="filter-group">
-      <label for="task-tags">Tags:</label>
-      <select id="task-tags" name="tag" multiple class="task-filter-select" aria-label="Filter by tags">
-        <option value="" {{ 'selected' if '' in tag_list }}>Untagged</option>
-        {% for t in tags %}
-        <option value="{{ t }}" {{ 'selected' if t in tag_list }}>{{ t }}</option>
-        {% endfor %}
-      </select>
-    </div>
-
-    <button type="button" class="filter-reset" aria-label="Clear all filters"
-            hx-get="/tasks" hx-target="#tasks-container" hx-swap="outerHTML" hx-push-url="true"
-            hx-params="none">Reset</button>
   </form>
 
   <div class="task-header-row">
+    {# The ticked rows are the table's checkboxes (name=ids); they are not
+       inside this form, so hx-include pulls them in along with the filters,
+       which come back to the server so the table reloads in the same view. #}
+    <form id="bulk-form" class="bulk-bar"
+          hx-post="/tasks/bulk" hx-target="#tasks-container" hx-swap="outerHTML"
+          hx-include="#task-filters-container, #tasks input[name=ids]:checked">
+      <span id="bulk-count" class="small muted" aria-live="polite">0 selected</span>
+      <select name="to_status" id="bulk-status" aria-label="Move selected tasks to status" required>
+        <option value="">Move to...</option>
+        {% for s in bulk_statuses %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+      </select>
+      <button type="submit" class="primary" id="bulk-apply" disabled>Move</button>
+    </form>
     <button type="button" class="reload-tasks-btn" aria-label="Reload task table"
             hx-get="/tasks" hx-target="#tasks-container" hx-swap="outerHTML" hx-push-url="true"
             hx-include="#task-filters-container">

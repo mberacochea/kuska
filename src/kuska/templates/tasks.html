@@ -17,4 +17,33 @@
 </form>
 <div id="form-errors"></div>
 {{ tasks_container|safe }}
+<script>
+// Bulk selection. Delegated from document because #tasks-container is
+// swapped out on every filter, sort and move, so nothing here is re-attached;
+// a fresh container always starts with nothing ticked.
+(function () {
+  function picks() { return document.querySelectorAll('#tasks input.bulk-pick'); }
+  function refresh() {
+    var all = picks(), n = 0;
+    all.forEach(function (c) { if (c.checked) n++; });
+    var count = document.getElementById('bulk-count');
+    if (!count) return;
+    count.textContent = n + ' selected';
+    document.getElementById('bulk-apply').disabled = n === 0;
+    var master = document.getElementById('bulk-all');
+    master.checked = n > 0 && n === all.length;
+    master.indeterminate = n > 0 && n < all.length;
+  }
+  document.addEventListener('change', function (e) {
+    if (e.target.id === 'bulk-all') {
+      picks().forEach(function (c) { c.checked = e.target.checked; });
+      refresh();
+    } else if (e.target.classList && e.target.classList.contains('bulk-pick')) {
+      refresh();
+    }
+  });
+  // a single row swaps in unticked, so the count can go stale
+  document.addEventListener('htmx:afterSwap', refresh);
+})();
+</script>
 {% endblock %}

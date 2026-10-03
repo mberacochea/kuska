@@ -27,6 +27,7 @@ from ..runtime import one_line
 from ..store import (
     blocking_map,
     docs_list,
+    filter_tasks,
     list_agents,
     list_features,
     list_tags,
@@ -104,6 +105,67 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
             sort_dir=sort_dir,
         )
 
+    def task_facets(
+        search: str,
+        status_list: list[str],
+        agent_list: list[str],
+        tag_list: list[str],
+        feature_list: list[str],
+    ) -> tuple[list[dict], int]:
+        """The filter facets, each option with how many tasks it would show.
+
+        A facet's counts come from the tasks that pass every *other* active
+        filter, so ticking a second status never zeroes the other statuses -
+        the counts say what ticking that option would add. Facets are
+        recomputed from the same filter_tasks the table uses, so a count
+        always matches the rows you get.
+
+        Returns (facets, number of tasks overall).
+        """
+        selected = {"status": status_list, "agent": agent_list, "feature": feature_list, "tag": tag_list}
+
+        def passing(omit: str | None) -> list[dict]:
+            use = {k: (v or None) if k != omit else None for k, v in selected.items()}
+            return filter_tasks(
+                db(), search, status=use["status"], agent=use["agent"],
+                feature=use["feature"], tags=use["tag"],
+            )
+
+        def count_by(tasks: list[dict], key) -> dict[str, int]:
+            out: dict[str, int] = {}
+            for t in tasks:
+                for v in key(t):
+                    out[v] = out.get(v, 0) + 1
+            return out
+
+        def options(param: str, choices: list[tuple[str, str, str]], counts: dict[str, int]) -> list[dict]:
+            return [
+                {"value": v, "label": label, "title": title, "count": counts.get(v, 0),
+                 "selected": v in selected[param]}
+                for v, label, title in choices
+            ]
+
+        def tags_of(t: dict) -> list[str]:
+            return [x.strip() for x in (t.get("tags") or "").split(",") if x.strip()] or [""]
+
+        facets = [
+            {"param": "status", "label": "Status", "options": options(
+                "status", [(s, s, "") for s in TASK_STATUSES],
+                count_by(passing("status"), lambda t: [t["status"]]))},
+            {"param": "agent", "label": "Agent", "options": options(
+                "agent", [("", "unassigned", "")] + [(a["name"], a["name"], "") for a in list_agents(db())],
+                count_by(passing("agent"), lambda t: [t["assigned_to"] or ""]))},
+            {"param": "feature", "label": "Feature", "options": options(
+                "feature",
+                [("", "no feature", "")]
+                + [(f["name"], f["name"], f"{f['done']}/{f['total']} done") for f in list_features(db())],
+                count_by(passing("feature"), lambda t: [t["feature"] or ""]))},
+            {"param": "tag", "label": "Tags", "options": options(
+                "tag", [("", "untagged", "")] + [(t, t, "") for t in list_tags(db())],
+                count_by(passing("tag"), tags_of))},
+        ]
+        return facets, len(list_tasks(db()))
+
     def tasks_container(
         tasks: list[dict] | None = None,
         search: str = "",
@@ -122,13 +184,16 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
         form on every response so there is no client-side state to keep in
         sync.
         """
+        facets, total = task_facets(
+            search, status_list or [], agent_list or [], tag_list or [], feature_list or []
+        )
         return render_template(
             "tasks_container.html",
             tasks_table=tasks_table(tasks, sort_by, sort_dir),
-            agents=list_agents(db()),
-            statuses=TASK_STATUSES,
-            tags=list_tags(db()),
-            features=list_features(db()),
+            facets=facets,
+            shown=len(tasks) if tasks is not None else total,
+            total=total,
+            bulk_statuses=[s for s in TASK_STATUSES if s != "in_progress"],
             feature_list=feature_list or [],
             search=search,
             status_list=status_list or [],

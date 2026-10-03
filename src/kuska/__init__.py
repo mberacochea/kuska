@@ -68,6 +68,7 @@ from .store import (
     add_dependency,
     add_task,
     ask_agent,
+    bulk_update_status,
     is_answer_task,
     waiting_on_answer,
     blocking_dependencies,
