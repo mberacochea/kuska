@@ -508,6 +508,7 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "pyinstaller" },
+    { name = "pytest" },
     { name = "ruff" },
 ]
 
@@ -528,6 +529,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "pyinstaller", specifier = ">=6.11" },
+    { name = "pytest", specifier = ">=8" },
     { name = "ruff", specifier = ">=0.16.8" },
 ]
 

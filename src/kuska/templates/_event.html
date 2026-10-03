@@ -17,10 +17,10 @@
   {% if pv[0] %}<div class="ev-body" id="evb-{{ e.id }}">{{ pv[0]|safe }}</div>{% else %}<div class="ev-body" id="evb-{{ e.id }}" hidden></div>{% endif %}
   {% if pv[1] > 0 %}
     <button type="button" class="ev-more" hx-get="/events/{{ e.id }}/detail?full=1" hx-target="#evb-{{ e.id }}" hx-swap="innerHTML"
-            hx-on::after-request="this.closest('.ev').classList.add('expanded'); {{ reveal|safe }} this.remove()">… {{ pv[1] }} more line{{ 's' if pv[1] != 1 }} — show all</button>
+            hx-on::after-request="if (!event.detail.successful) return; this.closest('.ev').classList.add('expanded'); {{ reveal|safe }} this.remove()">… {{ pv[1] }} more line{{ 's' if pv[1] != 1 }} — show all</button>
   {% elif e.kind == 'tool_use' and e.body %}
     <button type="button" class="ev-more" hx-get="/events/{{ e.id }}/detail?full=1" hx-target="#evb-{{ e.id }}" hx-swap="innerHTML"
-            hx-on::after-request="var b=document.getElementById('evb-{{ e.id }}'); b.hidden=false; this.closest('.ev').classList.add('expanded'); {{ reveal|safe }} this.remove()">show input</button>
+            hx-on::after-request="if (!event.detail.successful) return; var b=document.getElementById('evb-{{ e.id }}'); b.hidden=false; this.closest('.ev').classList.add('expanded'); {{ reveal|safe }} this.remove()">show input</button>
   {% endif %}
   {% if show_agent %}
     <button type="button" class="ev-more ev-less" hidden
