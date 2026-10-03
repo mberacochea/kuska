@@ -22,6 +22,7 @@ backend = "claude"
 model = "claude-opus-5"
 role = "Implements features and fixes bugs"
 flavor = "dev"
+worktree = true             # each task on its own branch in .agents/worktrees/ - needs a git repo with a commit
 
 [agents.review-agent]
 backend = "claude"

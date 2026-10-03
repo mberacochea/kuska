@@ -57,8 +57,17 @@ def cmd_init(args: argparse.Namespace) -> None:
 
     cfg = config_path(project)
     if not cfg.exists():
-        cfg.write_text(default_config())
+        text = default_config()
+        git_ready = worktree.is_git_repo(project) and worktree.has_commits(project)
+        if not git_ready:
+            text = text.replace(
+                "worktree = true             # each task on its own branch in .agents/worktrees/ - needs a git repo with a commit",
+                "worktree = false            # each task on its own branch in .agents/worktrees/ - needs a git repo with a commit (turn on once this is a git repo with a commit)",
+            )
+        cfg.write_text(text)
         print(f"wrote {cfg}")
+        if not git_ready:
+            print("note: not a git repo with a commit yet - worktrees are off for dev-agent")
 
     db = connect(db_path(project))
     init_db(db)

@@ -35,6 +35,8 @@ uv run kuska serve           # web UI on http://127.0.0.1:5055
 uv run kuska daemon dev-agent    # run that agent (backend read from config.toml)
 ```
 
+`kuska init` turns on `worktree` for dev-agent when the project is a git repo with a commit; otherwise it writes `worktree = false`.
+
 Everything an agent does is state in `.agents/project.db`; everything a human
 writes is written in the web UI.
 

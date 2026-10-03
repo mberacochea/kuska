@@ -795,6 +795,43 @@ def main() -> None:
         check("missing task raises ValueError", missing)
 
         conn.close()
+
+        # kuska init: worktree default depends on git state
+        import os
+        import tomllib
+
+        home = tmp / "home"
+        home.mkdir()
+        env = {**os.environ, "HOME": str(home)}
+
+        def run_init(path):
+            return subprocess.run([sys.executable, "-m", "kuska", "init", str(path)],
+                                  capture_output=True, text=True, env=env)
+
+        def dev_worktree(path):
+            cfg = tomllib.loads((path / ".agents" / "config.toml").read_text())
+            return cfg["agents"]["dev-agent"]["worktree"]
+
+        plain = tmp / "plain-proj"
+        plain.mkdir()
+        r = run_init(plain)
+        check("init outside git: worktree off", dev_worktree(plain) is False, r.stderr)
+        check("init outside git: prints note", "worktrees are off" in r.stdout)
+
+        gitp = tmp / "git-proj"
+        gitp.mkdir()
+        (gitp / "f.txt").write_text("x")
+        for cmd in (["init"], ["config", "user.email", "t@example.com"],
+                    ["config", "user.name", "t"], ["config", "commit.gpgsign", "false"], ["add", "f.txt"],
+                    ["commit", "-m", "first"]):
+            subprocess.run(["git", *cmd], cwd=gitp, capture_output=True, check=True)
+        r = run_init(gitp)
+        check("init in git repo with commit: worktree on", dev_worktree(gitp) is True, r.stderr)
+
+        cfgp = gitp / ".agents" / "config.toml"
+        cfgp.write_text("# sentinel\n" + cfgp.read_text())
+        run_init(gitp)
+        check("re-init keeps existing config", cfgp.read_text().startswith("# sentinel\n"))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
