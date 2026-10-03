@@ -1,7 +1,7 @@
 {% from "_event.html" import event with context %}
 {# The [!...] condition skips the poll while any event is expanded (.expanded is set once its full body loads), so
    clicking one to read its detail doesn't get swapped out from under you a
-   few seconds later - the tick just resumes once it's collapsed again. #}
+   few seconds later - the tick resumes once it's collapsed again (each expanded event has a "collapse" button that clears .expanded). #}
 <div id="activity" class="log" hx-get="/agents/activity{{ qs }}"
      hx-trigger="every 3s [!document.querySelector('#activity .ev.expanded')]" hx-swap="outerHTML">
   {% for e in events %}

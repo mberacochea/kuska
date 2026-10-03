@@ -4,6 +4,9 @@
      {% from "_event.html" import event with context %} #}
 {% macro event(e, show_agent=false) %}
 {% set pv = preview_html(e) %}
+{# Agents tail only: reveal a "collapse" control once expanded. It clears .expanded (which un-pauses the 3s poll) and
+   refreshes the log right away so the event goes back to its preview. #}
+{% set reveal = "var c=this.closest('.ev').querySelector('.ev-less'); if(c) c.hidden=false;" if show_agent else "" %}
 <div class="ev k-{{ e.kind }}" id="ev-{{ e.id }}">
   <div class="ev-head"><span class="g">{{ glyph(e.kind) }}</span>
     <span class="muted small" title="{{ _fmt_ts(e.ts) }}">{{ clock(e.ts) }}</span>
@@ -14,10 +17,14 @@
   {% if pv[0] %}<div class="ev-body" id="evb-{{ e.id }}">{{ pv[0]|safe }}</div>{% else %}<div class="ev-body" id="evb-{{ e.id }}" hidden></div>{% endif %}
   {% if pv[1] > 0 %}
     <button type="button" class="ev-more" hx-get="/events/{{ e.id }}/detail?full=1" hx-target="#evb-{{ e.id }}" hx-swap="innerHTML"
-            hx-on::after-request="this.closest('.ev').classList.add('expanded'); this.remove()">… {{ pv[1] }} more line{{ 's' if pv[1] != 1 }} — show all</button>
+            hx-on::after-request="this.closest('.ev').classList.add('expanded'); {{ reveal|safe }} this.remove()">… {{ pv[1] }} more line{{ 's' if pv[1] != 1 }} — show all</button>
   {% elif e.kind == 'tool_use' and e.body %}
     <button type="button" class="ev-more" hx-get="/events/{{ e.id }}/detail?full=1" hx-target="#evb-{{ e.id }}" hx-swap="innerHTML"
-            hx-on::after-request="var b=document.getElementById('evb-{{ e.id }}'); b.hidden=false; this.closest('.ev').classList.add('expanded'); this.remove()">show input</button>
+            hx-on::after-request="var b=document.getElementById('evb-{{ e.id }}'); b.hidden=false; this.closest('.ev').classList.add('expanded'); {{ reveal|safe }} this.remove()">show input</button>
+  {% endif %}
+  {% if show_agent %}
+    <button type="button" class="ev-more ev-less" hidden
+            onclick="this.closest('.ev').classList.remove('expanded'); var a=document.getElementById('activity'); if(a) htmx.ajax('GET', a.getAttribute('hx-get'), {target:'#activity', swap:'outerHTML'})">collapse</button>
   {% endif %}
 </div>
 {% endmacro %}
