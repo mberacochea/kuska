@@ -174,7 +174,7 @@ def register(app, ctx) -> None:
         """GET /events/<id>/detail - Fetch the expanded detail for an event."""
         event = get_event(db(), event_id)
         if not event:
-            return ""
+            return "", 404
         if request.args.get("full"):
             return eventfmt.full_html(event)
         return eventfmt.detail_html(event)
