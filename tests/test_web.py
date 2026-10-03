@@ -295,8 +295,22 @@ def test_web(project: Path) -> None:
     agents_page_html = c.get("/agents").get_data(as_text=True)
     check("filters appear exactly once on the agents page", agents_page_html.count("activity-filters") == 1)
     detail = c.get(f"/tasks/{new_task_id}", headers=HX).get_data(as_text=True)
-    check("task log rendered", f"Task {new_task_id}" in detail and "<details" in detail)
-    check("full body available to expand", "a" * 400 in detail)
+    check("task log rendered", f"Task {new_task_id}" in detail and 'class="ev k-' in detail)
+    check("tool_use is header only, input behind a control", "show input" in detail and "a" * 400 not in detail, detail[-1500:])
+    # stream: long bodies preview inline, the rest loads on demand
+    long_body = "\n".join(f"line {i}" for i in range(120))
+    mono.record("text", long_body)
+    stream = c.get(f"/tasks/{new_task_id}", headers=HX).get_data(as_text=True)
+    check("task view previews body inline", "line 0" in stream and "line 49" in stream and "line 50" not in stream)
+    check("task view offers 'N more lines'", "70 more lines" in stream)
+    agents_stream = c.get("/agents/activity").get_data(as_text=True)
+    check("agents tail previews body inline", "line 49" in agents_stream and "70 more lines" in agents_stream)
+    check("poll pauses on expanded events", ".ev.expanded" in agents_stream and "details[open]" not in agents_stream)
+    import re as _re
+    ev_id = int(_re.findall(r'hx-get="/events/(\d+)/detail\?full=1"', agents_stream)[0])
+    full = c.get(f"/events/{ev_id}/detail?full=1").get_data(as_text=True)
+    check("full mode returns the whole body", "line 119" in full and len(full) > len(c.get(f"/events/{ev_id}/detail").get_data(as_text=True)) - 1)
+    check("full mode has more than the preview", "line 119" in full and "line 119" not in stream)
     check("log does not poll over the form", 'hx-trigger="every 3s"' not in detail, detail[:0])
 
     print("live polling features (replaced with reload button)")
@@ -664,6 +678,7 @@ def test_web(project: Path) -> None:
     check("agent shown", "dev-agent" in transcript)
     check("task link in transcript", f'#{ task_id}' in transcript)
     check("events shown in order", "prompt" in transcript and "Read" in transcript)
+    check("transcript previews bodies inline", "Build something" in transcript and 'class="ev k-' in transcript)
     check("transcript reads top to bottom", transcript.index("prompt") < transcript.index("Read"))
 
     print("features")

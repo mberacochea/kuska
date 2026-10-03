@@ -175,4 +175,6 @@ def register(app, ctx) -> None:
         event = get_event(db(), event_id)
         if not event:
             return ""
+        if request.args.get("full"):
+            return eventfmt.full_html(event)
         return eventfmt.detail_html(event)

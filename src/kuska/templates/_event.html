@@ -1,0 +1,23 @@
+{# One activity event as a terminal-style entry: header line, then up to 50
+   lines of body inline. Import with context (needs glyph/summarize/
+   preview_html/clock/_fmt_ts from the render call):
+     {% from "_event.html" import event with context %} #}
+{% macro event(e, show_agent=false) %}
+{% set pv = preview_html(e) %}
+<div class="ev k-{{ e.kind }}" id="ev-{{ e.id }}">
+  <div class="ev-head"><span class="g">{{ glyph(e.kind) }}</span>
+    <span class="muted small" title="{{ _fmt_ts(e.ts) }}">{{ clock(e.ts) }}</span>
+    {% if show_agent %}<span class="what"><a href="/agents/{{ e.agent }}">{{ e.agent }}</a>{% if e.task_id %} <a href="/tasks/{{ e.task_id }}">{{ '#' }}{{ e.task_id }}</a>{% endif %}</span>{% endif %}
+    <span class="label">{{ e.label or e.kind }}</span>
+    {% if e.kind == 'tool_use' %}<span class="sig">{{ summarize(e) }}</span>{% endif %}
+  </div>
+  {% if pv[0] %}<div class="ev-body" id="evb-{{ e.id }}">{{ pv[0]|safe }}</div>{% else %}<div class="ev-body" id="evb-{{ e.id }}" hidden></div>{% endif %}
+  {% if pv[1] > 0 %}
+    <button type="button" class="ev-more" hx-get="/events/{{ e.id }}/detail?full=1" hx-target="#evb-{{ e.id }}" hx-swap="innerHTML"
+            hx-on::after-request="this.closest('.ev').classList.add('expanded'); this.remove()">… {{ pv[1] }} more line{{ 's' if pv[1] != 1 }} — show all</button>
+  {% elif e.kind == 'tool_use' and e.body %}
+    <button type="button" class="ev-more" hx-get="/events/{{ e.id }}/detail?full=1" hx-target="#evb-{{ e.id }}" hx-swap="innerHTML"
+            hx-on::after-request="var b=document.getElementById('evb-{{ e.id }}'); b.hidden=false; this.closest('.ev').classList.add('expanded'); this.remove()">show input</button>
+  {% endif %}
+</div>
+{% endmacro %}

@@ -322,3 +322,84 @@ def _detail_html(event: dict) -> str:
             return render(_clamp(md_text))
 
     return f'<pre class="raw">{html.escape(_clamp(text))}</pre>'
+
+
+# --------------------------------------------------------------------------
+# preview_html() / full_html() - the inline stream view
+# --------------------------------------------------------------------------
+
+# Lines of a body shown inline in the activity stream before "show all".
+PREVIEW_LINES = 50
+# Backstop for a preview of a few gigantic lines (minified JSON etc.).
+PREVIEW_MAX_CHARS = 8_000
+# The un-clamped-by-lines view: observed bodies top out ~35 KB.
+FULL_MAX_CHARS = 200_000
+
+
+def _display_source(event: dict) -> tuple[str, bool]:
+    """(text that will be rendered, whether it is Markdown) for an event.
+
+    Same rules as detail_html: prose kinds are Markdown, whole-JSON bodies are
+    rewritten with `as_markdown`, everything else is a raw escaped <pre>.
+    """
+    event = event or {}
+    text = _body_text(event)
+    if not text:
+        return "", False
+    if event.get("kind") in PROSE_KINDS:
+        return text, True
+    parsed = _try_json(text)
+    if isinstance(parsed, (dict, list)):
+        try:
+            md_text = as_markdown(text)
+        except Exception:
+            md_text = None
+        if md_text and md_text != text:
+            return md_text, True
+    return text, False
+
+
+def _emit(text: str, is_md: bool) -> str:
+    if not text:
+        return ""
+    return render(text) if is_md else f'<pre class="raw">{html.escape(text)}</pre>'
+
+
+def preview_html(event: dict, max_lines: int = PREVIEW_LINES) -> tuple[str, int]:
+    """The first `max_lines` lines of an event body as safe HTML.
+
+    Returns `(html, hidden_lines)`; `hidden_lines` is 0 when nothing was cut.
+    Lines are counted on the text that is actually rendered (after JSON ->
+    Markdown). `tool_use` has no inline body (header only), so it yields
+    `("", 0)`. Never raises.
+    """
+    try:
+        if (event or {}).get("kind") == "tool_use":
+            return "", 0
+        text, is_md = _display_source(event)
+        if not text:
+            return "", 0
+        lines = text.split("\n")
+        hidden = 0
+        if len(lines) > max_lines:
+            hidden = len(lines) - max_lines
+            lines = lines[:max_lines]
+        shown = "\n".join(lines)
+        if len(shown) > PREVIEW_MAX_CHARS:
+            shown = shown[:PREVIEW_MAX_CHARS]
+            hidden = max(hidden, 1)
+        return _emit(shown, is_md), hidden
+    except Exception:
+        return '<pre class="raw">(unreadable event)</pre>', 0
+
+
+def full_html(event: dict) -> str:
+    """The whole body as safe HTML - no line clamp, ~200 KB char backstop.
+    Never raises."""
+    try:
+        text, is_md = _display_source(event)
+        if len(text) > FULL_MAX_CHARS:
+            text = text[:FULL_MAX_CHARS] + f"\n… clamped, {len(text)} chars total …"
+        return _emit(text, is_md)
+    except Exception:
+        return '<pre class="raw">(unreadable event)</pre>'

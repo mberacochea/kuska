@@ -12,9 +12,12 @@ from kuska.eventfmt import (
     CLAMP_MAX_CHARS,
     NOISE_SUBTYPES,
     QUIET_KINDS,
+    PREVIEW_LINES,
     detail_html,
+    full_html,
     glyph,
     is_quiet,
+    preview_html,
     summarize,
 )
 
@@ -185,6 +188,36 @@ def main() -> None:
     check("empty body summarizes to empty string", summarize(ev(kind="text", body="")) == "")
     check("None body does not raise and returns a string", isinstance(summarize(ev(kind="text", body=None)), str))
     check("empty body detail is empty string", detail_html(ev(kind="text", body="")) == "")
+
+    print("preview_html() / full_html()")
+    big = "\n".join(f"row {i}" for i in range(120))
+    h, hidden = preview_html(ev(kind="tool_result", label=None, body=big))
+    check("preview cut at 50 lines, hidden count right", PREVIEW_LINES == 50 and hidden == 70 and "row 49" in h and "row 50" not in h, (hidden, h[-60:]))
+    h, hidden = preview_html(ev(kind="text", label=None, body="a\nb\nc"))
+    check("short body not cut", hidden == 0 and "c" in h)
+    check("tool_use has no inline body", preview_html(ev(kind="tool_use", label="Read", body='{"file_path": "a"}')) == ("", 0))
+    check("empty body is empty", preview_html(ev(kind="text", body="")) == ("", 0))
+    h, hidden = preview_html(ev(kind="text", label=None, body="x" * 100_000))
+    check("giant single line is backstopped", hidden >= 1 and len(h) < 20_000)
+    for hostile in (None, 5, b"\xff", "\x00\ud800" if False else "\x00", "{" * 50, "[1,"):
+        for kind in ("text", "tool_result", "bogus"):
+            r = preview_html({"kind": kind, "body": hostile})
+            f = full_html({"kind": kind, "body": hostile})
+            check(f"never raises on {hostile!r}/{kind}", isinstance(r[0], str) and isinstance(f, str))
+    check("preview_html tolerates non-dict", isinstance(preview_html(None)[0], str))
+    for fn in (lambda b: preview_html(ev(kind="tool_result", label=None, body=b))[0], lambda b: full_html(ev(kind="text", label=None, body=b))):
+        out = fn("<script>alert(1)</script>")
+        check("script escaped in preview/full", "<script>" not in out)
+    fence = "intro\n```py\n" + "\n".join(f"x{i} = {i}" for i in range(80))
+    h, hidden = preview_html(ev(kind="text", label=None, body=fence))
+    check("markdown cut mid-fence closes the block", hidden > 0 and h.count("<pre") == h.count("</pre>") == 1 and "x47" in h and "x60" not in h, h[-80:])
+    jb = json.dumps({"k": [f"item{i}" for i in range(100)]})
+    h, hidden = preview_html(ev(kind="tool_result", label=None, body=jb))
+    check("JSON body cut on rendered lines", hidden > 0 and "item0" in h)
+    f = full_html(ev(kind="tool_result", label=None, body=big))
+    check("full has every line", "row 119" in f and "more lines" not in f)
+    f = full_html(ev(kind="tool_result", label=None, body="y" * 300_000))
+    check("full has a char backstop", len(f) < 250_000 and "clamped" in f)
 
     print(f"\n{PASSED} checks passed")
 

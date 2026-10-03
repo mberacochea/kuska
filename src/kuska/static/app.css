@@ -133,20 +133,29 @@ pre.raw {
 
 /* agent monologue */
 .log { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:.3rem .9rem; }
-.ev { font-size:.9rem; padding:.3rem 0; border-bottom:1px solid var(--line); }
+.log { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+.ev { font-size:.85rem; line-height:1.45; padding:.35rem 0; border-bottom:1px solid var(--line); }
 .ev:last-child { border-bottom:none; }
-.ev summary { cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.ev .g { display:inline-block; width:1.2rem; }
+.ev-head { display:flex; gap:.5rem; align-items:baseline; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.ev .g { display:inline-block; width:1.2rem; flex:none; }
 .ev .what { font-weight:600; }
 .ev .label { font-weight:600; color:var(--fg); }
-.ev .body { color:var(--muted); }
-.ev .sig { color:var(--muted); }
+.ev .sig { color:var(--muted); overflow:hidden; text-overflow:ellipsis; }
 .k-tool_use .what { color:var(--warn); }
-.k-error .what { color:var(--danger); }
+.k-error .what, .k-error .label, .k-error .g { color:var(--danger); }
 .k-result .what { color:var(--accent); }
 .k-warning .what { color:var(--warn); }
 .k-thinking .what, .k-system .what, .k-prompt .what { color:var(--muted); }
-.ev .detail { padding:.3rem 0 .7rem 1.2rem; }
+.ev-body { margin:.15rem 0 0 1.7rem; overflow-wrap:anywhere; }
+.ev-body[hidden] { display:none; }
+.ev-body > :first-child { margin-top:0; }
+.ev-body > :last-child { margin-bottom:0; }
+.ev-body p, .ev-body ul, .ev-body ol, .ev-body h1, .ev-body h2, .ev-body h3, .ev-body h4 { margin:.3rem 0; font-size:inherit; }
+.ev-body pre, .ev-body pre.raw { background:var(--shade); border-radius:4px; padding:.4rem .6rem; margin:.3rem 0; overflow-x:auto; white-space:pre-wrap; font-size:.8rem; }
+.k-thinking .ev-body { color:var(--muted); font-style:italic; }
+.k-error .ev-body { color:var(--danger); }
+.ev-more { background:none; border:none; padding:0; margin:.1rem 0 0 1.7rem; font:inherit; font-size:.8rem; color:var(--accent); cursor:pointer; }
+.ev-more:hover { text-decoration:underline; }
 
 /* run grouping in task feed */
 .run-group { margin:.6rem 0; padding:.6rem .9rem; border-left:3px solid var(--line); }

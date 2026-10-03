@@ -219,6 +219,7 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
             clock=_clock,
             summarize=eventfmt.summarize,
             detail_html=eventfmt.detail_html,
+            preview_html=eventfmt.preview_html,
             glyph=eventfmt.glyph,
             _fmt_ts=_fmt_ts,
         )
@@ -395,6 +396,7 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
             clock=_clock,
             summarize=eventfmt.summarize,
             detail_html=eventfmt.detail_html,
+            preview_html=eventfmt.preview_html,
             glyph=eventfmt.glyph,
             _fmt_ts=_fmt_ts,
         )
@@ -415,6 +417,7 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
             clock=_clock,
             summarize=eventfmt.summarize,
             detail_html=eventfmt.detail_html,
+            preview_html=eventfmt.preview_html,
             glyph=eventfmt.glyph,
             _fmt_ts=_fmt_ts,
         )

@@ -1,3 +1,4 @@
+{% from "_event.html" import event with context %}
 <div class="log">
 {% for group in run_groups %}
   <div class="run-group">
@@ -11,15 +12,7 @@
       {% if group.cost is not none %}<span class="muted">·</span><span class="cost">${{ '%.4f'|format(group.cost) }}</span>{% endif %}
     </summary>
     {% for e in group.events %}
-      <details class="ev k-{{ e.kind }}"{% if group.open and loop.first %} open{% endif %}>
-        <summary><span class="g">{{ glyph(e.kind) }}</span>
-          <span class="muted small" title="{{ _fmt_ts(e.ts) }}">{{ clock(e.ts) }}</span>
-          <span class="label">{{ e.label or e.kind }}</span>
-          <span class="sig">{{ summarize(e) }}</span></summary>
-        <div class="detail">
-          {{ detail_html(e)|safe }}
-        </div>
-      </details>
+      {{ event(e) }}
     {% endfor %}
   </div>
 {% else %}

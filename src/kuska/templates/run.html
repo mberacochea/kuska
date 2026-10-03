@@ -1,4 +1,5 @@
 {% extends "layout.html" %}
+{% from "_event.html" import event with context %}
 {% block body %}
 {% if error %}
   <div class="error">{{ error }}</div>
@@ -19,17 +20,7 @@
 
       <div class="log">
       {% for e in events %}
-        <details class="ev k-{{ e.kind }}"{% if loop.first %} open{% endif %}>
-          <summary>
-            <span class="g">{{ glyph(e.kind) }}</span>
-            <span class="muted small" title="{{ _fmt_ts(e.ts) }}">{{ clock(e.ts) }}</span>
-            <span class="label">{{ e.label or e.kind }}</span>
-            <span class="sig">{{ summarize(e) }}</span>
-          </summary>
-          <div class="detail">
-            {{ detail_html(e)|safe }}
-          </div>
-        </details>
+        {{ event(e) }}
       {% else %}
         <div class="muted small">No events for this run.</div>
       {% endfor %}
