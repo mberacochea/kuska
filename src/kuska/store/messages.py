@@ -11,7 +11,8 @@ from ..models import Message, rows
 from .agents import get_agent
 from .common import bound
 from .deps import add_dependency, blocking_dependencies
-from .tasks import add_task, get_task, update_task_status
+from .lifecycle import TRANSITIONS, transition
+from .tasks import add_task, get_task
 
 
 @bound
@@ -123,14 +124,16 @@ def reply(
         if status in ("done", "blocked") and waiting_on_answer(db, task_id):
             # it asked another agent and stopped: claimable again, and run
             # with the answer as context, once the answer task is done
-            status = "ready"
-        if status == "done":
-            task = get_task(db, task_id)
-            # a worktree task's work sits on an unmerged branch: "done" would
-            # release its dependents onto code that never reached base
-            if task and task["worktree_path"]:
-                status = "ready_to_merge"
-        update_task_status(db, task_id, status)
+            event = "await_answer"
+        elif status == "done":
+            event = "finish"  # transition() sends a worktree task to ready_to_merge
+        elif status == "blocked":
+            event = "block"
+        elif status == "needs_approval":
+            event = "hold"
+        else:
+            raise ValueError(f"unknown reply status: {status}")
+        transition(db, task_id, event, actor=agent_name)
     return msg_id
 
 
@@ -167,8 +170,8 @@ def reply_to_task(db: SqliteDatabase, task_id: int, payload: str, sender: str = 
         raise ValueError(f"task {task_id} not found")
     recipient = task["assigned_to"] or HUMAN
     msg_id = send_message(db, sender, recipient, task_id, "note", payload)
-    if task["assigned_to"] and task["status"] not in ("todo", "ready", "in_progress"):
-        update_task_status(db, task_id, "ready")
+    if task["assigned_to"] and task["status"] in TRANSITIONS["requeue"][0]:
+        transition(db, task_id, "requeue")
     return msg_id
 
 
@@ -214,7 +217,7 @@ def ask_agent(db: SqliteDatabase, asker: str, recipient: str, task_id: int | Non
         assigned_to=recipient,
         tags=ANSWER_TAG,
     )
-    update_task_status(db, answer_id, "ready")
+    transition(db, answer_id, "make_ready", actor=asker)
     add_dependency(db, task_id, answer_id)
     return answer_id
 

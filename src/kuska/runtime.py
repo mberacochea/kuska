@@ -34,8 +34,9 @@ from .store import (
     send_message,
     task_dependencies,
     task_messages,
-    update_task_status,
+    transition,
 )
+from .store.lifecycle import InvalidTransition
 
 
 def estimate_token_count(text: str) -> int:
@@ -301,7 +302,10 @@ def fail_task(db: SqliteDatabase, agent_name: str, task_id: int, reason: str, **
     hit it again, so a human decides whether to raise the limit, split the
     task or send it back."""
     msg_id = send_message(db, agent_name, HUMAN, task_id, "blocker", f"run failed: {reason}", **usage)
-    update_task_status(db, task_id, "blocked")
+    try:
+        transition(db, task_id, "block", actor=agent_name)
+    except InvalidTransition:
+        pass  # a human moved the task during the run; the blocker is still logged
     return msg_id
 
 
@@ -363,11 +367,12 @@ def finish_task(
         record_usage(db, msg_id, **usage)
     else:
         task = get_task(db, task_id)
-        # whatever hold the agent put the task under is the agent's call to keep
-        terminal = ("blocked", "done", "needs_approval", "ready_to_merge")
-        # reply() holds a worktree task's "done" for review as ready_to_merge
-        status = task["status"] if task and task["status"] in terminal else "done"
-        msg_id = reply(db, agent_name, task_id, payload, status=status, **usage)
+        if task and task["status"] == "in_progress":
+            # reply() applies finish / await_answer itself
+            msg_id = reply(db, agent_name, task_id, payload, status="done", **usage)
+        else:
+            # a human moved it, or the agent held it some other way: only record the result
+            msg_id = send_message(db, agent_name, HUMAN, task_id, "result", payload, **usage)
 
     # cost is the only comparable figure: token volume is dominated by cache
     # reads, which are priced an order of magnitude below fresh input

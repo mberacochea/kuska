@@ -820,6 +820,7 @@ def check_workflow_context(project: Path) -> None:
     core.call_tool(db, "dev-agent", "reply", {
         "task_id": api, "payload": "API done.", "handover": "## API\n\nRoutes live under /v2.",
     })
+    core.update_task_status(db, ui, "in_progress")
     core.reply(db, "custom-analyzer", ui, "UI done; the settings page still needs copy.")
     prompt, _ = core.compose_task_prompt(db, "review-agent", core.get_task(db, ship))
     check("reply's handover reaches the dependent", "Routes live under /v2." in prompt, prompt)
@@ -999,6 +1000,7 @@ def check_worktree_ready_to_merge(tmp: Path) -> None:
 
     # a worktree task (the daemon records its path before the run) finishing
     # with no prior reply: "done" is held as "ready_to_merge"
+    core.update_task_status(conn, task_id, "in_progress")
     core.update_task(conn, task_id, worktree_path=str(project / ".agents" / "worktrees" / f"task-{task_id}"))
     started = time.time()
     runtime.finish_task(conn, "dev-agent", task_id, "Task completed", started)
@@ -1531,6 +1533,7 @@ def check_non_worktree_done(tmp: Path) -> None:
     task_id = add_ready(conn, "Test task", "test description", "dev-agent")
 
     # no worktree_path on the task: "done" stays "done"
+    core.update_task_status(conn, task_id, "in_progress")
     started = time.time()
     runtime.finish_task(conn, "dev-agent", task_id, "Task completed", started)
 

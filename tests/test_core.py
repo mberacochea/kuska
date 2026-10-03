@@ -178,6 +178,8 @@ def main() -> None:
         check("peek keeps unread", len(ac.get_inbox(conn, "dev-agent", mark_read=False)) == 1)
         check("peek is repeatable", len(ac.get_inbox(conn, "dev-agent")) == 1)
 
+        ac.update_task_status(conn, t1, "in_progress")
+        ac.update_task_status(conn, t2, "in_progress")
         ac.reply(conn, "dev-agent", t1, "Parser done.", input_tokens=1200, output_tokens=340, cost_usd=0.0182)
         check("reply closes task", ac.get_task(conn, t1)["status"] == "done")
         check("thread ordered", [m["msg_type"] for m in ac.task_messages(conn, t1)] == ["question", "note", "result"])
@@ -793,6 +795,42 @@ def main() -> None:
         except ValueError as e:
             missing = "not found" in str(e)
         check("missing task raises ValueError", missing)
+
+        print("lifecycle routing")
+        wt = task_in("in_progress", worktree="/tmp/wt-probe")
+        ac.reply(conn, "dev-agent", wt, "done on a branch", status="done")
+        check("agent reply done on a worktree task gives ready_to_merge", status_of(wt) == "ready_to_merge")
+
+        idle = task_in("ready")
+        try:
+            ac.reply(conn, "dev-agent", idle, "not mine to close")
+            invalid = False
+        except InvalidTransition:
+            invalid = True
+        check("reply on a task that is not in_progress raises InvalidTransition",
+              invalid and status_of(idle) == "ready")
+
+        todo = task_in("todo")
+        ac.call_tool(conn, "you", "reply", {"task_id": todo, "payload": "closing by hand", "status": "done"},
+                     ac.toolset(None))
+        notes = [m for m in ac.task_messages(conn, todo) if m["msg_type"] == "note"]
+        check("operator reply closes a todo task, with a forced note",
+              status_of(todo) == "done" and any("forced" in m["payload"] for m in notes), notes)
+
+        from kuska import runtime
+        moved = task_in("todo")
+        runtime.fail_task(conn, "dev-agent", moved, "boom", cost_usd=0.5)
+        blockers = [m for m in ac.task_messages(conn, moved) if m["msg_type"] == "blocker"]
+        check("fail_task on a task a human moved keeps its status but logs the blocker",
+              status_of(moved) == "todo" and len(blockers) == 1 and blockers[0]["cost_usd"] == 0.5, blockers)
+
+        held = task_in("needs_approval")
+        runtime.finish_task(conn, "dev-agent", held, "all done", since=time.time() + 1000, cost_usd=0.25,
+                            input_tokens=7)
+        results = [m for m in ac.task_messages(conn, held) if m["msg_type"] == "result"]
+        check("finish_task with no reply keeps a human-moved status, records one result with usage",
+              status_of(held) == "needs_approval" and len(results) == 1
+              and results[0]["cost_usd"] == 0.25 and results[0]["input_tokens"] == 7, results)
 
         conn.close()
     finally:
