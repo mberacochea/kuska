@@ -641,6 +641,70 @@ def main() -> None:
               "feature" in {c.name for c in old.get_columns("tasks")})
         old.close()
 
+        print("runs table")
+        rt1 = ac.add_task(conn, "run subject", assigned_to="dev-agent")
+        rt2 = ac.add_task(conn, "other run subject", assigned_to="dev-agent")
+        ac.start_run(conn, "aaaaaaaaaaaa", rt1, "dev-agent")
+        r = ac.get_run(conn, "aaaaaaaaaaaa")
+        check("start_run inserts a running row",
+              r["status"] == "running" and r["task_id"] == rt1 and r["agent"] == "dev-agent"
+              and r["ended_at"] is None and r["cost_usd"] == 0 and r["tool_rounds"] == 0, r)
+        check("get_run of an unknown id is None", ac.get_run(conn, "nope") is None)
+        conn.execute_sql("UPDATE runs SET heartbeat_at = heartbeat_at - 100 WHERE id = 'aaaaaaaaaaaa'")
+        before = ac.get_run(conn, "aaaaaaaaaaaa")["heartbeat_at"]
+        ac.touch_run(conn, "aaaaaaaaaaaa")
+        check("touch_run moves heartbeat_at forward", ac.get_run(conn, "aaaaaaaaaaaa")["heartbeat_at"] > before)
+        time.sleep(0.01)
+
+        ac.start_run(conn, "bbbbbbbbbbbb", rt1, "dev-agent")
+        ac.start_run(conn, "cccccccccccc", rt2, "review-agent")
+        ac.end_run(conn, "bbbbbbbbbbbb", "finished", exit_reason="ok", input_tokens=5, cost_usd=0.1, bogus=1)
+        r = ac.get_run(conn, "bbbbbbbbbbbb")
+        check("end_run stores status, reason and usage",
+              r["status"] == "finished" and r["exit_reason"] == "ok" and r["input_tokens"] == 5
+              and r["cost_usd"] == 0.1 and r["output_tokens"] == 0 and r["ended_at"] is not None, r)
+        check("end_run ignores keys that are not columns", "bogus" not in r)
+        conn.execute_sql("UPDATE runs SET heartbeat_at = heartbeat_at - 100 WHERE id = 'bbbbbbbbbbbb'")
+        hb = ac.get_run(conn, "bbbbbbbbbbbb")["heartbeat_at"]
+        ac.touch_run(conn, "bbbbbbbbbbbb")
+        check("touch_run leaves an ended run alone", ac.get_run(conn, "bbbbbbbbbbbb")["heartbeat_at"] == hb)
+        for bad in ("running", "nonsense"):
+            try:
+                ac.end_run(conn, "cccccccccccc", bad)
+                raised = False
+            except ValueError:
+                raised = True
+            check(f"end_run to {bad!r} raises ValueError", raised)
+        check("a refused end_run changes nothing", ac.get_run(conn, "cccccccccccc")["status"] == "running")
+
+        conn.execute_sql("UPDATE runs SET heartbeat_at = heartbeat_at - 120 WHERE id = 'cccccccccccc'")
+        check("stale_runs returns only the running run with an old heartbeat",
+              [x["id"] for x in ac.stale_runs(conn, 60)] == ["cccccccccccc"],
+              [x["id"] for x in ac.stale_runs(conn, 60)])
+        check("running_runs lists the running ones, oldest first",
+              [x["id"] for x in ac.running_runs(conn)] == ["aaaaaaaaaaaa", "cccccccccccc"])
+        check("task_runs is oldest first and per task",
+              [x["id"] for x in ac.task_runs(conn, rt1)] == ["aaaaaaaaaaaa", "bbbbbbbbbbbb"]
+              and [x["id"] for x in ac.task_runs(conn, rt2)] == ["cccccccccccc"])
+
+        check("set_run_result_message returns the run id",
+              ac.set_run_result_message(conn, "dev-agent", rt1, 42) == "aaaaaaaaaaaa")
+        check("...and stores the message id", ac.get_run(conn, "aaaaaaaaaaaa")["result_message_id"] == 42)
+        check("set_run_result_message skips ended runs",
+              ac.set_run_result_message(conn, "dev-agent", rt2, 43) is None
+              and ac.get_run(conn, "bbbbbbbbbbbb")["result_message_id"] is None)
+        ac.end_run(conn, "aaaaaaaaaaaa", "failed", exit_reason="boom")
+        check("set_run_result_message is None with no running run",
+              ac.set_run_result_message(conn, "dev-agent", rt1, 44) is None)
+        ac.delete_task(conn, rt2)
+        check("runs outlive their task", ac.get_run(conn, "cccccccccccc") is not None)
+        names = [x[0] for x in conn.execute_sql(
+            "SELECT name FROM sqlite_master WHERE tbl_name='runs' AND type='index' "
+            "AND name NOT LIKE 'sqlite_%'").fetchall()]
+        check("runs has one index per column, no twins", sorted(names) == ["run_status", "run_task_id"], names)
+        from kuska.tables import TABLES
+        check("runs is on the Data page", "runs" in TABLES)
+
         print("lifecycle")
         from kuska.store import TRANSITIONS, InvalidTransition, transition
 

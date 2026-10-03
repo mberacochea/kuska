@@ -160,7 +160,34 @@ class Event(Base):
         indexes = ((("task_id", "id"), False), (("run_id", "id"), False))
 
 
-MODELS = [Agent, Feature, Task, TaskDep, Message, Doc, Event]
+class Run(Base):
+    """One agent invocation on one task: its status, heartbeat and own usage.
+
+    task_id is a plain integer like Event.task_id (no FK), so deleting a task
+    keeps its runs for the ledger. `id` is the 12-hex run id that
+    runtime.Monologue generates and events.run_id carries."""
+
+    id = CharField(primary_key=True)
+    task_id = IntegerField(null=True, index=True)
+    agent = CharField(null=True)
+    status = CharField(default="running", index=True)  # see db.RUN_STATUSES
+    exit_reason = TextField(null=True)
+    started_at = FloatField(default=time.time)
+    heartbeat_at = FloatField(default=time.time)  # a running run that stops touching this has crashed
+    ended_at = FloatField(null=True)
+    input_tokens = IntegerField(default=0)
+    output_tokens = IntegerField(default=0)
+    cache_read_tokens = IntegerField(default=0)
+    cache_write_tokens = IntegerField(default=0)
+    tool_rounds = IntegerField(default=0)
+    cost_usd = FloatField(default=0.0)
+    result_message_id = IntegerField(null=True)
+
+    class Meta:
+        table_name = "runs"
+
+
+MODELS = [Agent, Feature, Task, TaskDep, Message, Doc, Event, Run]
 
 # per connection. WAL is not among them: it is a property of the file, set
 # once by connect() - see _ensure_wal

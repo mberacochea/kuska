@@ -15,6 +15,7 @@ from .db import (
     EVENT_KINDS,
     HOLDING_STATUSES,
     HUMAN,
+    RUN_STATUSES,
     TASK_STATUSES,
     connect,
     init_db,
@@ -23,7 +24,7 @@ from .db import (
 from .export import export_markdown
 from .guardrails import RULES, check_command, check_tool, refusal_text
 from .markdown import as_markdown
-from .models import MODELS, Agent, Doc, Event, Feature, Message, Task, TaskDep
+from .models import MODELS, Agent, Doc, Event, Feature, Message, Run, Task, TaskDep
 from .project import (
     AGENT_FIELD_KEYS,
     AGENT_FIELDS,
@@ -84,6 +85,7 @@ from .store import (
     docs_get,
     docs_list,
     docs_set,
+    end_run,
     ensure_feature,
     full_text_search,
     get_agent,
@@ -91,6 +93,7 @@ from .store import (
     get_feature,
     get_feature_by_name,
     get_inbox,
+    get_run,
     get_task,
     heartbeat,
     list_agents,
@@ -105,12 +108,18 @@ from .store import (
     remove_dependency,
     reply,
     run_events,
+    running_runs,
     send_message,
+    set_run_result_message,
+    stale_runs,
+    start_run,
     task_dependencies,
     task_dependents,
     task_events,
     task_messages,
+    task_runs,
     token_usage_by_agent,
+    touch_run,
     update_feature,
     update_task,
     update_task_status,
