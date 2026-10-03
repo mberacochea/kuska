@@ -16,7 +16,7 @@
              {% if value(f) %}checked{% endif %}>
       {% else %}
       <input type="text" id="agent-{{ f.key }}" name="{{ f.key }}" value="{{ value(f) }}" aria-label="{{ f.label }}"
-             {% if f.type == 'number' %}inputmode="decimal"{% endif %}>
+             {% if f.type == 'number' %}inputmode="decimal"{% elif f.type == 'integer' %}inputmode="numeric"{% endif %}>
       {% endif %}
       <span class="hint">{{ f.help }}</span>
     </div>

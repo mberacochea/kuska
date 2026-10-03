@@ -11,20 +11,29 @@ import uuid
 
 from peewee import SqliteDatabase
 
-from .eventfmt import GLYPHS, TERMINAL_WIDTH, glyph, one_line, summarize  # noqa: F401 - GLYPHS/TERMINAL_WIDTH/one_line re-exported for callers that reach them via runtime
+from .db import HUMAN
+from .eventfmt import (  # noqa: F401 - GLYPHS/TERMINAL_WIDTH/one_line re-exported for callers that reach them via runtime
+    GLYPHS,
+    TERMINAL_WIDTH,
+    glyph,
+    one_line,
+    summarize,
+)
 from .markdown import as_markdown
-from .models import MODELS, Message
 from .store import (
     check_cost_anomaly,
     docs_get,
     docs_set,
     get_inbox,
     get_task,
+    latest_result_since,
     log_event,
-    mark_messages_read,
+    record_usage,
     reply,
+    send_message,
     task_dependencies,
     task_messages,
+    update_task_status,
 )
 
 
@@ -55,55 +64,29 @@ def get_workflow_context(
     task: dict,
     source_agent: str | None = None,
 ) -> str:
-    """Retrieve shared context from previous agent in workflow chain.
+    """What the tasks this one depends on handed over, as prompt sections.
 
-    When an agent finishes with status="needs_approval", it stores a
-    Markdown report via docs_set for the next agent to retrieve.
-    This reduces token usage by 20-30% by allowing the next agent to
-    skip re-parsing message history.
+    For each dependency: the handover report its agent left (`reply`'s
+    `handover`, stored by store_workflow_context), or else that task's final
+    result - so a handoff never hinges on the agent having remembered to
+    write one. Every dependency contributes, not just the latest.
 
-    Context keys follow the pattern: task_{task_id}_{source_agent}_context
-    where source_agent is the agent that produced the context. When
-    source_agent is not specified, we look for context from upstream
-    task dependencies in reverse order (most recent first).
-
-    Args:
-        db: SqliteDatabase instance for this project.
-        task: Task dict (must include 'id').
-        source_agent: Name of agent to retrieve context from. If None,
-                     tries to detect the most recent context available
-                     by searching upstream task dependencies in reverse order.
-
-    Returns:
-        str: Formatted context section or empty string if none found.
-
-    Examples:
-        >>> context = get_workflow_context(db, task, "planning-agent")
-        >>> if context:
-        ...     # Include in prompt for dev-agent
+    With `source_agent`, only that agent's report on this task itself.
     """
-    if not source_agent:
-        # Get upstream tasks and extract their agents in reverse order (most recent first)
-        deps = task_dependencies(db, task["id"])
-        if deps:
-            # Check dependencies in reverse order (most recent first)
-            # Context is stored on the dependency task with the dependency task's assigned agent
-            for dep in reversed(deps):
-                if dep.get("assigned_to"):
-                    doc_key = f"task_{dep['id']}_{dep['assigned_to']}_context"
-                    content = docs_get(db, doc_key)
-                    if content:
-                        source_agent = dep["assigned_to"]
-                        break
-        if not source_agent:
-            return ""
-    else:
-        doc_key = f"task_{task['id']}_{source_agent}_context"
-        content = docs_get(db, doc_key)
-        if not content:
-            return ""
+    if source_agent:
+        content = docs_get(db, f"task_{task['id']}_{source_agent}_context")
+        return f"## Context from {source_agent}\n\n{content}\n" if content else ""
 
-    return f"## Context from {source_agent}\n\n{content}\n"
+    sections = []
+    for dep in task_dependencies(db, task["id"]):
+        agent = dep.get("assigned_to")
+        content = docs_get(db, f"task_{dep['id']}_{agent}_context") if agent else None
+        if not content:
+            results = [m for m in task_messages(db, dep["id"]) if m["msg_type"] == "result" and m["payload"]]
+            content = results[-1]["payload"] if results else None
+        if content:
+            sections.append(f"## Context from {agent or 'a human'} (task {dep['id']}: {dep['title']})\n\n{content}\n")
+    return "\n".join(sections)
 
 
 def store_workflow_context(
@@ -152,14 +135,10 @@ def compose_task_prompt(
     bundled into the initial prompt:
     - The task title and description
     - Task dependencies (what this task waits for)
-    - File claims from other agents (avoid editing those)
-    - Workflow context from previous agent (if available)
+    - What each dependency handed over (see get_workflow_context) - including
+      the answer, when the dependency is an answer task this one asked for
     - Message thread history (earlier attempts, questions, answers)
-
-    Workflow context passing (Phase 4.1):
-    - When an agent completes with status="needs_approval", it can store
-      structured context via docs_set(db, f"task_{id}_{agent}_context", ...)
-    - The next agent automatically receives this context without re-parsing
+    - Unread messages for this agent
 
     Message history summarization (by default):
     - Keeps the last 5 messages in full detail
@@ -185,12 +164,12 @@ def compose_task_prompt(
                                 (should be marked as read after a successful run).
 
     Examples:
-        >>> prompt, msg_ids = compose_task_prompt(db, "claude-worker", task)
+        >>> prompt, msg_ids = compose_task_prompt(db, "dev-agent", task)
         >>> # Returns markdown like:
         >>> # # Task 42: Fix bug in parser
         >>> # Task description here...
         >>> # ## This task depends on...
-        >>> # ## Files other agents are working on...
+        >>> # ## Context from planning-agent (task 41: Plan the parser)
         >>> # ## Earlier on this task
         >>> # ### Prior context (summarized)
         >>> # - agent-1: result - Successfully implemented feature X...
@@ -212,9 +191,8 @@ def compose_task_prompt(
     if workflow_context:
         parts += [workflow_context, ""]
 
-    # Fetch inbox messages without marking them as read - mark as read only
-    # after a successful run (see task R4: unread messages consumed before the
-    # run that needs them)
+    # leave them unread for now: the daemon marks them read only once a run has
+    # succeeded, so a run that fails cannot swallow a message it never acted on
     inbox = get_inbox(db, agent_name, mark_read=False)
     inbox_message_ids = [m["id"] for m in inbox]
     all_history = [
@@ -277,6 +255,55 @@ def estimate_cost(cfg: dict, input_tokens: int, output_tokens: int) -> float:
     return (input_tokens * price_in + output_tokens * price_out) / 1_000_000
 
 
+# a run with no wall-clock limit can hang a daemon forever; turns and budget
+# have no default because what is "too many" depends on the task
+DEFAULT_TIMEOUT_MINUTES = 60.0
+
+
+class RunAborted(Exception):
+    """A run that ended without finishing its task - a limit hit, or the
+    backend giving up. Carries whatever usage the run reported getting there,
+    so the money it spent still reaches the ledger."""
+
+    def __init__(self, reason: str, usage: dict | None = None):
+        super().__init__(reason)
+        self.usage = usage or {}
+
+
+def run_limits(cfg: dict) -> dict:
+    """An agent's per-run limits from config.toml, None where unset.
+
+    `max_turns`, `max_budget_usd` and `timeout_minutes`; a blank or zero
+    value means no limit, except the timeout, which falls back to
+    DEFAULT_TIMEOUT_MINUTES."""
+
+    def positive(key: str, cast):
+        value = cfg.get(key)
+        if value in (None, ""):
+            return None
+        value = cast(value)
+        return value if value > 0 else None
+
+    timeout = positive("timeout_minutes", float) or DEFAULT_TIMEOUT_MINUTES
+    return {
+        "max_turns": positive("max_turns", int),
+        "max_budget_usd": positive("max_budget_usd", float),
+        "timeout_s": timeout * 60,
+    }
+
+
+def fail_task(db: SqliteDatabase, agent_name: str, task_id: int, reason: str, **usage) -> int:
+    """Close out a run that did not finish: block the task, say why on its
+    thread, and book whatever the run cost against that message.
+
+    Blocked rather than retried: a run that hit its turn or budget limit will
+    hit it again, so a human decides whether to raise the limit, split the
+    task or send it back."""
+    msg_id = send_message(db, agent_name, HUMAN, task_id, "blocker", f"run failed: {reason}", **usage)
+    update_task_status(db, task_id, "blocked")
+    return msg_id
+
+
 def finish_task(
     db: SqliteDatabase,
     agent_name: str,
@@ -289,7 +316,6 @@ def finish_task(
     cache_write_tokens: int = 0,
     tool_rounds: int = 0,
     cost_usd: float = 0.0,
-    worktree_branch: str | None = None,
 ) -> int:
     """Close out one invocation, recording its cost without double-counting.
 
@@ -313,45 +339,25 @@ def finish_task(
         cache_write_tokens: Input written to cache, at roughly 1.25x the price.
         tool_rounds: API round-trips in this turn - the real cost driver.
         cost_usd: Total cost in USD, as reported by the backend.
-        worktree_branch: The git branch the task ran on (if using worktrees).
 
     Returns:
         int: Message ID of the result (newly created or updated).
     """
-    with db.bind_ctx(MODELS):
-        existing = (
-            Message.select(Message.id)
-            .where(
-                (Message.sender == agent_name)
-                & (Message.task_id == task_id)
-                & (Message.msg_type == "result")
-                & (Message.ts >= since)
-            )
-            .order_by(Message.ts.desc())
-            .first()
-        )
-        if existing:
-            Message.update(
-                input_tokens=input_tokens, output_tokens=output_tokens,
-                cache_read_tokens=cache_read_tokens, cache_write_tokens=cache_write_tokens,
-                tool_rounds=tool_rounds, cost_usd=cost_usd,
-            ).where(Message.id == existing.id).execute()
-            msg_id = int(existing.id)
-        else:
-            task = get_task(db, task_id)
-            # whatever hold the agent put the task under is the agent's call to keep
-            terminal = ("blocked", "done", "needs_approval", "ready_to_merge")
-            status = task["status"] if task and task["status"] in terminal else "done"
-            # if a worktree task would result in "done", coerce to "ready_to_merge"
-            # so the branch requires human review before merging
-            if worktree_branch is not None and status == "done":
-                status = "ready_to_merge"
-            msg_id = reply(
-                db, agent_name, task_id, payload,
-                input_tokens=input_tokens, output_tokens=output_tokens,
-                cache_read_tokens=cache_read_tokens, cache_write_tokens=cache_write_tokens,
-                tool_rounds=tool_rounds, cost_usd=cost_usd, status=status,
-            )
+    usage = {
+        "input_tokens": input_tokens, "output_tokens": output_tokens,
+        "cache_read_tokens": cache_read_tokens, "cache_write_tokens": cache_write_tokens,
+        "tool_rounds": tool_rounds, "cost_usd": cost_usd,
+    }
+    msg_id = latest_result_since(db, agent_name, task_id, since)
+    if msg_id is not None:
+        record_usage(db, msg_id, **usage)
+    else:
+        task = get_task(db, task_id)
+        # whatever hold the agent put the task under is the agent's call to keep
+        terminal = ("blocked", "done", "needs_approval", "ready_to_merge")
+        # reply() holds a worktree task's "done" for review as ready_to_merge
+        status = task["status"] if task and task["status"] in terminal else "done"
+        msg_id = reply(db, agent_name, task_id, payload, status=status, **usage)
 
     # cost is the only comparable figure: token volume is dominated by cache
     # reads, which are priced an order of magnitude below fresh input
@@ -405,6 +411,9 @@ class Monologue:
         self.task_id = task_id
         self.quiet = quiet
         self.run_id = uuid.uuid4().hex[:12]
+        # usage the backend has reported so far, in the ledger's terms: what a
+        # run that gets cut off (a timeout) is still known to have spent
+        self.spent: dict = {}
 
     def record(self, kind: str, body: str, label: str | None = None) -> None:
         """Record an event to the audit trail and print a one-line summary.

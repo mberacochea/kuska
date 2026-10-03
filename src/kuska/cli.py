@@ -15,13 +15,18 @@ Task and plan authoring lives in the web app, not here:
 from __future__ import annotations
 
 import argparse
+import difflib
 import os
 from pathlib import Path
 
+from playhouse.migrations import Runner
+
 from . import __version__
 from . import worktree
+from .daemons import run as run_daemon
 from .db import HUMAN, connect, init_db
 from .export import export_markdown
+from .mcp_server import run_mcp
 from .migration import get_current_version, run_migrations
 from .project import (
     DEFAULT_FLAVOR,
@@ -41,7 +46,9 @@ from .project import (
     sync_agents_from_config,
     write_prompt,
 )
-from .store import docs_get, docs_set
+from .runner import run_all
+from .store import docs_get, docs_set, list_tasks, update_task
+from .web import create_app
 
 
 def cmd_init(args: argparse.Namespace) -> None:
@@ -68,8 +75,6 @@ def cmd_init(args: argparse.Namespace) -> None:
 
 
 def cmd_serve(args: argparse.Namespace) -> None:
-    from .web import create_app
-
     project = find_project(args.project)
     app = create_app(project)
     print(f"serving {project} on http://{args.host}:{args.port}")
@@ -81,20 +86,16 @@ def cmd_serve(args: argparse.Namespace) -> None:
 
 
 def cmd_mcp(args: argparse.Namespace) -> None:
-    from .mcp_server import run_mcp
-
     project = find_project(args.project)
     run_mcp(project, args.agent, Path(args.db) if args.db else None)
 
 
 def cmd_daemon(args: argparse.Namespace) -> None:
-    from .daemons import run
-
     project = find_project(args.project)
     cfg = agent_config(project, args.agent)
     backend = args.backend or cfg.get("backend", "claude")
     try:
-        run(backend, project, args.agent, args.poll_interval, args.max_tasks, args.quiet)
+        run_daemon(backend, project, args.agent, args.poll_interval, args.max_tasks, args.quiet)
     except KeyboardInterrupt:
         print("\nstopped")
     except (FileNotFoundError, ImportError) as exc:
@@ -116,8 +117,6 @@ def cmd_export(args: argparse.Namespace) -> None:
 
 def cmd_prompts(args: argparse.Namespace) -> None:
     """Merge agent prompts with the current template, or show diffs."""
-    import difflib
-
     project = find_project(args.project)
     config = load_config(project)
     agents = config.get("agents", {})
@@ -179,7 +178,6 @@ def cmd_migrate(args: argparse.Namespace) -> None:
     try:
         if args.status:
             # Show current migration status using peewee migration runner
-            from playhouse.migrations import Runner
             runner = Runner(
                 db,
                 directory=str(Path(__file__).parent / "migrations"),
@@ -330,8 +328,6 @@ def cmd_doctor(args: argparse.Namespace) -> None:
 
 def cmd_run_all(args: argparse.Namespace) -> None:
     """Run web server, MCP server, and agent daemons together."""
-    from .runner import run_all
-
     agents = None
     if args.agents:
         # Parse comma-separated agent names, or special "*" for all
@@ -370,8 +366,6 @@ def cmd_worktree_list(args: argparse.Namespace) -> None:
     # Parse task IDs from worktree paths
     db = connect(db_path(project))
     init_db(db)
-    from .store import list_tasks
-
     tasks = {t["id"]: t for t in list_tasks(db)}
     db.close()
 
@@ -415,8 +409,6 @@ def cmd_worktree_prune(args: argparse.Namespace) -> None:
 
     db = connect(db_path(project))
     init_db(db)
-    from .store import list_tasks, update_task
-
     all_tasks = {t["id"]: t for t in list_tasks(db)}
 
     removed = []

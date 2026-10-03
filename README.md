@@ -47,16 +47,18 @@ Taskfile.yaml              # development task runner - see task -l
 src/kuska/
   models.py      # peewee models - the schema, and the only place SQL is described
   db.py          # statuses, roles, connections
-  store.py       # agents, tasks, dependencies, messages, docs, events
+  store/         # every read and write of project state, one module per kind of
+                 # record (agents, tasks, deps, messages, events, docs, stats, search)
   tables.py      # per-model presentation for the generic row editor
   project.py     # .agents/ layout, prompts, config.toml, project registry
   runtime.py     # prompt composition, turn accounting, the agent monologue
   markdown.py    # rendering agent prose, with embedded HTML escaped
-  tools.py       # the ten shared agent tools, defined once
+  tools.py       # the shared agent tools, defined once; who gets which is toolset()
   guardrails.py  # refuse rm -rf, git reset --hard, sudo, etc. before they run
   worktree.py    # git worktrees: branch per task, merge queue
   mcp_server.py  # those tools over stdio, for Codex and other external clients
-  web.py         # Flask + HTMX routes
+  web/           # Flask + HTMX: context.py (open project, shared rendering) and one
+                 # module per page area (pages, agents, docs, data, insights)
   runner.py      # run-all: web server + MCP + daemons in one command
   templates/     # Jinja templates, layout.html plus one file per page/fragment
   static/app.css # the whole stylesheet
@@ -64,17 +66,19 @@ src/kuska/
   export.py      # markdown export
   cli.py         # init / serve / daemon / mcp / run-all / export
   daemons/
+    loop.py      # the daemon loop all backends share: claim, worktree, run, ledger
     claude.py    # Claude Agent SDK, tools registered in-process
     codex.py     # openai-codex SDK, tools over the stdio MCP server
+    openai.py    # OpenAI-compatible chat completions, tools over the stdio MCP server
 packaging/entry.py + kuska.spec   # PyInstaller build
 tests/           # plain scripts, no test framework
 docs/DEVELOPMENT.md        # development guide and troubleshooting
 ```
 
 State lives in SQLite through [peewee](https://github.com/coleifer/peewee):
-`models.py` owns the schema, `store.py` wraps it in plain functions that
-return plain dicts, and nothing outside those two files knows an ORM is
-involved. Models are bound to a database per call, so one process can hold
+`models.py` owns the schema, `store/` wraps it in plain functions that
+return plain dicts, and nothing outside those knows an ORM is involved - except
+`tables.py`, the raw Data page's row editor, whose whole job is the tables. Models are bound to a database per call, so one process can hold
 several projects open - which is what the web app's project switcher needs.
 
 A project is any directory with an `.agents/` subdirectory:
@@ -145,8 +149,8 @@ waited on it) or **send back** (re-queue it for the agent).
    two daemons can never take the same task).
 3. If the agent is configured with `worktree = true`, the daemon creates a
    git worktree at `.agents/worktrees/task-<id>` on branch `kuska/<id>-<slug>`.
-   The agent runs **one fresh invocation** there. No worktree: the agent runs in
-   the main checkout.
+   If that fails, the task is blocked rather than run in the main checkout.
+   No worktree: the agent runs in the main checkout.
 4. The daemon runs **one fresh invocation** - no conversation is kept between
    tasks, so context never accumulates or goes stale. What the agent needs to
    know (description, earlier turns, answers to its questions) is composed
@@ -158,16 +162,16 @@ waited on it) or **send back** (re-queue it for the agent).
    enters `ready_to_merge`. A human reviews the branch, then merges it in a
    terminal and marks it merged in the web UI, which releases anything that
    depended on it.
+7. A run that fails, times out or hits a limit (`max_turns`,
+   `max_budget_usd`, `timeout_minutes`) blocks its task, with a note saying
+   why and whatever it spent.
 
-An agent that needs something from another agent sends a message, marks its
-task `blocked` and exits, rather than waiting inline. When the answer lands,
-the human re-queues the task from the web UI and the next run gets the reply
-as context.
-
-Note: Worktrees resolve conflicts at merge time rather than preventing them.
-The claim system they replaced never actually prevented conflicts anyway — it
-only counted claims from agents that had heartbeated in the last 180 seconds,
-and no daemon heartbeats mid-run.
+An agent that needs something from another agent asks with a `question`
+message and replies `blocked`, rather than waiting inline. The question
+becomes an answer task for the other agent, and the asking task runs again,
+with the answer as context, once it is done - no human in between. What a
+task hands to the tasks that depend on it is its `reply(handover=...)`, or
+else its final result. See [docs/MCP_TOOLS.md](docs/MCP_TOOLS.md).
 
 ## Tasks in their own branches
 
@@ -177,12 +181,9 @@ worktree on its own branch, created at `.agents/worktrees/task-<id>` on branch
 `ready_to_merge`. A human reviews the branch in a terminal, merges it, and
 marks it merged in the web UI.
 
-This design trades conflict prevention for isolation and explicitness: you now
-resolve conflicts at merge time rather than preventing them by bookkeeping.
-The claim system it replaced never actually prevented conflicts anyway — it
-only saw claims from agents that had heartbeated in the last 180 seconds, and
-no daemon heartbeats mid-run. Worktrees give you a clear boundary and a git
-audit trail instead.
+This design trades conflict prevention for isolation and explicitness:
+conflicts are resolved at merge time, and every change arrives as a branch a
+human reads before it lands.
 
 ## Editing the data
 
@@ -203,15 +204,18 @@ and the cost ledger, and editing `agents` does not write back to
 
 ## Agent tools
 
-Ten tools - `get_inbox`, `send_message`, `reply`, `docs_get`, `docs_set`,
-`docs_list`, `heartbeat`, `create_task`, `list_tasks`, `search` - defined once
-in `tools.py` and consumed three ways:
+Defined once in `tools.py` and consumed three ways:
 
 - **Claude** registers them in-process via `create_sdk_mcp_server()` - no
   extra process.
-- **Codex** connects to `kuska mcp` over stdio, which serves the same
-  definitions.
+- **Codex** and **openai** agents connect to `kuska mcp` over stdio, which
+  serves the same definitions.
 - **Anything else** can point a generic MCP client at that same command.
+
+Each agent gets its flavor's set (planners also curate tags); a client that
+is not in `config.toml` is an operator and gets all of them. The tools, who
+gets which and the workflows they support are in
+[docs/MCP_TOOLS.md](docs/MCP_TOOLS.md).
 
 ## Configuration
 
@@ -231,6 +235,9 @@ backend = "claude"          # 'claude' | 'codex'
 model = "claude-opus-5"
 role = "Implements features and fixes bugs"
 worktree = true             # run tasks in per-task git worktrees; requires git repo
+max_turns = 80              # per-run limits - hitting one blocks the task
+max_budget_usd = 5.0        #   (blank = none; timeout defaults to 60)
+timeout_minutes = 45
 
 [agents.codex-1]
 backend = "codex"
@@ -242,15 +249,15 @@ price_out_per_mtok = 10.0
 codex_bin = "/usr/local/bin/codex"   # only needed for the PyInstaller build
 ```
 
-`permission_mode` (claude) and `sandbox` (codex) are passed through to the
-SDKs. Adding another option means one entry in `AGENT_FIELDS` in
+`permission_mode` (claude) is passed through to the SDK. `sandbox` applies to
+both claude and codex and is on by default (see below). Adding another option means one entry in `AGENT_FIELDS` in
 `project.py` - the form, validation and the daemon read it from there.
 
 Destructive shell commands are refused by `src/kuska/guardrails.py` before they run, regardless of `permission_mode`: `rm -rf`, `git reset --hard`, `git push --force`, `git clean -fd`, `git branch -D`, `sudo`, downloads piped into a shell, `chmod 777`, writes outside the project, anything aimed at `.agents/project.db`, and anything aimed at `.agents/worktrees`. Adding a rule is one dict in the `RULES` table.
 
-This enforcement catches mistakes, not a determined agent — `sh -c "rm -rf build"`, `find -delete`, and `python -c "shutil.rmtree(...)"` all pass through.
+This enforcement catches mistakes, not a determined agent — `sh -c "rm -rf build"`, `find -delete`, and `python -c "shutil.rmtree(...)"` all pass through. The guardrails are wired into the Claude daemon's `PreToolUse` hook only; codex has no per-tool callback, and the openai backend has no shell.
 
-The guardrails are wired into the Claude daemon's `PreToolUse` hook. The codex backend has no per-tool callback and the openai backend has no permission concept, so `guardrails.py` is written to be callable from them but does not yet protect them. `dev-agent` is currently a codex agent, so the guardrails do not yet protect its shell commands.
+The boundary is the sandbox. Unless an agent sets `sandbox = "full-access"`, its shell commands can only write inside the task's working directory (its worktree, or the project): bubblewrap on Linux (needs `bwrap` and `socat`), Seatbelt on macOS, and codex's own `workspace-write` mode. The model cannot ask its way out of it. `git` runs outside the claude sandbox, because a worktree commits into the main checkout's `.git`. Commands that need to write elsewhere - a package manager's cache, say - fail under the sandbox; set `full-access` for an agent that genuinely needs them.
 
 ## Building a binary
 
@@ -278,6 +285,6 @@ token.
 Done: core functions, `init`/`export`, both web pages, the Claude daemon, the
 `mcp` subcommand and the Codex daemon, and the multi-project registry.
 
-Not built: the OpenAI / open-weight adapter (step 7) - a generic MCP client
-wired into a custom tool-calling loop. It needs no new state code, only a new
-module under `daemons/` exposing `run_daemon()`.
+The OpenAI / open-weight adapter (step 7) is built and tested against a stubbed
+client and the real MCP server, but not yet against a live API. A new backend
+is one module under `daemons/` exposing `make_runner()`; the loop is shared.

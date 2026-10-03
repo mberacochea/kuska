@@ -18,7 +18,8 @@ from .models import init_db as _init_db
 HUMAN = "human"
 
 # 'todo' is a waiting list nothing runs from; a human (or a requeue/reply)
-# moves a task to 'ready', and agents claim only 'ready' tasks.
+# moves a task to 'ready', and agents claim only 'ready' tasks. Answer tasks -
+# one agent's question to another (store.ask_agent) - start out 'ready'.
 # 'needs_approval' and 'ready_to_merge' are holds: the task does not run, and
 # neither does anything depending on it, until a human approves/merges it or
 # sends it back. 'needs_approval' is for agent decisions; 'ready_to_merge' means

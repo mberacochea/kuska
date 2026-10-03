@@ -7,7 +7,9 @@ spending a token.
 """
 
 import asyncio
+import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import multiprocessing
@@ -17,9 +19,22 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import git
+import openai
+from claude_agent_sdk import AssistantMessage, ResultMessage, ToolUseBlock
+from openai_codex import Sandbox
+from openai_codex.models import (
+    ItemCompletedNotification,
+    ThreadTokenUsageUpdatedNotification,
+    TurnCompletedNotification,
+)
+
 import kuska as core
+from kuska import runtime, worktree
+from kuska.daemons import BACKENDS, loop
 from kuska.daemons import claude as daemon_claude
 from kuska.daemons import codex as daemon_codex
+from kuska.daemons import openai as daemon_openai
+from kuska.daemons import run as run_backend
 
 
 def add_ready(conn, *args, **kw):
@@ -55,8 +70,6 @@ def check(label: str, cond: bool, detail: str = "") -> None:
 
 
 def _claim_task_worker(db_path: str, agent_name: str, q) -> None:
-    import kuska as core
-
     conn = core.connect(db_path)
     try:
         q.put((agent_name, core.claim_task(conn, agent_name)))
@@ -225,7 +238,7 @@ def check_loop(project: Path) -> None:
     conn.close()
 
 
-def check_claim_guard(project: Path) -> None:
+def check_tool_guard(project: Path) -> None:
     db = core.connect(core.db_path(project))
     core.register_agent(db, "bench-agent", "codex", "benchmarks")
     for name in ("dev-agent", "bench-agent"):
@@ -253,6 +266,15 @@ def check_claim_guard(project: Path) -> None:
     check("editing it clears the record", asyncio.run(
         dedupe("Edit", {"file_path": "src/lexer.py"}, None)).behavior == "allow")
     check("so re-reading a changed file is allowed", asyncio.run(
+        dedupe("Read", {"file_path": "src/lexer.py"}, None)).behavior == "allow")
+    check("a Grep leaves the record alone", asyncio.run(
+        dedupe("Grep", {"pattern": "x"}, None)).behavior == "allow" and asyncio.run(
+        dedupe("Read", {"file_path": "src/lexer.py"}, None)).behavior == "deny")
+    asyncio.run(dedupe("Bash", {"command": "ruff format src"}, None))
+    check("a shell command may have changed it, so it can be read again", asyncio.run(
+        dedupe("Read", {"file_path": "src/lexer.py"}, None)).behavior == "allow")
+    asyncio.run(dedupe("Task", {"prompt": "refactor the lexer"}, None))
+    check("so may a subagent", asyncio.run(
         dedupe("Read", {"file_path": "src/lexer.py"}, None)).behavior == "allow")
 
     # a whole-file read subsumes every range; distinct ranges do not
@@ -326,8 +348,6 @@ def check_codex_wiring(project: Path) -> None:
     check("cache counts read from turn", daemon_codex.cache_of(cached) == (900, 120))
     check("missing cache counts are zero", daemon_codex.cache_of(None) == (0, 0))
 
-    from openai_codex import Sandbox
-
     preset = daemon_codex.sandbox_preset
     check("config string becomes a preset", preset("workspace-write") is Sandbox.workspace_write)
     check("underscores accepted", preset("read_only") is Sandbox.read_only)
@@ -344,8 +364,6 @@ def check_codex_wiring(project: Path) -> None:
 
 def check_openai_wiring(project: Path) -> None:
     print("openai daemon wiring")
-    from kuska.daemons import openai as daemon_openai
-
     cfg = core.load_config(project)["agents"]["openai-1"]
     check("backend registered", cfg["backend"] == "openai")
     check("has api_key", cfg.get("api_key") == "sk-test")
@@ -354,6 +372,32 @@ def check_openai_wiring(project: Path) -> None:
     cmd = daemon_openai.mcp_command()
     check("mcp_command returns a list", isinstance(cmd, list))
     check("mcp_command includes python", cmd[0] == sys.executable or "python" in cmd[0])
+
+    # the real run_agent against the real `kuska mcp` subprocess; only the
+    # OpenAI client is faked
+    conn = core.connect(core.db_path(project))
+    core.send_message(conn, core.HUMAN, "openai-1", None, "note", "hello over mcp")
+    conn.close()
+    replies = [
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+            content=None, tool_calls=[SimpleNamespace(id="c1", function=SimpleNamespace(name="get_inbox", arguments="{}"))],
+        ))], usage=None),
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="read it", tool_calls=None))], usage=None),
+    ]
+    sent = []
+
+    async def create(**kwargs):
+        sent.append(kwargs["messages"])
+        return replies.pop(0)
+
+    real_client = openai.AsyncOpenAI
+    openai.AsyncOpenAI = lambda **kw: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    mono = core.Monologue(core.connect(core.db_path(project)), "openai-1", None, quiet=True)
+    try:
+        text, _ = asyncio.run(daemon_openai.run_agent(project, "openai-1", cfg, "check your inbox", mono))
+    finally:
+        openai.AsyncOpenAI = real_client
+    check("run_agent talks to kuska mcp", text == "read it" and "hello over mcp" in sent[1][-1]["content"], sent[-1])
 
     print("codex item mapping")
     item = SimpleNamespace(type="agent_message", text="all done", phase=SimpleNamespace(value="final_answer"))
@@ -367,11 +411,9 @@ def check_openai_wiring(project: Path) -> None:
     check("unknown item still logged", daemon_codex.describe_item(unknown)[0] == "tool_use")
 
     print("backend dispatch")
-    from kuska.daemons import BACKENDS, run
-
     check("three backends registered", set(BACKENDS) == {"claude", "codex", "openai"}, BACKENDS)
     try:
-        run("llama-cpp", project, "openai-1")
+        run_backend("llama-cpp", project, "openai-1")
         check("unknown backend refused", False)
     except SystemExit as exc:
         check("unknown backend refused", "no daemon for backend" in str(exc))
@@ -765,6 +807,23 @@ def check_workflow_context(project: Path) -> None:
     check("custom-analyzer context appears in prompt", "Context from custom-analyzer" in prompt_with_custom)
     check("custom context content visible", "5 critical issues" in prompt_with_custom)
 
+    print("handover: every dependency, with the result as fallback")
+    api = add_ready(db, "Build the API", "", "dev-agent")
+    ui = add_ready(db, "Build the UI", "", "custom-analyzer")
+    ship = add_ready(db, "Ship it", "", "review-agent")
+    core.add_dependency(db, ship, api)
+    core.add_dependency(db, ship, ui)
+    core.update_task_status(db, api, "in_progress")
+    core.call_tool(db, "dev-agent", "reply", {
+        "task_id": api, "payload": "API done.", "handover": "## API\n\nRoutes live under /v2.",
+    })
+    core.reply(db, "custom-analyzer", ui, "UI done; the settings page still needs copy.")
+    prompt, _ = core.compose_task_prompt(db, "review-agent", core.get_task(db, ship))
+    check("reply's handover reaches the dependent", "Routes live under /v2." in prompt, prompt)
+    check("a dependency without a handover passes its result", "settings page still needs copy" in prompt, prompt)
+    check("each section names its task", f"(task {api}: Build the API)" in prompt and f"(task {ui}: Build the UI)" in prompt,
+          prompt)
+
     db.close()
 
 
@@ -825,9 +884,6 @@ def check_unread_messages_preserved_on_failure(project: Path) -> None:
 def check_worktree_agent(tmp: Path) -> None:
     """Test that worktree=true creates a worktree for the agent."""
     print("worktree agent")
-    import subprocess
-    from kuska import worktree
-
     project = tmp / "worktree-project"
     (project / ".agents" / "prompts").mkdir(parents=True)
 
@@ -878,8 +934,6 @@ def check_worktree_agent(tmp: Path) -> None:
 def check_non_worktree_agent(tmp: Path) -> None:
     """Test that worktree=false doesn't create a worktree."""
     print("non-worktree agent (cwd is project)")
-    from pathlib import Path
-
     project = tmp / "non-worktree-project"
     (project / ".agents" / "prompts").mkdir(parents=True)
 
@@ -916,13 +970,10 @@ def check_non_worktree_agent(tmp: Path) -> None:
 def check_worktree_ready_to_merge(tmp: Path) -> None:
     """Test that a worktree agent calling reply(status='done') gets coerced to ready_to_merge."""
     print("worktree task coerced from done to ready_to_merge")
-    from kuska import runtime
-
     project = tmp / "worktree-done-project"
     (project / ".agents" / "prompts").mkdir(parents=True)
 
     # Initialize a git repo
-    import subprocess
     subprocess.run(["git", "init"], cwd=project, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.name", "Test User"], cwd=project, check=True, capture_output=True)
@@ -943,13 +994,11 @@ def check_worktree_ready_to_merge(tmp: Path) -> None:
     core.sync_agents_from_config(conn, project)
     task_id = add_ready(conn, "Test task", "test description", "dev-agent")
 
-    # Simulate finish_task with worktree_branch set and no prior reply
-    # This should coerce "done" to "ready_to_merge"
+    # a worktree task (the daemon records its path before the run) finishing
+    # with no prior reply: "done" is held as "ready_to_merge"
+    core.update_task(conn, task_id, worktree_path=str(project / ".agents" / "worktrees" / f"task-{task_id}"))
     started = time.time()
-    runtime.finish_task(
-        conn, "dev-agent", task_id, "Task completed",
-        started, worktree_branch="kuska/1-test"
-    )
+    runtime.finish_task(conn, "dev-agent", task_id, "Task completed", started)
 
     # Check that the task status is ready_to_merge
     task = core.get_task(conn, task_id)
@@ -959,11 +1008,428 @@ def check_worktree_ready_to_merge(tmp: Path) -> None:
     conn.close()
 
 
+def check_worktree_reply_tool_done(tmp: Path) -> None:
+    """An agent calling the reply tool with status='done' itself must not skip review."""
+    print("worktree task: agent's own reply(status='done') lands in ready_to_merge")
+    project = tmp / "worktree-reply-tool-project"
+    (project / ".agents" / "prompts").mkdir(parents=True)
+    core.config_path(project).write_text(
+        '[agents.dev-agent]\nbackend = "claude"\nmodel = "claude-opus-5"\nrole = "builder"\n'
+    )
+    conn = core.connect(core.db_path(project))
+    core.init_db(conn)
+    core.sync_agents_from_config(conn, project)
+    task_id = add_ready(conn, "Test task", "test description", "dev-agent")
+    dependent = add_ready(conn, "Depends on it", "", "dev-agent")
+    core.add_dependency(conn, dependent, task_id)
+
+    started = time.time()
+    claimed = core.claim_task(conn, "dev-agent")
+    core.update_task(conn, task_id, worktree_path=str(project / ".agents" / "worktrees" / f"task-{task_id}"))
+
+    # mid-run: the agent closes the task through the tool
+    core.call_tool(conn, "dev-agent", "reply", {"task_id": task_id, "payload": "done", "status": "done"})
+    task = core.get_task(conn, task_id)
+    check("reply tool coerces to ready_to_merge", claimed["id"] == task_id and task["status"] == "ready_to_merge",
+          f"got {task['status']}")
+    check("dependent not claimable mid-run", core.claim_task(conn, "dev-agent") is None)
+
+    # end of run: finish_task finds the agent's reply and must not undo the hold
+    runtime.finish_task(conn, "dev-agent", task_id, "done", started)
+    task = core.get_task(conn, task_id)
+    check("still ready_to_merge after finish_task", task["status"] == "ready_to_merge",
+          f"got {task['status']}")
+    check("dependent still not claimable", core.claim_task(conn, "dev-agent") is None)
+
+    conn.close()
+
+
+def check_run_limits(tmp: Path) -> None:
+    print("run limits")
+    limits = core.run_limits({})
+    check("timeout defaults on, turns and budget off",
+          limits == {"max_turns": None, "max_budget_usd": None, "timeout_s": core.DEFAULT_TIMEOUT_MINUTES * 60}, limits)
+    limits = core.run_limits({"max_turns": 40.0, "max_budget_usd": "2.5", "timeout_minutes": 0})
+    check("config values parsed, zero timeout falls back",
+          limits == {"max_turns": 40, "max_budget_usd": 2.5, "timeout_s": core.DEFAULT_TIMEOUT_MINUTES * 60}, limits)
+
+    project = tmp / "limits-project"
+    (project / ".agents" / "prompts").mkdir(parents=True)
+    core.config_path(project).write_text(
+        '[agents.dev-agent]\nbackend = "claude"\nrole = "builder"\n'
+        "max_turns = 30\nmax_budget_usd = 1.5\ntimeout_minutes = 0.002\n"
+    )
+    conn = core.connect(core.db_path(project))
+    core.init_db(conn)
+    core.sync_agents_from_config(conn, project)
+    cfg = core.agent_config(project, "dev-agent")
+    options = daemon_claude.build_options(project, project, "dev-agent", cfg, [])
+    check("limits handed to the sdk", (options.max_turns, options.max_budget_usd) == (30, 1.5),
+          (options.max_turns, options.max_budget_usd))
+    check("bash sandboxed by default, with no way out",
+          options.sandbox["enabled"] and options.sandbox["allowUnsandboxedCommands"] is False, options.sandbox)
+    check("git runs outside it, for worktree commits", options.sandbox["excludedCommands"] == ["git"])
+    check("full-access turns it off", not daemon_claude.sandbox_settings({"sandbox": "full-access"})["enabled"])
+
+    def run(fake) -> int:
+        task_id = add_ready(conn, "Big task", "", "dev-agent")
+        real = daemon_claude.run_agent
+        daemon_claude.run_agent = fake
+        try:
+            daemon_claude.run_daemon(project, "dev-agent", poll_interval=0.02, max_tasks=1, quiet=True)
+        finally:
+            daemon_claude.run_agent = real
+        return task_id
+
+    # the sdk stopping a run at its limit: the real run_agent, fed a stubbed stream
+    async def stopped_stream(prompt, options):
+        yield ResultMessage(
+            subtype="error_max_budget_usd", duration_ms=10, duration_api_ms=10, is_error=True,
+            num_turns=12, session_id="s", total_cost_usd=1.62,
+            usage={"input_tokens": 900, "output_tokens": 300},
+        )
+
+    real_query = daemon_claude.query
+    daemon_claude.query = stopped_stream
+    try:
+        t1 = run(daemon_claude.run_agent)
+    finally:
+        daemon_claude.query = real_query
+    check("budget stop blocks the task, not done", core.get_task(conn, t1)["status"] == "blocked",
+          core.get_task(conn, t1)["status"])
+    msgs = core.task_messages(conn, t1)
+    blocker = [m for m in msgs if m["msg_type"] == "blocker"]
+    check("blocker says which limit", blocker and "max_budget_usd" in blocker[0]["payload"], blocker)
+    check("its spend is on the ledger", blocker and blocker[0]["cost_usd"] == 1.62 and blocker[0]["input_tokens"] == 900,
+          blocker)
+    check("no result logged for a stopped run", not [m for m in msgs if m["msg_type"] == "result"], msgs)
+
+    async def hangs(prompt, options, mono):
+        await asyncio.sleep(5)
+        return "never", usage(1, 1)
+
+    started = time.time()
+    t2 = run(hangs)
+    check("hung run cut off at its timeout", time.time() - started < 3, time.time() - started)
+    check("timed-out task blocked", core.get_task(conn, t2)["status"] == "blocked")
+    blocker = [m for m in core.task_messages(conn, t2) if m["msg_type"] == "blocker"]
+    check("blocker says it timed out", blocker and "timed out" in blocker[0]["payload"], blocker)
+
+    async def works_then_hangs(prompt, options):
+        for i, (tok_in, tok_out) in enumerate([(1200, 80), (300, 40)]):
+            yield AssistantMessage(
+                content=[ToolUseBlock(id=f"t{i}", name="Grep", input={"pattern": "x"})], model="m",
+                message_id=f"msg{i}", usage={"input_tokens": tok_in, "output_tokens": tok_out,
+                                             "cache_read_input_tokens": 5000},
+            )
+        await asyncio.sleep(5)
+
+    daemon_claude.query = works_then_hangs
+    try:
+        t3 = run(daemon_claude.run_agent)
+    finally:
+        daemon_claude.query = real_query
+    blocker = [m for m in core.task_messages(conn, t3) if m["msg_type"] == "blocker"]
+    check("a timed-out run keeps the tokens it had used",
+          blocker and blocker[0]["input_tokens"] == 1500 and blocker[0]["output_tokens"] == 120
+          and blocker[0]["cache_read_tokens"] == 10000 and blocker[0]["tool_rounds"] == 2, blocker)
+    conn.close()
+
+
+def check_shared_loop_worktree(tmp: Path) -> None:
+    """The loop every backend shares, driven with a fake backend, in worktree mode."""
+    print("shared loop: worktree task, any backend")
+    project = tmp / "loop-worktree-project"
+    (project / ".agents" / "prompts").mkdir(parents=True)
+    for cmd in (["git", "init", "-b", "main"], ["git", "config", "user.email", "t@example.com"],
+                ["git", "config", "user.name", "T"]):
+        subprocess.run(cmd, cwd=project, check=True, capture_output=True)
+    (project / "README.md").write_text("# Test")
+    (project / ".gitignore").write_text(".agents/\n")
+    subprocess.run(["git", "add", "."], cwd=project, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=project, check=True, capture_output=True)
+    core.config_path(project).write_text(
+        '[agents.dev-agent]\nbackend = "openai"\nrole = "builder"\nworktree = true\n'
+    )
+    conn = core.connect(core.db_path(project))
+    core.init_db(conn)
+    core.sync_agents_from_config(conn, project)
+    task_id = add_ready(conn, "Write notes", "", "dev-agent")
+    seen = {}
+
+    def make_runner(db, project_, agent_name, cfg):
+        async def run(prompt, workdir, mono):
+            seen["workdir"] = workdir
+            (workdir / "notes.md").write_text("left uncommitted\n")
+            return "  Wrote notes.  ", {"input_tokens": 10, "output_tokens": 5, "cost_usd": 0.02}
+        return run
+
+    loop.run_daemon(project, "dev-agent", "fake", make_runner, poll_interval=0.02, max_tasks=1)
+
+    task = core.get_task(conn, task_id)
+    check("ran in the task's worktree", seen["workdir"] == Path(task["worktree_path"]) and seen["workdir"] != project,
+          seen)
+    check("held for review", task["status"] == "ready_to_merge", task["status"])
+    result = [m for m in core.task_messages(conn, task_id) if m["msg_type"] == "result"]
+    check("result trimmed and costed", result and result[0]["payload"] == "Wrote notes." and result[0]["cost_usd"] == 0.02,
+          result)
+    log = subprocess.run(["git", "log", "--format=%s", "-1"], cwd=seen["workdir"], capture_output=True, text=True,
+                         check=True).stdout
+    check("leftover changes committed on the branch", log.startswith(f"wip: task {task_id}"), log)
+    check("main checkout untouched", not (project / "notes.md").exists())
+
+    print("shared loop: failed run, failed worktree setup")
+
+    def make_failing_runner(db, project_, agent_name, cfg):
+        async def run(prompt, workdir, mono):
+            seen["workdir"] = workdir
+            (workdir / "half.md").write_text("half done\n")
+            raise RuntimeError("model unavailable")
+        return run
+
+    failing = add_ready(conn, "Half a job", "", "dev-agent")
+    loop.run_daemon(project, "dev-agent", "fake", make_failing_runner, poll_interval=0.02, max_tasks=1)
+    log = subprocess.run(["git", "log", "--format=%s", "-1"], cwd=seen["workdir"], capture_output=True, text=True,
+                         check=True).stdout
+    check("failed run's leftovers labelled as partial", "partial work from a failed run" in log, log)
+    check("failed run blocks its task", core.get_task(conn, failing)["status"] == "blocked")
+
+    def no_worktree(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    real_ensure = loop.worktree.ensure_worktree
+    loop.worktree.ensure_worktree = no_worktree
+    seen.clear()
+    try:
+        stuck = add_ready(conn, "Cannot isolate", "", "dev-agent")
+        loop.run_daemon(project, "dev-agent", "fake", make_runner, poll_interval=0.02, max_tasks=1)
+    finally:
+        loop.worktree.ensure_worktree = real_ensure
+    check("no fallback to the main checkout", "workdir" not in seen, seen)
+    check("task blocked instead", core.get_task(conn, stuck)["status"] == "blocked")
+    blocker = [m for m in core.task_messages(conn, stuck) if m["msg_type"] == "blocker"]
+    check("blocker explains it", blocker and "disk full" in blocker[0]["payload"], blocker)
+    conn.close()
+
+
+def check_question_round_trip(tmp: Path) -> None:
+    """An agent's question to an idle agent gets answered without a human."""
+    print("question to another agent: answered and resumed, no human")
+    project = tmp / "question-project"
+    (project / ".agents" / "prompts").mkdir(parents=True)
+    core.config_path(project).write_text(
+        '[agents.dev-agent]\nbackend = "claude"\nrole = "builder"\n'
+        '[agents.planning-agent]\nbackend = "claude"\nrole = "planner"\nflavor = "planner"\n'
+    )
+    conn = core.connect(core.db_path(project))
+    core.init_db(conn)
+    core.sync_agents_from_config(conn, project)
+    task_id = add_ready(conn, "Add storage", "", "dev-agent")
+    prompts: dict = {}
+    tools = core.toolset({"flavor": "dev"})
+
+    def runner(agent, act):
+        def make_runner(db, project_, agent_name, cfg):
+            async def run(prompt, workdir, mono):
+                prompts.setdefault(agent, []).append(prompt)
+                return act(db, prompt)
+            return run
+        loop.run_daemon(project, agent, "fake", make_runner, poll_interval=0.02, max_tasks=1)
+
+    def ask(db, prompt):
+        out = core.call_tool(db, "dev-agent", "send_message", {
+            "recipient": "planning-agent", "payload": "Which database should storage use?",
+            "msg_type": "question", "task_id": task_id,
+        }, tools)
+        prompts["answer_task"] = out.get("answer_task")
+        core.call_tool(db, "dev-agent", "reply", {"task_id": task_id, "payload": "Asked the planner.",
+                                                  "status": "blocked"}, tools)
+        return "Asked the planner.", {}
+
+    runner("dev-agent", ask)
+    answer_id = prompts["answer_task"]
+    check("the question became a task for the planner", answer_id is not None
+          and core.get_task(conn, answer_id)["assigned_to"] == "planning-agent"
+          and core.get_task(conn, answer_id)["status"] == "ready", answer_id)
+    check("the asking task waits on it instead of on a human", core.get_task(conn, task_id)["status"] == "ready"
+          and core.claim_task(conn, "dev-agent") is None)
+
+    def answer(db, prompt):
+        # the answering task cannot spawn questions of its own
+        out = core.call_tool(db, "planning-agent", "send_message", {
+            "recipient": "dev-agent", "payload": "Postgres or SQLite?", "msg_type": "question",
+            "task_id": answer_id,
+        }, core.toolset({"flavor": "planner"}))
+        prompts["counter_question"] = out
+        return "Use SQLite.", {}
+
+    runner("planning-agent", answer)
+    check("the planner saw the question", "Which database should storage use?" in prompts["planning-agent"][0])
+    check("an answer task cannot spawn another", "answer_task" not in prompts["counter_question"],
+          prompts["counter_question"])
+
+    runner("dev-agent", lambda db, prompt: ("Stored in SQLite.", {}))
+    check("the asking task resumed with the answer", "Use SQLite." in prompts["dev-agent"][1], prompts["dev-agent"][1])
+    check("and finished", core.get_task(conn, task_id)["status"] == "done")
+    conn.close()
+
+
+def check_codex_run() -> None:
+    print("codex turn: narration, limits, watchdog")
+    def item(**kw):
+        return SimpleNamespace(payload=ItemCompletedNotification.model_construct(item=SimpleNamespace(**kw)))
+
+    def tokens(tok_in, tok_out):
+        last = SimpleNamespace(input_tokens=tok_in, output_tokens=tok_out, cached_input_tokens=0)
+        return SimpleNamespace(payload=ThreadTokenUsageUpdatedNotification.model_construct(
+            token_usage=SimpleNamespace(last=last)))
+
+    def completed(status="completed"):
+        turn = SimpleNamespace(status=SimpleNamespace(value=status), error=None)
+        return SimpleNamespace(payload=TurnCompletedNotification.model_construct(turn=turn))
+
+    class Handle:
+        def __init__(self, events, hang=False):
+            self.events, self.hang, self.interrupted = events, hang, threading.Event()
+
+        def interrupt(self):
+            self.interrupted.set()
+
+        def stream(self):
+            yield from self.events
+            if self.hang:  # silent until interrupted, then the turn completes
+                self.interrupted.wait(5)
+                yield tokens(50, 5)
+                yield completed("interrupted")
+
+    def codex_for(handle):
+        thread = SimpleNamespace(turn=lambda prompt: handle)
+        return SimpleNamespace(thread_start=lambda **kw: thread)
+
+    class Mono:
+        def __init__(self):
+            self.events = []
+            self.spent = {}
+
+        def record(self, kind, body, label=None):
+            self.events.append((kind, label, body))
+
+    project = Path("/nonexistent")
+    real_read_prompt = core.read_prompt
+    core.read_prompt = lambda project_, agent: "prompt"
+    cfg = {"price_in_per_mtok": 1.0, "price_out_per_mtok": 10.0}
+    try:
+        handle = Handle([
+            item(type="command_execution", command="pytest -q"),
+            tokens(1000, 100),
+            item(type="agent_message", text="All green.", phase=SimpleNamespace(value="final_answer")),
+            completed(),
+        ])
+        text, used = daemon_codex.run_agent(codex_for(handle), project, project, "codex-1", cfg, "go", Mono())
+        check("final answer returned", text == "All green.", text)
+        check("usage in ledger terms, rounds counted",
+              used["input_tokens"] == 1000 and used["tool_rounds"] == 1
+              and used["cost_usd"] == (1000 * 1.0 + 100 * 10.0) / 1e6, used)
+
+        busy = Handle([item(type="command_execution", command=f"step {i}") for i in range(5)] + [completed()])
+        try:
+            daemon_codex.run_agent(codex_for(busy), project, project, "codex-1", {**cfg, "max_turns": 2}, "go", Mono())
+            check("turn limit interrupts the turn", False)
+        except core.RunAborted as exc:
+            check("turn limit interrupts the turn", busy.interrupted.is_set() and "max_turns" in str(exc)
+                  and exc.usage["tool_rounds"] == 2, (exc, exc.usage))
+
+        silent = Handle([item(type="command_execution", command="sleep 9999")], hang=True)
+        started = time.time()
+        try:
+            daemon_codex.run_agent(codex_for(silent), project, project, "codex-1",
+                                   {**cfg, "timeout_minutes": 0.002}, "go", Mono())
+            check("a silent turn is still timed out", False)
+        except core.RunAborted as exc:
+            check("a silent turn is still timed out", "timed out" in str(exc) and time.time() - started < 3, exc)
+            check("and its usage is kept", exc.usage["input_tokens"] == 50, exc.usage)
+    finally:
+        core.read_prompt = real_read_prompt
+
+
+def check_openai_converse() -> None:
+    print("openai tool-calling loop")
+    def call(id_, name, arguments):
+        return SimpleNamespace(id=id_, function=SimpleNamespace(name=name, arguments=arguments))
+
+    def response(content=None, calls=None, tok=(100, 10)):
+        message = SimpleNamespace(content=content, tool_calls=calls)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=message)],
+            usage=SimpleNamespace(prompt_tokens=tok[0], completion_tokens=tok[1]),
+        )
+
+    class Client:
+        def __init__(self, replies):
+            self.replies, self.requests = list(replies), []
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        async def create(self, **kwargs):
+            self.requests.append(json.loads(json.dumps(kwargs, default=str)))
+            return self.replies.pop(0)
+
+    class Session:
+        def __init__(self):
+            self.calls = []
+
+        async def list_tools(self):
+            tool = SimpleNamespace(name="get_inbox", description="inbox", input_schema={"type": "object"})
+            return SimpleNamespace(tools=[tool])
+
+        async def call_tool(self, name, args):
+            self.calls.append((name, args))
+            return SimpleNamespace(content=[SimpleNamespace(text="[]")], is_error=False)
+
+    class Mono:
+        def __init__(self):
+            self.events = []
+            self.spent = {}
+
+        def record(self, kind, body, label=None):
+            self.events.append((kind, label, body))
+
+        def tool_call(self, name, args):
+            self.record("tool_use", args, name)
+
+        def tool_result(self, name, result, is_error=False):
+            self.record("error" if is_error else "tool_result", result, name)
+
+    cfg = {"price_in_per_mtok": 1.0, "price_out_per_mtok": 10.0}
+    client = Client([response(calls=[call("c1", "get_inbox", "{}")]), response(content="All done.")])
+    session = Session()
+    text, used = asyncio.run(daemon_openai.converse(client, session, "m", "sys", "do it", cfg, Mono()))
+    check("final answer returned", text == "All done.", text)
+    check("tool ran over mcp", session.calls == [("get_inbox", {})], session.calls)
+    second = client.requests[1]["messages"]
+    check("assistant turn carries its tool_calls", second[2]["role"] == "assistant"
+          and second[2]["tool_calls"][0]["id"] == "c1", second[2])
+    check("tool answer uses role tool and the call id", second[3] == {"role": "tool", "tool_call_id": "c1", "content": "[]"},
+          second[3])
+    check("usage summed and priced", used == {"input_tokens": 200, "output_tokens": 20, "tool_rounds": 1,
+                                              "cost_usd": (200 * 1.0 + 20 * 10.0) / 1e6}, used)
+
+    looping = Client([response(calls=[call(f"c{i}", "get_inbox", "{}")]) for i in range(3)])
+    try:
+        asyncio.run(daemon_openai.converse(looping, Session(), "m", "sys", "go", {**cfg, "max_turns": 3}, Mono()))
+        check("turn limit stops the loop", False)
+    except core.RunAborted as exc:
+        check("turn limit stops the loop", "max_turns" in str(exc) and exc.usage["tool_rounds"] == 3, (exc, exc.usage))
+
+    mono = Mono()
+    bad = Client([response(calls=[call("c1", "get_inbox", "{not json")]), response(content="ok")])
+    text, _ = asyncio.run(daemon_openai.converse(bad, Session(), "m", "sys", "go", cfg, mono))
+    answer = bad.requests[1]["messages"][3]
+    check("malformed arguments answered, not raised", text == "ok" and answer["content"].startswith("error:"), answer)
+
+
 def check_non_worktree_done(tmp: Path) -> None:
     """Test that a non-worktree agent calling reply(status='done') stays done."""
     print("non-worktree task stays done")
-    from kuska import runtime
-
     project = tmp / "non-worktree-done-project"
     (project / ".agents" / "prompts").mkdir(parents=True)
 
@@ -978,13 +1444,9 @@ def check_non_worktree_done(tmp: Path) -> None:
     core.sync_agents_from_config(conn, project)
     task_id = add_ready(conn, "Test task", "test description", "dev-agent")
 
-    # Simulate finish_task without worktree_branch
-    # This should result in "done"
+    # no worktree_path on the task: "done" stays "done"
     started = time.time()
-    runtime.finish_task(
-        conn, "dev-agent", task_id, "Task completed",
-        started, worktree_branch=None
-    )
+    runtime.finish_task(conn, "dev-agent", task_id, "Task completed", started)
 
     # Check that the task status is done
     task = core.get_task(conn, task_id)
@@ -997,8 +1459,6 @@ def check_non_worktree_done(tmp: Path) -> None:
 def check_worktree_blocked_stays_blocked(tmp: Path) -> None:
     """Test that a worktree agent replying 'blocked' stays blocked (not coerced to ready_to_merge)."""
     print("worktree blocked task stays blocked")
-    from kuska import runtime
-
     project = tmp / "worktree-blocked-project"
     (project / ".agents" / "prompts").mkdir(parents=True)
 
@@ -1016,13 +1476,10 @@ def check_worktree_blocked_stays_blocked(tmp: Path) -> None:
     # Set the task to blocked first (simulating an agent that called reply(status="blocked"))
     core.update_task_status(conn, task_id, "blocked")
 
-    # Simulate finish_task with worktree_branch set but task already blocked
-    # The status should stay blocked (coercion only happens for "done")
+    # a worktree task the agent already blocked: the hold is only for "done"
+    core.update_task(conn, task_id, worktree_path=str(project / ".agents" / "worktrees" / f"task-{task_id}"))
     started = time.time()
-    runtime.finish_task(
-        conn, "dev-agent", task_id, "Task blocked",
-        started, worktree_branch="kuska/1-test"
-    )
+    runtime.finish_task(conn, "dev-agent", task_id, "Task blocked", started)
 
     # Check that the task status is still blocked
     task = core.get_task(conn, task_id)
@@ -1038,7 +1495,7 @@ def main() -> None:
         project = make_project(tmp)
         check_tools_in_process(project)
         check_loop(project)
-        check_claim_guard(project)
+        check_tool_guard(project)
         check_codex_wiring(project)
         check_openai_wiring(project)
 
@@ -1058,6 +1515,12 @@ def main() -> None:
 
         # Worktree ready_to_merge tests (task 30)
         check_worktree_ready_to_merge(tmp)
+        check_worktree_reply_tool_done(tmp)
+        check_run_limits(tmp)
+        check_shared_loop_worktree(tmp)
+        check_question_round_trip(tmp)
+        check_codex_run()
+        check_openai_converse()
         check_non_worktree_done(tmp)
         check_worktree_blocked_stays_blocked(tmp)
     finally:

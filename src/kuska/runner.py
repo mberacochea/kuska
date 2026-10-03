@@ -11,11 +11,14 @@ import signal
 import sys
 import threading
 import time
+import tomllib
 from pathlib import Path
 
 from .daemons import run as run_daemon
 from .db import connect, init_db
+from .mcp_server import run_mcp
 from .project import agent_config, config_path, db_path, find_project
+from .web import create_app
 
 
 def run_all(
@@ -42,8 +45,6 @@ def run_all(
     cfg_path = config_path(project)
     if not cfg_path.exists():
         raise SystemExit(f"No config.toml found at {cfg_path}")
-
-    import tomllib
 
     with open(cfg_path, "rb") as f:
         config = tomllib.load(f)
@@ -88,8 +89,6 @@ def run_all(
     def run_web_server():
         """Run the Flask web server."""
         try:
-            from .web import create_app
-
             print(f"[web] Starting on http://{host}:{port}")
             app = create_app(project)
             # Run without debug/reload to avoid subprocess issues
@@ -105,8 +104,6 @@ def run_all(
     def run_mcp_server():
         """Run the MCP stdio server."""
         try:
-            from .mcp_server import run_mcp
-
             print("[mcp] Starting MCP server")
             run_mcp(project, "coordinator", Path(db_path(project)))
         except Exception as e:

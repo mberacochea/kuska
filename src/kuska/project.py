@@ -123,7 +123,8 @@ AGENT_FIELDS = [
         "label": "Sandbox",
         "type": "choice",
         "choices": ["", "read-only", "workspace-write", "full-access"],
-        "help": "codex only",
+        "help": "claude/codex - blank means workspace-write: shell commands can only write inside the task's "
+                "workdir. full-access turns the sandbox off (claude treats read-only as workspace-write)",
     },
     {
         "key": "codex_bin",
@@ -150,6 +151,24 @@ AGENT_FIELDS = [
         "help": "codex/openai - price tokens when the model doesn't report cost",
     },
     {"key": "price_out_per_mtok", "label": "Output $/Mtok", "type": "number", "help": ""},
+    {
+        "key": "max_turns",
+        "label": "Max turns",
+        "type": "integer",
+        "help": "per run; blank means no limit (openai keeps a cap of 20). The task is blocked when hit",
+    },
+    {
+        "key": "max_budget_usd",
+        "label": "Max $ per run",
+        "type": "number",
+        "help": "blank means no limit; codex/openai need prices set to enforce it",
+    },
+    {
+        "key": "timeout_minutes",
+        "label": "Timeout (min)",
+        "type": "number",
+        "help": "wall-clock limit per run; blank means 60",
+    },
     {
         "key": "worktree",
         "label": "Own worktree",
@@ -235,6 +254,8 @@ def set_agent_config(project_dir: str | os.PathLike, agent_name: str, values: di
             table.pop(key, None)
         elif field["type"] == "number":
             table[key] = float(raw)
+        elif field["type"] == "integer":
+            table[key] = int(float(raw))
         else:
             table[key] = raw
     table.setdefault("backend", "claude")

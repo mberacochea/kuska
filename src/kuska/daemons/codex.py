@@ -1,8 +1,6 @@
-"""One Codex-backed agent's daemon.
+"""The Codex backend: one fresh thread per task, run by loop.py.
 
-    kuska daemon <agent-name>
-
-Same shape as the Claude daemon, with the SDK call swapped. Codex has no
+Codex has no
 in-process Python tool registration, so it reaches kuska the other way its
 CLI supports: an external stdio MCP server, which is `kuska mcp` serving
 the same TOOL_SPECS the Claude daemon registers in-process.
@@ -12,14 +10,19 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 from pathlib import Path
+
+from openai_codex import Codex, CodexConfig, Sandbox
+from openai_codex.models import (
+    ItemCompletedNotification,
+    ThreadTokenUsageUpdatedNotification,
+    TurnCompletedNotification,
+)
 
 import kuska as core
 
-
-def log(line: str, error: bool = False) -> None:
-    """Daemons usually run under nohup or systemd, so never buffer their log."""
-    print(line, file=sys.stderr if error else sys.stdout, flush=True)
+from . import loop
 
 
 def mcp_command() -> list[str]:
@@ -51,8 +54,6 @@ def sandbox_preset(value):
     Underscores and the wire spelling "danger-full-access" are accepted too,
     since both show up in hand-written configs.
     """
-    from openai_codex import Sandbox
-
     if value is None or isinstance(value, Sandbox):
         return value
     name = str(value).strip().replace("_", "-")
@@ -94,47 +95,88 @@ def describe_item(item) -> tuple[str, str, str]:
 def run_agent(codex, project: Path, workdir: Path, agent_name: str, cfg: dict, prompt: str, mono):
     """One fresh thread per task, narrated as the turn streams back.
 
-    Returns (text, usage). Nothing carries over between invocations.
+    Returns (text, usage) with usage in the ledger's terms (see totals_of).
+    Nothing carries over between invocations.
 
     `project` is the database location; `workdir` is where the agent runs
     (the worktree for worktree agents, the project root otherwise).
     """
-    from openai_codex.models import (
-        ItemCompletedNotification,
-        ThreadTokenUsageUpdatedNotification,
-        TurnCompletedNotification,
-    )
-
     thread = codex.thread_start(
         cwd=str(workdir),
         model=cfg.get("model"),
         config=mcp_config(project, agent_name),
         developer_instructions=core.read_prompt(project, agent_name),
-        sandbox=sandbox_preset(cfg.get("sandbox")),
+        # workspace-write unless config says otherwise: the shell's writes
+        # stay inside the workdir, the same default the claude backend uses
+        sandbox=sandbox_preset(cfg.get("sandbox") or "workspace-write"),
     )
     handle = thread.turn(prompt)
-    usage, turn, final_text, last_text = None, None, None, None
+    limits = core.run_limits(cfg)
+    state = {"usage": None, "rounds": 0}
 
+    # the timeout runs on its own thread, so even a turn that has gone silent
+    # is stopped. The client serialises its requests, so interrupting from
+    # here is safe, and the interrupted turn still completes with its usage.
+    timed_out = threading.Event()
+
+    def on_timeout():
+        timed_out.set()
+        try:
+            handle.interrupt()
+        except Exception:  # the turn finished just as the timer fired
+            pass
+
+    watchdog = threading.Timer(limits["timeout_s"], on_timeout)
+    watchdog.daemon = True
+    watchdog.start()
+    try:
+        turn, text = stream_turn(handle, cfg, limits, mono, state)
+    finally:
+        watchdog.cancel()
+
+    usage = totals_of(state["usage"], cfg, state["rounds"])
+    if timed_out.is_set():
+        raise core.RunAborted(f"timed out after {limits['timeout_s'] / 60:g} minutes", usage)
+    status = getattr(getattr(turn, "status", None), "value", None)
+    if status == "failed":
+        error = getattr(turn, "error", None)
+        raise core.RunAborted(getattr(error, "message", None) or "codex turn failed", usage)
+    return text or "(no output)", usage
+
+
+def stream_turn(handle, cfg: dict, limits: dict, mono, state: dict):
+    """Narrate one turn's events until it completes; (turn, final text).
+
+    Keeps the running usage and tool-call count in `state`, and stops the
+    turn - raising RunAborted - once it reaches its turn or budget limit."""
+    turn, final_text, last_text = None, None, None
     for event in handle.stream():
         payload = event.payload
         if isinstance(payload, ItemCompletedNotification):
             kind, label, body = describe_item(payload.item)
             mono.record(kind, body, label=None if kind in ("text", "thinking") else label)
+            if kind == "tool_use":
+                state["rounds"] += 1
             if kind == "text":
                 last_text = body
                 phase = getattr(getattr(payload.item, "root", payload.item), "phase", None)
                 if getattr(phase, "value", phase) == "final_answer":
                     final_text = body
         elif isinstance(payload, ThreadTokenUsageUpdatedNotification):
-            usage = payload.token_usage
+            state["usage"] = payload.token_usage
         elif isinstance(payload, TurnCompletedNotification):
             turn = payload.turn
-
-    status = getattr(getattr(turn, "status", None), "value", None)
-    if status == "failed":
-        error = getattr(turn, "error", None)
-        raise RuntimeError(getattr(error, "message", None) or "codex turn failed")
-    return (final_text or last_text or "(no output)"), usage
+        if turn is not None:  # finished: trailing events only carry usage
+            continue
+        reason = None
+        if limits["max_turns"] and state["rounds"] >= limits["max_turns"]:
+            reason = "hit its max_turns limit"
+        elif limits["max_budget_usd"] and usage_of(state["usage"], cfg)[2] >= limits["max_budget_usd"]:
+            reason = "hit its max_budget_usd limit"
+        if reason:
+            handle.interrupt()
+            raise core.RunAborted(reason, totals_of(state["usage"], cfg, state["rounds"]))
+    return turn, final_text or last_text
 
 
 def usage_of(usage, cfg: dict) -> tuple[int, int, float]:
@@ -158,6 +200,32 @@ def cache_of(usage) -> tuple[int, int]:
     return read, written
 
 
+def totals_of(usage, cfg: dict, rounds: int = 0) -> dict:
+    """The turn's usage as the ledger's keyword arguments."""
+    tok_in, tok_out, cost = usage_of(usage, cfg)
+    cache_read, cache_write = cache_of(usage)
+    return {
+        "input_tokens": tok_in, "output_tokens": tok_out, "cost_usd": cost,
+        "cache_read_tokens": cache_read, "cache_write_tokens": cache_write, "tool_rounds": rounds,
+    }
+
+
+def make_runner(db, project: Path, agent_name: str, cfg: dict):
+    """One fresh codex thread per task, in that task's workdir.
+
+    Codex's SDK is synchronous, so the run blocks the daemon's event loop and
+    the loop's own timeout cannot preempt it; run_agent enforces the limits
+    itself as events stream in."""
+    async def run(prompt: str, workdir: Path, mono) -> tuple[str, dict]:
+        codex = Codex(CodexConfig(cwd=str(workdir), codex_bin=cfg.get("codex_bin")))
+        try:
+            return run_agent(codex, project, workdir, agent_name, cfg, prompt, mono)
+        finally:
+            codex.close()
+
+    return run
+
+
 def run_daemon(
     project: Path,
     agent_name: str,
@@ -165,112 +233,4 @@ def run_daemon(
     max_tasks: int | None = None,
     quiet: bool = False,
 ) -> None:
-    from openai_codex import Codex, CodexConfig
-
-    db = core.connect(core.db_path(project))
-    core.init_db(db)
-    core.sync_agents_from_config(db, project)
-    cfg = core.agent_config(project, agent_name)
-
-    import kuska.worktree as worktree
-
-    # Git preflight for worktree mode
-    if cfg.get("worktree"):
-        if not worktree.is_git_repo(project):
-            raise SystemExit(
-                f"[{agent_name}] worktree=true but {project} is not inside a git work tree. "
-                f"Run `git init && git commit` or turn worktree off in .agents/config.toml"
-            )
-        if not worktree.has_commits(project):
-            raise SystemExit(
-                f"[{agent_name}] worktree=true but {project} has no commits. "
-                f"Run `git init && git commit` or turn worktree off in .agents/config.toml"
-            )
-
-    log(f"[{agent_name}] codex daemon up on {project} (model={cfg.get('model') or 'default'})")
-    core.heartbeat(db, agent_name, "idle")
-    handled = 0
-    try:
-        while max_tasks is None or handled < max_tasks:
-            task = core.wait_for_task(db, agent_name, poll_interval)
-            handled += 1
-            log(f"[{agent_name}] task {task['id']}: {task['title']}")
-            core.heartbeat(db, agent_name, "working", task["id"])
-            started = core.now()
-
-            # Create monologue early so worktree rebase failures can be narrated
-            mono = core.Monologue(db, agent_name, task["id"], quiet=quiet)
-
-            # Worktree setup
-            workdir_branch = None
-            if cfg.get("worktree"):
-                base = worktree.base_branch(project)
-                try:
-                    path, branch, created = worktree.ensure_worktree(project, task["id"], task["title"], base)
-                except RuntimeError as exc:
-                    mono.record("warning", str(exc), label="worktree setup failed - working directly in project")
-                    core.send_message(
-                        db, agent_name, core.HUMAN, task["id"], "note",
-                        f"could not set up a worktree for this task: {exc}. Working directly in the project checkout."
-                    )
-                    workdir = project
-                else:
-                    if not created:  # re-queued task: its base may be stale
-                        ok, detail = worktree.rebase_onto(path, base)
-                        if not ok:
-                            mono.record("warning", detail, label=f"rebase onto {base} failed - continuing on the old base")
-                            core.send_message(
-                                db, agent_name, core.HUMAN, task["id"], "note",
-                                f"branch {branch} could not be rebased onto {base}: {detail}. "
-                                f"Working from the old base; resolve by hand before merging."
-                            )
-                    core.update_task(db, task["id"], worktree_path=str(path))
-                    workdir = path
-                    workdir_branch = branch
-            else:
-                workdir = project
-
-            # Construct Codex per task so cwd is the worktree
-            codex = Codex(CodexConfig(cwd=str(workdir), codex_bin=cfg.get("codex_bin")))
-
-            prompt, inbox_message_ids = core.compose_task_prompt(db, agent_name, task)
-            mono.record("prompt", prompt)
-
-            try:
-                text, usage = run_agent(codex, project, workdir, agent_name, cfg, prompt, mono)
-                text = text.strip()
-                tok_in, tok_out, cost = usage_of(usage, cfg)
-                cache_read, cache_write = cache_of(usage)
-            except Exception as exc:
-                mono.record("error", f"run failed: {exc}")
-                core.send_message(db, agent_name, core.HUMAN, task["id"], "blocker", f"run failed: {exc}")
-                core.update_task_status(db, task["id"], "blocked")
-                log(f"[{agent_name}] task {task['id']} failed: {exc}", error=True)
-            else:
-                # keyword args: finish_task also takes a tool-round count,
-                # which this backend does not report
-                core.finish_task(
-                    db, agent_name, task["id"], text, started,
-                    input_tokens=tok_in, output_tokens=tok_out, cost_usd=cost,
-                    cache_read_tokens=cache_read, cache_write_tokens=cache_write,
-                    worktree_branch=workdir_branch,
-                )
-                # Mark inbox messages as read only after successful run
-                core.mark_messages_read(db, inbox_message_ids)
-                final = (core.get_task(db, task["id"]) or task)["status"]
-                # Record if status was coerced from done to ready_to_merge for worktree tasks
-                if final == "ready_to_merge" and workdir_branch is not None:
-                    mono.record("system", workdir_branch, label="ready to merge")
-                mono.record("result", text, label=f"{final} - ${cost:.4f}, {tok_in}/{tok_out} tok")
-                log(f"[{agent_name}] task {task['id']} {final} (${cost:.4f}, {tok_in}/{tok_out} tok)")
-            finally:
-                # Commit any uncommitted changes before finishing
-                if cfg.get("worktree") and workdir != project:
-                    worktree.commit_all(workdir, f"wip: task {task['id']} uncommitted changes")
-                # Close the codex instance for this task
-                codex.close()
-
-            core.heartbeat(db, agent_name, "idle")
-    finally:
-        core.heartbeat(db, agent_name, "offline")
-        db.close()
+    loop.run_daemon(project, agent_name, "codex", make_runner, poll_interval, max_tasks, quiet)

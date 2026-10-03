@@ -14,6 +14,11 @@ from __future__ import annotations
 import os
 import time
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - POSIX only
+    fcntl = None
+
 from peewee import (
     AutoField,
     CharField,
@@ -137,11 +142,50 @@ class Event(Base):
 
 MODELS = [Agent, Task, TaskDep, Message, Doc, Event]
 
+# per connection. WAL is not among them: it is a property of the file, set
+# once by connect() - see _ensure_wal
 PRAGMAS = {
-    "journal_mode": "wal",
-    "foreign_keys": 1,
     "busy_timeout": 10000,
+    "foreign_keys": 1,
 }
+
+
+class FileLock:
+    """An exclusive cross-process lock on a sidecar file (POSIX flock).
+
+    For the few moments that must not overlap between processes opening the
+    same database - switching it to WAL, running migrations - and nothing
+    else: ordinary writes are serialised by SQLite itself."""
+
+    def __init__(self, path: str):
+        self._path = path if path and ":memory:" not in path else ""
+        self._fd = None
+
+    def __enter__(self):
+        if fcntl is None or not self._path:
+            return self
+        self._fd = os.open(self._path, os.O_CREAT | os.O_RDWR, 0o644)
+        fcntl.flock(self._fd, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc_info):
+        if self._fd is not None:
+            fcntl.flock(self._fd, fcntl.LOCK_UN)
+            os.close(self._fd)
+            self._fd = None
+
+
+def _ensure_wal(database: SqliteDatabase, db_path: str) -> None:
+    """Switch the file to WAL once, under a lock.
+
+    The switch needs an exclusive lock, and SQLite does not wait for that one
+    - busy_timeout or not, it answers "database is locked" at once to avoid a
+    deadlock. So processes starting together (run-all) take turns; the mode
+    sticks to the file, and everyone after the first finds it already set."""
+    if database.execute_sql("PRAGMA journal_mode").fetchone()[0] == "wal":
+        return
+    with FileLock(f"{db_path}.init.lock"):
+        database.execute_sql("PRAGMA journal_mode=wal")
 
 
 
@@ -157,6 +201,7 @@ def connect(db_path: str | os.PathLike) -> SqliteDatabase:
     """
     database = SqliteDatabase(str(db_path), pragmas=PRAGMAS, check_same_thread=False)
     database.connect(reuse_if_open=True)
+    _ensure_wal(database, str(db_path))
     return database
 
 

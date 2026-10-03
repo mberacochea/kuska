@@ -533,8 +533,8 @@ def check_tool(tool_name: str, tool_input: dict, project=None) -> dict:
     Only ``Bash`` carries a shell command for `check_command` to parse.
     Every other tool kuska's daemons expose is either the in-process
     `mcp__kuska__*` server (pre-approved - nothing to parse) or a structured
-    file edit that `claim_guard`'s claim/read logic already governs; there
-    is nothing for this module to add there today.
+    file edit, whose reach the sandbox and the claude daemon's tool_guard
+    already govern; there is nothing for this module to add there today.
     """
     if tool_name == "Bash":
         return check_command((tool_input or {}).get("command", ""), project)
@@ -544,7 +544,7 @@ def check_tool(tool_name: str, tool_input: dict, project=None) -> dict:
 def refusal_text(verdict: dict) -> str:
     """Compose the message an agent sees when a command is refused.
 
-    Same voice as claim_guard's two deny messages: say what was refused,
+    Same voice as tool_guard's redundant-read refusal: say what was refused,
     say why, and name the one acceptable next move - reply ``needs_approval``
     if the command is genuinely necessary, or stop and try something else.
     Deliberately does not suggest a rephrasing, because the fastest way to

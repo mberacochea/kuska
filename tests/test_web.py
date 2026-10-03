@@ -2,9 +2,14 @@
 """Web UI + MCP server checks: `uv run tests/test_web.py`."""
 
 import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+import anyio
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
 import kuska as ac
 
@@ -251,6 +256,11 @@ def test_web(project: Path) -> None:
 
     c.post("/agents/bench-1", data={"backend": "codex", "price_in_per_mtok": "1.25", "price_out_per_mtok": "10"})
     check("prices stored as numbers", ac.load_config(project)["agents"]["bench-1"]["price_in_per_mtok"] == 1.25)
+    c.post("/agents/bench-1", data={"backend": "codex", "max_turns": "40", "max_budget_usd": "2"})
+    saved = ac.load_config(project)["agents"]["bench-1"]
+    check("turn limit stored as an integer", saved["max_turns"] == 40 and isinstance(saved["max_turns"], int), saved)
+    check("budget stored as a number", saved["max_budget_usd"] == 2.0, saved)
+    check("written as 40, not 40.0", "max_turns = 40\n" in ac.config_path(project).read_text())
     bad_price = c.post("/agents/bench-1", data={"price_in_per_mtok": "cheap"})
     check("bad price refused", bad_price.status_code == 422)
     check("bad price explained", "price_in_per_mtok must be a valid number" in bad_price.get_data(as_text=True))
@@ -426,7 +436,6 @@ def test_web(project: Path) -> None:
 
     print("merge queue")
     # Initialize git in the project so we can test worktree functionality
-    import subprocess
     subprocess.run(["git", "init"], cwd=project, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.name", "Test User"], cwd=project, check=True, capture_output=True)
@@ -686,9 +695,6 @@ def test_board(project: Path) -> None:
 
 
 def test_mcp(project: Path) -> None:
-    import anyio
-    from mcp import ClientSession, StdioServerParameters
-    from mcp.client.stdio import stdio_client
 
     print("mcp stdio server")
     params = StdioServerParameters(
@@ -702,7 +708,7 @@ def test_mcp(project: Path) -> None:
                 await session.initialize()
                 tools = await session.list_tools()
                 names = [t.name for t in tools.tools]
-                check("tools advertised", names == [s["name"] for s in ac.TOOL_SPECS], names)
+                check("a configured agent gets its flavor's tools", names == list(ac.tools.BASE_TOOLS), names)
                 schema = next(t for t in tools.tools if t.name == "send_message").input_schema
                 check("schema has required args", schema["required"] == ["recipient", "payload"])
 
@@ -720,17 +726,35 @@ def test_mcp(project: Path) -> None:
                 check("claim_task tool removed", claim_task_tool is None, f"Tool still exists: {claim_task_tool}")
                 check("task remains todo", ac.get_task(conn, 1)["status"] == "todo")
 
-                # Verify reply schema no longer has cost fields
+                # cost is the daemon's to record, from the backend's own figures
                 reply_schema = next(t for t in tools.tools if t.name == "reply").input_schema
-                # cost/token fields are optional on purpose: the daemon overwrites
-                # them with the backend's figures when the run ends (see runtime.py)
                 reply_props = reply_schema.get("properties", {})
-                check("reply cost/token fields are optional",
-                      all(k in reply_props and k not in reply_schema["required"]
-                          for k in ["cost_usd", "input_tokens", "output_tokens"]))
+                check("reply takes no cost/token fields",
+                      not any(k in reply_props for k in ["cost_usd", "input_tokens", "output_tokens"]),
+                      reply_props)
+                check("reply statuses limited", reply_props["status"]["enum"] == ["done", "blocked", "needs_approval"])
+
+                res = await session.call_tool("reply", {"task_id": 1, "payload": "done"})
+                check("reply refused on a task not in progress", res.is_error and ac.get_task(conn, 1)["status"] == "todo")
+
+                ac.update_task_status(conn, 1, "ready")
+                ac.claim_task(conn, "codex-1")
+                res = await session.call_tool("reply", {"task_id": 1, "payload": "done", "status": "ready"})
+                check("reply refuses a status outside done/blocked/needs_approval",
+                      res.is_error and ac.get_task(conn, 1)["status"] == "in_progress")
+
+                ac.register_agent(conn, "dev-agent", "claude")
+                other = ac.add_task(conn, "someone else's", "", "dev-agent")
+                ac.update_task_status(conn, other, "in_progress")
+                res = await session.call_tool("reply", {"task_id": other, "payload": "done"})
+                check("reply refused on another agent's task",
+                      res.is_error and ac.get_task(conn, other)["status"] == "in_progress")
 
                 await session.call_tool("reply", {"task_id": 1, "payload": "done"})
                 check("reply via mcp", ac.get_task(conn, 1)["status"] == "done")
+
+                res = await session.call_tool("reply", {"task_id": 1, "payload": "again"})
+                check("second reply refused", res.is_error and "already done" in res.content[0].text, res.content)
 
                 res = await session.call_tool("reply", {"payload": "missing task_id"})
                 check("bad args are an error result", res.is_error)

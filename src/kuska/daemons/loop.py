@@ -1,0 +1,164 @@
+"""The daemon loop every backend shares.
+
+    kuska daemon <agent-name>
+
+Poll for a task, set up where it runs, compose its prompt, run one fresh
+invocation, record the result and its cost, go back to polling. Nothing here
+knows which model is on the other end: a backend module supplies
+`make_runner(db, project, agent_name, cfg)`, which returns
+
+    async run(prompt, workdir, mono) -> (text, usage)
+
+where `usage` holds the ledger's keyword arguments (input_tokens,
+output_tokens, cache_read_tokens, cache_write_tokens, tool_rounds, cost_usd -
+any it does not report can be left out). A run that does not finish its task
+raises; `core.RunAborted` carries the usage it spent getting there.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import sys
+from pathlib import Path
+
+import kuska as core
+from kuska import worktree
+
+
+def log(line: str, error: bool = False) -> None:
+    """Daemons usually run under nohup or systemd, so never buffer their log."""
+    print(line, file=sys.stderr if error else sys.stdout, flush=True)
+
+
+def check_git(project: Path, agent_name: str) -> None:
+    """Refuse to start a worktree agent where worktrees cannot exist."""
+    if not worktree.is_git_repo(project):
+        problem = f"{project} is not inside a git work tree"
+    elif not worktree.has_commits(project):
+        problem = f"{project} has no commits"
+    else:
+        return
+    raise SystemExit(
+        f"[{agent_name}] worktree=true but {problem}. "
+        f"Run `git init && git commit` or turn worktree off in .agents/config.toml"
+    )
+
+
+def prepare_workdir(db, project: Path, agent_name: str, task: dict, mono) -> tuple[Path, str]:
+    """This task's own worktree, as (path, branch).
+
+    A worktree that cannot be set up fails the task rather than falling back
+    to the project checkout: agents running side by side in one checkout
+    overwrite each other's work, which is what worktrees are there to stop."""
+    base = worktree.base_branch(project)
+    try:
+        path, branch, created = worktree.ensure_worktree(project, task["id"], task["title"], base)
+    except RuntimeError as exc:
+        raise core.RunAborted(f"could not set up a worktree for this task: {exc}") from None
+    if not created:  # re-queued task: its base may be stale
+        ok, detail = worktree.rebase_onto(path, base)
+        if not ok:
+            mono.record("warning", detail, label=f"rebase onto {base} failed - continuing on the old base")
+            core.send_message(
+                db, agent_name, core.HUMAN, task["id"], "note",
+                f"branch {branch} could not be rebased onto {base}: {detail}. "
+                f"Working from the old base; resolve by hand before merging."
+            )
+    # set before the run: reply() reads it to hold the task for review
+    core.update_task(db, task["id"], worktree_path=str(path))
+    return path, branch
+
+
+async def serve(
+    project: Path,
+    agent_name: str,
+    backend: str,
+    make_runner,
+    poll_interval: float = 2.0,
+    max_tasks: int | None = None,
+    quiet: bool = False,
+) -> None:
+    db = core.connect(core.db_path(project))
+    core.init_db(db)
+    core.sync_agents_from_config(db, project)
+    cfg = core.agent_config(project, agent_name)
+    limits = core.run_limits(cfg)
+    if cfg.get("worktree"):
+        check_git(project, agent_name)
+    run = make_runner(db, project, agent_name, cfg)
+
+    log(f"[{agent_name}] {backend} daemon up on {project} (model={cfg.get('model') or 'default'})")
+    core.heartbeat(db, agent_name, "idle")
+    handled = 0
+    try:
+        while max_tasks is None or handled < max_tasks:
+            task = core.wait_for_task(db, agent_name, poll_interval)
+            handled += 1
+            log(f"[{agent_name}] task {task['id']}: {task['title']}")
+            core.heartbeat(db, agent_name, "working", task["id"])
+            started = core.now()
+            mono = core.Monologue(db, agent_name, task["id"], quiet=quiet)
+
+            workdir, branch, finished = project, None, False
+            try:
+                # an answer is a message, not code: it needs no branch to review
+                if cfg.get("worktree") and not core.is_answer_task(task):
+                    workdir, branch = prepare_workdir(db, project, agent_name, task, mono)
+                prompt, inbox_message_ids = core.compose_task_prompt(db, agent_name, task)
+                mono.record("prompt", prompt)
+                try:
+                    text, usage = await asyncio.wait_for(run(prompt, workdir, mono), limits["timeout_s"])
+                except TimeoutError:
+                    # cancelled mid-stream: the run's final usage never came,
+                    # so record what the backend had reported so far
+                    raise core.RunAborted(
+                        f"timed out after {limits['timeout_s'] / 60:g} minutes", dict(mono.spent)
+                    ) from None
+            except Exception as exc:
+                mono.record("error", f"run failed: {exc}")
+                core.fail_task(db, agent_name, task["id"], str(exc), **getattr(exc, "usage", {}))
+                log(f"[{agent_name}] task {task['id']} failed: {exc}", error=True)
+            else:
+                finished = True
+                text = text.strip() or "(no output)"
+                core.finish_task(db, agent_name, task["id"], text, started, **usage)
+                # read only once a run has actually used them
+                core.mark_messages_read(db, inbox_message_ids)
+                final = (core.get_task(db, task["id"]) or task)["status"]
+                if final == "ready_to_merge" and branch is not None:
+                    mono.record("system", branch, label="ready to merge")
+                # cost and round count are the honest summary; token volume is
+                # dominated by cache reads at a tenth the price
+                summary = (
+                    f"${usage.get('cost_usd', 0.0):.4f}, {usage.get('tool_rounds', 0)} rounds, "
+                    f"{usage.get('input_tokens', 0)}+{usage.get('cache_read_tokens', 0)}c/"
+                    f"{usage.get('output_tokens', 0)} tok"
+                )
+                mono.record("result", text, label=f"{final} - {summary}")
+                log(f"[{agent_name}] task {task['id']} {final} ({summary})")
+            finally:
+                # leftovers are committed either way - an uncommitted tree would
+                # fail the next run's rebase - but a failed run's are labelled
+                # as such so a reviewer never mistakes them for finished work
+                if branch is not None:
+                    worktree.commit_all(workdir, (
+                        f"wip: task {task['id']} uncommitted changes" if finished
+                        else f"wip: task {task['id']} partial work from a failed run"
+                    ))
+
+            core.heartbeat(db, agent_name, "idle")
+    finally:
+        core.heartbeat(db, agent_name, "offline")
+        db.close()
+
+
+def run_daemon(
+    project: Path,
+    agent_name: str,
+    backend: str,
+    make_runner,
+    poll_interval: float = 2.0,
+    max_tasks: int | None = None,
+    quiet: bool = False,
+) -> None:
+    asyncio.run(serve(project, agent_name, backend, make_runner, poll_interval, max_tasks, quiet))

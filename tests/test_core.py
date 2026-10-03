@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Standalone checks for kuska - no test framework, just `uv run tests/test_core.py`."""
 
+import importlib.util
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -9,6 +11,7 @@ import time
 from pathlib import Path
 
 import kuska as ac
+from kuska.store import reply_to_task
 
 PASSED = 0
 
@@ -370,12 +373,46 @@ def main() -> None:
         print("tools")
         check("tool set", [s["name"] for s in ac.TOOL_SPECS] == [
             "get_inbox", "send_message", "reply", "docs_get", "docs_set",
-            "docs_list", "heartbeat", "create_task", "list_tasks", "search",
+            "docs_list", "create_task", "list_tasks", "search",
             "add_tag", "remove_tag", "list_tags"])
-        ac.call_tool(conn, "dev-agent", "heartbeat", {"status": "working", "task_id": t4})
-        check("tool heartbeat", ac.get_agent(conn, "dev-agent")["current_task_id"] == t4)
+        names = lambda cfg: [s["name"] for s in ac.toolset(cfg)]  # noqa: E731
+        check("dev and reviewer get the base set", names({"flavor": "dev"}) == names({"flavor": "reviewer"})
+              == list(ac.tools.BASE_TOOLS))
+        check("planners also curate tags", {"add_tag", "remove_tag"} <= set(names({"flavor": "planner"}))
+              and "add_tag" not in names({"flavor": "dev"}))
+        check("no flavor means dev", names({}) == names({"flavor": "dev"}))
+        check("an operator gets every tool", names(None) == [s["name"] for s in ac.TOOL_SPECS])
+        dev_tools = ac.toolset({"flavor": "dev"})
+        try:
+            ac.call_tool(conn, "dev-agent", "add_tag", {"task_id": t4, "tags": "x"}, dev_tools)
+            check("a tool outside the set is refused", False)
+        except KeyError:
+            check("a tool outside the set is refused", True)
+
         ac.call_tool(conn, "dev-agent", "send_message", {"recipient": "bench-agent", "payload": "ping"})
         check("tool inbox", ac.call_tool(conn, "bench-agent", "get_inbox", {})[0]["payload"] == "ping")
+        check("an agent's get_inbox only peeks", ac.get_inbox(conn, "bench-agent", mark_read=False))
+        operator = ac.toolset(None)
+        check("an operator's get_inbox marks read",
+              ac.call_tool(conn, "bench-agent", "get_inbox", {}, operator)[0]["payload"] == "ping"
+              and not ac.get_inbox(conn, "bench-agent", mark_read=False))
+
+        ac.docs_set(conn, "brief", "the human's brief")
+        try:
+            ac.call_tool(conn, "dev-agent", "docs_set", {"key": "brief", "content": "mine now"}, dev_tools)
+            check("agents cannot overwrite a human's doc", False)
+        except ValueError as exc:
+            check("agents cannot overwrite a human's doc",
+                  "written by the human" in str(exc) and ac.docs_get(conn, "brief") == "the human's brief")
+        ac.call_tool(conn, "dev-agent", "docs_set", {"key": "dev-notes", "content": "v1"}, dev_tools)
+        ac.call_tool(conn, "dev-agent", "docs_set", {"key": "dev-notes", "content": "v2"}, dev_tools)
+        check("agents can rewrite their own docs", ac.docs_get(conn, "dev-notes") == "v2")
+        ac.call_tool(conn, "you", "docs_set", {"key": "brief", "content": "revised brief"}, operator)
+        check("an operator can", ac.docs_get(conn, "brief") == "revised brief")
+
+        closed = add_ready(conn, "operator closes this", assigned_to="dev-agent")
+        ac.call_tool(conn, "you", "reply", {"task_id": closed, "payload": "handled it", "status": "done"}, operator)
+        check("an operator can reply on any task", ac.get_task(conn, closed)["status"] == "done")
         check("tool docs", ac.call_tool(conn, "dev-agent", "docs_get", {"key": "architecture"})["content"].endswith("WAL on."))
         docs_list = [d["key"] for d in ac.call_tool(conn, "dev-agent", "docs_list", {})]
         # FTS tests added several docs, so just check that the expected ones are present
@@ -441,7 +478,6 @@ def main() -> None:
         non_git_cfg = ac.agent_config(non_git_project, "test-agent")
         check("worktree=true in config", non_git_cfg.get("worktree") is True)
         # Simulate what the daemon would check: git rev-parse --is-inside-work-tree
-        import subprocess
         result = subprocess.run(
             ["git", "-C", str(non_git_project), "rev-parse", "--is-inside-work-tree"],
             capture_output=True, text=True, check=False
@@ -469,7 +505,6 @@ def main() -> None:
         check("planning-agent header survives", "Custom line 1." in planning_merged and planning_merged.startswith("# planning-agent"))
 
         print("reply_to_task requeue")
-        from kuska.store import reply_to_task
         for st in ("done", "blocked", "needs_approval", "ready_to_merge"):
             rt = ac.add_task(conn, f"reply to {st}", assigned_to="dev-agent")
             ac.update_task_status(conn, rt, st)
@@ -486,7 +521,6 @@ def main() -> None:
         check("reply leaves unassigned done task alone", ac.get_task(conn, rt)["status"] == "done")
 
         print("migration 012 (ready status)")
-        import importlib.util
         spec = importlib.util.spec_from_file_location(
             "m012", Path(ac.__file__).parent / "migrations" / "012_add_ready_status.py")
         m012 = importlib.util.module_from_spec(spec)

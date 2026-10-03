@@ -4,32 +4,34 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import anyio
+import mcp.types as mt
+from mcp.server.lowlevel import Server
+from mcp.server.stdio import stdio_server
+
 from .db import connect, init_db
-from .project import db_path, sync_agents_from_config
-from .tools import TOOL_SPECS, call_tool, tool_result_text
+from .project import db_path, load_config, sync_agents_from_config
+from .tools import call_tool, tool_result_text, toolset
 
 
 def run_mcp(project_dir: Path, agent_name: str, db: Path | None = None) -> None:
-    import anyio
-    import mcp.types as mt
-    from mcp.server.lowlevel import Server
-    from mcp.server.stdio import stdio_server
-
     db = connect(db or db_path(project_dir))
     init_db(db)
     sync_agents_from_config(db, project_dir)
+    # a configured agent gets its flavor's tools; anyone else is an operator
+    specs = toolset(load_config(project_dir).get("agents", {}).get(agent_name))
 
     async def on_list_tools(ctx, params):
         return mt.ListToolsResult(
             tools=[
                 mt.Tool(name=s["name"], description=s["description"], input_schema=s["schema"])
-                for s in TOOL_SPECS
+                for s in specs
             ]
         )
 
     async def on_call_tool(ctx, params):
         try:
-            value = call_tool(db, agent_name, params.name, dict(params.arguments or {}))
+            value = call_tool(db, agent_name, params.name, dict(params.arguments or {}), specs)
             return mt.CallToolResult(
                 content=[mt.TextContent(type="text", text=tool_result_text(value))]
             )
