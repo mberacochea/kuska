@@ -9,7 +9,7 @@ from typing import Any
 
 from peewee import JOIN, SqliteDatabase, fn
 
-from ..db import TASK_STATUSES, now
+from ..db import TASK_KINDS, TASK_STATUSES, now
 from ..models import Feature, Task, TaskDep, row, rows
 from .common import bound
 from .features import ensure_feature, norm_feature_name
@@ -46,6 +46,7 @@ def add_task(
     assigned_to: str | None = None,
     feature: str | None = None,
     tags: str | None = None,
+    kind: str = "work",
 ) -> int:
     """Create a new task.
 
@@ -61,21 +62,28 @@ def add_task(
                  "search"); created if it does not exist yet. Empty/None
                  means no feature.
         tags: Optional comma-separated tags for filtering (e.g. "frontend,bug").
+        kind: One of TASK_KINDS; fixed for the life of the task.
 
     Returns:
         int: New task ID.
+
+    Raises:
+        ValueError: If kind is not in TASK_KINDS.
 
     Examples:
         >>> task_id = add_task(db, "Review PR #42", "Check for style issues")
         >>> task_id
         15
     """
+    if kind not in TASK_KINDS:
+        raise ValueError(f"kind must be one of {TASK_KINDS}, got {kind!r}")
     ts = now()
     task = Task.create(
         title=title,
         description=description,
         assigned_to=assigned_to or None,
         status="todo",
+        kind=kind,
         feature_id=ensure_feature(db, feature),
         tags=_norm_tags(tags),
         created_at=ts,

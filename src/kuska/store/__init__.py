@@ -49,10 +49,10 @@ from .lifecycle import (
     transition,
 )
 from .messages import (
-    ANSWER_TAG,
     ask_agent,
     get_inbox,
     is_answer_task,
+    is_work_task,
     latest_result_since,
     mark_messages_read,
     record_usage,
@@ -109,7 +109,6 @@ from .tasks import (
 )
 
 __all__ = [
-    "ANSWER_TAG",
     "TRANSITIONS",
     "InvalidTransition",
     "add_dependency",
@@ -144,6 +143,7 @@ __all__ = [
     "get_task",
     "heartbeat",
     "is_answer_task",
+    "is_work_task",
     "latest_result_since",
     "list_agents",
     "list_features",

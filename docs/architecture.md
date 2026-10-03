@@ -118,6 +118,7 @@ erDiagram
     text description
     string assigned_to FK
     string status "see agents_flow.md"
+    string kind "work, answer, review"
     int feature_id FK
     string tags "comma-separated"
     string worktree_path

@@ -42,7 +42,7 @@ TABLES: dict[str, dict[str, Any]] = {
         "model": Task,
         "order": lambda m: m.id.desc(),
         "editable": ["title", "description", "assigned_to", "status", "feature_id"],
-        "insertable": ["title", "description", "assigned_to", "status", "feature_id"],
+        "insertable": ["title", "description", "assigned_to", "status", "kind", "feature_id"],
     },
     "features": {
         "label": "Features",

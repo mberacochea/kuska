@@ -646,6 +646,37 @@ def test_migration_013_features(tmp_path):
     old.close()
 
 
+def test_task_kind(conn):
+    k1 = ac.add_task(conn, "kind default")
+    assert ac.get_task(conn, k1)["kind"] == "work", "add_task defaults to kind work"
+    k2 = ac.add_task(conn, "kind review", kind="review")
+    assert ac.get_task(conn, k2)["kind"] == "review", "kind review is stored"
+    with pytest.raises(ValueError):
+        ac.add_task(conn, "kind bogus", kind="bogus")
+    k3 = ac.add_task(conn, "tagged work", tags="answer")
+    assert not ac.is_answer_task(ac.get_task(conn, k3)), "answer tag on a work task is not an answer task"
+    assert ac.is_work_task(ac.get_task(conn, k3)), "is_work_task on a work task"
+    kq = ac.add_task(conn, "asker", assigned_to="dev-agent")
+    ac.update_task_status(conn, kq, "in_progress")
+    ans = ac.ask_agent(conn, "dev-agent", "bench-agent", kq, "which way?")
+    at = ac.get_task(conn, ans)
+    assert at["kind"] == "answer" and at["tags"] is None and ac.is_answer_task(at), \
+        "ask_agent makes a kind-answer task without tags"
+
+
+def test_migration_016_task_kind(tmp_path):
+    from kuska.migration import run_migrations
+    old = ac.connect(tmp_path / "old16.db")
+    run_migrations(old, target_version="014_add_runs")
+    old.execute_sql(
+        "INSERT INTO tasks (title, status, tags, created_at, updated_at) VALUES "
+        "('a', 'todo', 'x,answer', 0, 0), ('b', 'todo', 'answers', 0, 0)"
+    )
+    ac.init_db(old)
+    assert [t["kind"] for t in ac.list_tasks(old)] == ["answer", "work"], "only the answer-tagged task is backfilled"
+    old.close()
+
+
 def test_runs_table(conn):
     rt1 = ac.add_task(conn, "run subject", assigned_to="dev-agent")
     rt2 = ac.add_task(conn, "other run subject", assigned_to="dev-agent")
