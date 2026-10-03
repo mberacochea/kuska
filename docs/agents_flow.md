@@ -92,6 +92,9 @@ todo when unassigned). Outside the diagram: `park` (back to todo), `close`
 (todo, ready, needs_approval or blocked straight to done) and `force` (a human
 sets any status; leaves a note).
 
+- A `ready_to_merge` task reaches `done` only through a detected merge or
+  "Mark merged" in the merge queue. If git cannot see the merge (a squash
+  merge), "Mark merged" asks again with "Mark merged anyway".
 - A task is claimable only when it is `ready`, assigned to the claiming agent,
   and every task it depends on is `done`. Anything held (`needs_approval`,
   `ready_to_merge`, `blocked`) holds back its dependents too.

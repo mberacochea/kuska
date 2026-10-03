@@ -13,6 +13,7 @@ from ..export import export_markdown
 from ..markdown import render as md
 from ..project import registry_load
 from ..store import (
+    InvalidTransition,
     add_dependency,
     add_task,
     bulk_update_status,
@@ -28,8 +29,8 @@ from ..store import (
     remove_dependency,
     reply_to_task,
     task_dependencies,
+    transition,
     update_task,
-    update_task_status,
 )
 from .helpers import (
     _bad_request,
@@ -233,6 +234,14 @@ def register(app, ctx) -> None:
             if agent_error:
                 return _bad_request(task_panel(task, edit=True), "assigned_to", agent_error)
 
+        # the status dropdown is an explicit human override, and leaves a note
+        if "status" in fields:
+            status = fields.pop("status")
+            try:
+                transition(db(), task_id, "force", actor=HUMAN, to=status)
+            except (ValueError, InvalidTransition) as exc:
+                return _bad_request(task_panel(task, edit=True), "status", str(exc))
+
         try:
             update_task(db(), task_id, **fields)
         except (ValueError, PeeweeException) as exc:
@@ -247,30 +256,30 @@ def register(app, ctx) -> None:
             return task_panel(task) + _toast(f"task {task_id} saved"), 200
         return render_row(task), 200
 
-    def _queue_status(task_id: int) -> str:
+    def _event_panel(task_id: int, event: str, done_message: str) -> str:
+        """Apply a lifecycle event and return the task panel; a refusal comes back as a toast."""
+        try:
+            transition(db(), task_id, event)
+        except InvalidTransition as exc:
+            task = get_task(db(), task_id)
+            return (task_panel(task) + _toast(str(exc))) if task else ""
         task = get_task(db(), task_id)
-        return "ready" if task and task["assigned_to"] else "todo"
+        return (task_panel(task) + _toast(done_message)) if task else ""
 
     @app.post("/tasks/<int:task_id>/requeue")
     def requeue_task(task_id: int) -> str:
-        """POST /tasks/<id>/requeue - Re-queue a task (set status to ready, or todo if unassigned)."""
-        update_task_status(db(), task_id, _queue_status(task_id))
-        task = get_task(db(), task_id)
-        return task_panel(task) if task else ""
+        """POST /tasks/<id>/requeue - Re-queue a task (ready, or todo if unassigned)."""
+        return _event_panel(task_id, "requeue", f"task {task_id} re-queued")
 
     @app.post("/tasks/<int:task_id>/approve")
     def approve_task(task_id: int) -> str:
         """POST /tasks/<id>/approve - Approve a task (set status to done)."""
-        update_task_status(db(), task_id, "done")
-        task = get_task(db(), task_id)
-        return (task_panel(task) + _toast(f"task {task_id} approved")) if task else ""
+        return _event_panel(task_id, "approve", f"task {task_id} approved")
 
     @app.post("/tasks/<int:task_id>/send-back")
     def send_back_task(task_id: int) -> str:
-        """POST /tasks/<id>/send-back - Send a task back (set status to ready, or todo if unassigned)."""
-        update_task_status(db(), task_id, _queue_status(task_id))
-        task = get_task(db(), task_id)
-        return (task_panel(task) + _toast(f"task {task_id} sent back")) if task else ""
+        """POST /tasks/<id>/send-back - Send a task back (ready, or todo if unassigned)."""
+        return _event_panel(task_id, "requeue", f"task {task_id} sent back")
 
     @app.post("/tasks/<int:task_id>/deps")
     def add_task_dependency(task_id: int) -> tuple[str, int]:
@@ -439,17 +448,31 @@ def register(app, ctx) -> None:
         if column not in ("todo", "ready", "finished"):
             return board_html(toast="that column does not accept cards", feature=feature)
 
+        def refused(exc: InvalidTransition) -> str:
+            return board_html(toast=str(exc), feature=feature)
+
         # a waiting card is already in Finished; dropping it there approves it
         if column == "finished":
             if status == "done":
                 return board_html(feature=feature)
-            update_task_status(db(), task_id, "done")
+            try:
+                transition(db(), task_id, "close")
+            except InvalidTransition as exc:
+                if status == "ready_to_merge":
+                    return board_html(
+                        toast=f"task {task_id} is waiting to merge - merge its branch, then use the Merge queue",
+                        feature=feature,
+                    )
+                return refused(exc)
             return board_html(toast=f"task {task_id} marked done", feature=feature)
         if column == status:
             return board_html(feature=feature)
 
         if column == "todo":
-            update_task_status(db(), task_id, "todo")
+            try:
+                transition(db(), task_id, "park")
+            except InvalidTransition as exc:
+                return refused(exc)
             return board_html(toast=f"task {task_id} moved to todo", feature=feature)
 
         # column == "ready": needs an agent
@@ -463,16 +486,47 @@ def register(app, ctx) -> None:
             update_task(db(), task_id, assigned_to=assigned_to)
         elif not task["assigned_to"]:
             return board_html(picker_id=task_id, toast="choose an agent to make it ready", feature=feature)
-        update_task_status(db(), task_id, "ready")
+        try:
+            # a card from Finished is re-queued; one from todo is made ready
+            transition(db(), task_id, "make_ready" if status == "todo" else "requeue")
+        except InvalidTransition as exc:
+            return refused(exc)
         return board_html(toast=f"task {task_id} is ready", feature=feature)
 
     @app.post("/tasks/<int:task_id>/merged")
     def mark_task_merged(task_id: int) -> str:
-        """POST /tasks/<id>/merged - Mark a task as done (merged)."""
-        update_task_status(db(), task_id, "done")
-        # Return the merge queue fragment
-        tasks_ready = list_tasks(db(), status="ready_to_merge")
-        return merge_queue_rows(tasks_ready)
+        """POST /tasks/<id>/merged - Mark a task as done (merged).
+
+        Done only when git sees the branch merged. Otherwise the row comes back
+        with a "Mark merged anyway" button that posts confirm=1, for squash
+        merges git cannot detect.
+        """
+        task = get_task(db(), task_id)
+        if not task:
+            return "", 404
+
+        def rows(message: str = "", unconfirmed: int | None = None) -> str:
+            html = merge_queue_rows(list_tasks(db(), status="ready_to_merge"), unconfirmed=unconfirmed)
+            return html + _toast(message) if message else html
+
+        if request.form.get("confirm") != "1":
+            project = state["project"]
+            base = worktree.base_branch(project)
+            branch = None
+            if task.get("worktree_path"):
+                path = Path(task["worktree_path"])
+                branch = next(
+                    (wt.get("branch") for wt in worktree.list_worktrees(project)
+                     if Path(wt["path"]).resolve() == path.resolve()),
+                    None,
+                )
+            if not branch or not worktree.is_branch_merged(project, branch, base, task.get("worktree_base_sha")):
+                return rows(f"{branch or 'branch'} is not merged into {base} yet", unconfirmed=task_id)
+        try:
+            transition(db(), task_id, "merged")
+        except InvalidTransition as exc:
+            return rows(str(exc))
+        return rows()
 
     @app.get("/merge-queue")
     def merge_queue_page() -> str:
@@ -519,5 +573,8 @@ def register(app, ctx) -> None:
         if not success:
             return rows(f"Failed to prune: {msg}")
         update_task(db(), task_id, worktree_path=None)
-        update_task_status(db(), task_id, "done")
+        try:
+            transition(db(), task_id, "merged")
+        except InvalidTransition as exc:
+            return rows(str(exc))
         return rows(f"task {task_id} pruned")
