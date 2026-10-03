@@ -72,6 +72,7 @@ class Task(Base):
         on_delete="SET NULL", lazy_load=False,
     )
     status = CharField(default="todo")  # see db.TASK_STATUSES
+    kind = CharField(default="work")  # see db.TASK_KINDS; fixed at creation
     # the feature this task belongs to; deleting the feature ungroups its tasks.
     # Task dicts from store.tasks also carry the feature's name as "feature".
     feature_id = ForeignKeyField(

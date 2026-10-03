@@ -120,7 +120,7 @@ never swallows a message.
 ## Asking another agent
 
 1. Agent A, on task N, calls `send_message(recipient=B, msg_type="question", task_id=N)`.
-2. kuska creates an answer task for B (tagged `answer`, status `ready`) and
+2. kuska creates an answer task for B (a task of kind `answer`, status `ready`) and
    makes task N depend on it.
 3. A calls `reply(status="blocked")` and stops. Because N waits on an answer,
    the reply puts it back to `ready`, held by the dependency.

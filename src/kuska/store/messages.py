@@ -175,12 +175,13 @@ def reply_to_task(db: SqliteDatabase, task_id: int, payload: str, sender: str = 
     return msg_id
 
 
-# an answer task is a question one agent put to another (see ask_agent)
-ANSWER_TAG = "answer"
-
-
 def is_answer_task(task: dict) -> bool:
-    return ANSWER_TAG in (task.get("tags") or "").split(",")
+    """An answer task is a question one agent put to another (see ask_agent)."""
+    return task.get("kind") == "answer"
+
+
+def is_work_task(task: dict) -> bool:
+    return task.get("kind", "work") == "work"
 
 
 def waiting_on_answer(db: SqliteDatabase, task_id: int) -> bool:
@@ -215,7 +216,7 @@ def ask_agent(db: SqliteDatabase, asker: str, recipient: str, task_id: int | Non
             f"Reply with your answer as the payload; {asker} gets it when task {task_id} resumes."
         ),
         assigned_to=recipient,
-        tags=ANSWER_TAG,
+        kind="answer",
     )
     transition(db, answer_id, "make_ready", actor=asker)
     add_dependency(db, task_id, answer_id)

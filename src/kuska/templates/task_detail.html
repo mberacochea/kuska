@@ -2,6 +2,7 @@
   <div style="display:flex; gap:.7rem; align-items:baseline; flex-wrap:wrap">
     <h2 style="margin:0">#{{ t.id }} {{ t.title }}</h2>
     <span class="chip s-{{ t.status }}">{{ t.status }}</span>
+    {% if t.kind != 'work' %}<span class="chip">{{ t.kind }}</span>{% endif %}
     {% if t.feature %}
       <a class="chip" href="/tasks?feature={{ t.feature|urlencode }}" title="Feature">{{ t.feature }}</a>
     {% endif %}

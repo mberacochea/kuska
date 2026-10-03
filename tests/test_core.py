@@ -654,6 +654,36 @@ def main() -> None:
               "feature" in {c.name for c in old.get_columns("tasks")})
         old.close()
 
+        print("task kind (migration 016)")
+        k1 = ac.add_task(conn, "kind default")
+        check("add_task defaults to kind work", ac.get_task(conn, k1)["kind"] == "work")
+        k2 = ac.add_task(conn, "kind review", kind="review")
+        check("kind review is stored", ac.get_task(conn, k2)["kind"] == "review")
+        try:
+            ac.add_task(conn, "kind bogus", kind="bogus")
+            check("bogus kind raises ValueError", False)
+        except ValueError:
+            check("bogus kind raises ValueError", True)
+        k3 = ac.add_task(conn, "tagged work", tags="answer")
+        check("answer tag on a work task is not an answer task", not ac.is_answer_task(ac.get_task(conn, k3)))
+        check("is_work_task on a work task", ac.is_work_task(ac.get_task(conn, k3)))
+        kq = ac.add_task(conn, "asker", assigned_to="dev-agent")
+        ac.update_task_status(conn, kq, "in_progress")
+        ans = ac.ask_agent(conn, "dev-agent", "bench-agent", kq, "which way?")
+        at = ac.get_task(conn, ans)
+        check("ask_agent makes a kind-answer task without tags",
+              at["kind"] == "answer" and at["tags"] is None and ac.is_answer_task(at), at)
+        old16 = ac.connect(tmp / "old16.db")
+        run_migrations(old16, target_version="014_add_runs")
+        old16.execute_sql(
+            "INSERT INTO tasks (title, status, tags, created_at, updated_at) VALUES "
+            "('a', 'todo', 'x,answer', 0, 0), ('b', 'todo', 'answers', 0, 0)"
+        )
+        ac.init_db(old16)
+        check("only the answer-tagged task is backfilled",
+              [t["kind"] for t in ac.list_tasks(old16)] == ["answer", "work"])
+        old16.close()
+
         print("runs table")
         rt1 = ac.add_task(conn, "run subject", assigned_to="dev-agent")
         rt2 = ac.add_task(conn, "other run subject", assigned_to="dev-agent")

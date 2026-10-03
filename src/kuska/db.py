@@ -25,6 +25,9 @@ HUMAN = "human"
 # sends it back. 'needs_approval' is for agent decisions; 'ready_to_merge' means
 # the agent committed its work to a branch and a human must review and merge.
 TASK_STATUSES = ("todo", "ready", "in_progress", "needs_approval", "ready_to_merge", "blocked", "done")
+# what a task is for: work (an agent changes things, in a worktree), answer (one
+# agent's question to another, see ask_agent), review (checking another task)
+TASK_KINDS = ("work", "answer", "review")
 HOLDING_STATUSES = ("needs_approval", "ready_to_merge", "blocked")
 AGENT_STATUSES = ("idle", "working", "offline")
 # a run (one agent invocation, table `runs`) is 'running' until it ends; 'abandoned'
