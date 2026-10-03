@@ -35,6 +35,7 @@ from .store import (
     list_tasks,
     reply,
     send_message,
+    set_run_result_message,
     update_task,
 )
 
@@ -94,7 +95,10 @@ def _reply_handler(db, agent, args):
         raise ValueError(f"task {task_id} is not assigned to you; reply only on the task you were given")
     if task["status"] != "in_progress":
         raise ValueError(f"task {task_id} is already {task['status']}; you can reply on it only once per run")
-    return _reply(db, agent, task_id, args, status)
+    result = _reply(db, agent, task_id, args, status)
+    # link the reply to its run, so finish_task need not guess by timestamp
+    set_run_result_message(db, agent, task_id, result["id"])
+    return result
 
 
 def _reply(db, agent, task_id, args, status):

@@ -165,7 +165,7 @@ async def serve(
                 else:
                     finished = True
                     text = text.strip() or "(no output)"
-                    msg_id = core.finish_task(db, agent_name, task["id"], text, started, **usage)
+                    msg_id = core.finish_task(db, agent_name, task["id"], text, started, run_id=mono.run_id, **usage)
                     core.end_run(db, mono.run_id, "finished", result_message_id=msg_id, **usage)
                     # read only once a run has actually used them
                     core.mark_messages_read(db, inbox_message_ids)

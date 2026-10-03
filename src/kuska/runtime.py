@@ -25,6 +25,7 @@ from .store import (
     docs_get,
     docs_set,
     get_inbox,
+    get_run,
     get_task,
     latest_result_since,
     log_event,
@@ -316,13 +317,16 @@ def finish_task(
     cache_write_tokens: int = 0,
     tool_rounds: int = 0,
     cost_usd: float = 0.0,
+    run_id: str | None = None,
 ) -> int:
     """Close out one invocation, recording its cost without double-counting.
 
     If the agent already called the `reply` tool during this run, we update
     that message's token/cost fields instead of creating a duplicate result.
     This ensures token counts are accurate even when the agent logs its own
-    completion.
+    completion. The normal way to find that message is the run's
+    `result_message_id`, set by the `reply` tool; `since` (a timestamp
+    comparison) is only the fallback when no `run_id` is given.
 
     Also checks for token usage anomalies and logs warnings if a task used
     significantly more tokens than the rolling average.
@@ -332,13 +336,16 @@ def finish_task(
         agent_name: Name of the agent that ran.
         task_id: Task being worked on.
         payload: Result summary or daemon message (used if no prior reply).
-        since: Timestamp of invocation start (to find recent results).
+        since: Timestamp of invocation start; used to find the agent's own
+            result only when `run_id` is None.
         input_tokens: Fresh input tokens, charged at full price.
         output_tokens: Total tokens generated.
         cache_read_tokens: Input served from cache, at roughly a tenth the price.
         cache_write_tokens: Input written to cache, at roughly 1.25x the price.
         tool_rounds: API round-trips in this turn - the real cost driver.
         cost_usd: Total cost in USD, as reported by the backend.
+        run_id: The run this invocation belongs to; its linked reply is the
+            result to update.
 
     Returns:
         int: Message ID of the result (newly created or updated).
@@ -348,7 +355,10 @@ def finish_task(
         "cache_read_tokens": cache_read_tokens, "cache_write_tokens": cache_write_tokens,
         "tool_rounds": tool_rounds, "cost_usd": cost_usd,
     }
-    msg_id = latest_result_since(db, agent_name, task_id, since)
+    if run_id is not None:
+        msg_id = (get_run(db, run_id) or {}).get("result_message_id")
+    else:
+        msg_id = latest_result_since(db, agent_name, task_id, since)
     if msg_id is not None:
         record_usage(db, msg_id, **usage)
     else:

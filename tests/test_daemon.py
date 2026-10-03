@@ -172,7 +172,10 @@ def check_loop(project: Path) -> None:
             return "Parser added.", usage(1000, 200, cache_read=9000, rounds=4, cost=0.03)
         # second task: the agent asks another agent, then blocks itself via the tools
         core.send_message(conn, "dev-agent", "codex-1", t2, "question", "which scope?")
-        core.reply(conn, "dev-agent", t2, "Asked codex-1, waiting.", status="blocked")
+        # through the tool, as a real agent does, so the reply is linked to its run
+        core.call_tool(conn, "dev-agent", "reply",
+                       {"task_id": t2, "payload": "Asked codex-1, waiting.", "status": "blocked"},
+                       core.toolset({"flavor": "dev"}))
         return "Asked codex-1, waiting.", usage(400, 80, cache_read=3000, rounds=2, cost=0.01)
 
     run_loop(project, fake, max_tasks=2)
@@ -1243,6 +1246,23 @@ def check_run_ledger(tmp: Path) -> None:
           runs[0]["cost_usd"] == 0.25 and runs[0]["input_tokens"] == 10 and runs[0]["tool_rounds"] == 3, runs[0])
     check("it points at the result message", result and runs[0]["result_message_id"] == result[0]["id"],
           (runs[0], result))
+
+    box = {}
+
+    async def replies(prompt, workdir, mono):
+        core.call_tool(conn, "dev-agent", "reply", {"task_id": box["task"], "payload": "Replied itself."},
+                       core.toolset({"flavor": "dev"}))
+        return "Wrap-up text.", {"cost_usd": 0.75, "tool_rounds": 2}
+
+    box["task"] = add_ready(conn, "Replies itself", "", "dev-agent")
+    serve_one(replies)
+    results = [m for m in core.task_messages(conn, box["task"]) if m["msg_type"] == "result"]
+    runs = core.task_runs(conn, box["task"])
+    check("a run that replied itself leaves exactly one result message", len(results) == 1, results)
+    check("that message carries the run's cost", results and results[0]["cost_usd"] == 0.75, results)
+    check("the run points at that message",
+          results and runs[0]["status"] == "finished" and runs[0]["result_message_id"] == results[0]["id"],
+          (runs, results))
 
     async def aborts(prompt, workdir, mono):
         raise core.RunAborted("x", {"cost_usd": 0.5})
