@@ -78,7 +78,7 @@ flowchart LR
 | --- | --- |
 | `kuska serve` | The web UI (single-threaded Flask; the open project is process-wide state). |
 | `kuska daemon <agent>` | One agent's loop. One process per agent; run several for parallel work. |
-| `kuska mcp --agent <name>` | A stdio MCP server acting as `<name>`. Spawned per client: by the codex and openai daemons for every run, and by Claude Code through `.mcp.json`. |
+| `kuska mcp --agent <name>` / `kuska mcp --operator` | A stdio MCP server acting as `<name>` (a configured agent), or, with `--operator`, as the human with every tool. Spawned per client: by the codex and openai daemons for every run, and by Claude Code through `.mcp.json`. |
 | `kuska run-all` | Web UI and one daemon per configured agent, as threads of one process. |
 
 SQLite runs in WAL mode with a 10 s busy timeout: many readers, one writer at

@@ -6,9 +6,10 @@ create_sdk_mcp_server) and any generic MCP client. Handlers take the
 connection and the calling agent's name, so no backend reimplements logic.
 
 Who gets which tools is `toolset()`: an agent in config.toml gets its
-flavor's set; any other caller - a human driving an MCP client, as in the
-repo's .mcp.json - is an operator and gets every tool, with the authority
-that implies (replying on any task, marking its own inbox read)."""
+flavor's set; an operator - a human driving an MCP client, started
+explicitly with `kuska mcp --operator` as in the repo's .mcp.json - gets
+every tool, with the authority that implies (replying on any task, marking
+its own inbox read). An unconfigured name is refused, not made an operator."""
 
 from __future__ import annotations
 
@@ -463,7 +464,7 @@ OPERATOR_HANDLERS = {
 
 def toolset(cfg: dict | None) -> list[dict]:
     """The tools one caller gets: `cfg` is its config.toml entry, or None for
-    an operator - a caller that is not a configured agent."""
+    an operator, which `kuska mcp --operator` asks for explicitly."""
     if cfg is None:
         return [{**s, "handler": OPERATOR_HANDLERS.get(s["name"], s["handler"])} for s in TOOL_SPECS]
     names = FLAVOR_TOOLS.get(cfg.get("flavor") or "dev", BASE_TOOLS)

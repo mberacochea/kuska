@@ -222,8 +222,9 @@ Defined once in `tools.py` and consumed three ways:
   serves the same definitions.
 - **Anything else** can point a generic MCP client at that same command.
 
-Each agent gets its flavor's set (planners also curate tags); a client that
-is not in `config.toml` is an operator and gets all of them. The tools, who
+Each agent gets its flavor's set (planners also curate tags); a client started with
+`kuska mcp --operator` acts as the human and gets all of them (an unknown
+`--agent` name is refused). The tools, who
 gets which and the workflows they support are in
 [docs/MCP_TOOLS.md](docs/MCP_TOOLS.md).
 

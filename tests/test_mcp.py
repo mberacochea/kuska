@@ -79,3 +79,33 @@ def test_mcp_stdio_server(project):
                 conn.close()
 
     anyio.run(run)
+
+
+def test_mcp_refuses_unconfigured_agent(project):
+    import subprocess
+    r = subprocess.run(
+        [sys.executable, "-m", "kuska", "--project", str(project), "mcp", "--agent", "nobody"],
+        capture_output=True, timeout=30, stdin=subprocess.DEVNULL,
+    )
+    assert r.returncode != 0 and b"not an agent" in r.stderr
+
+
+def test_mcp_operator(project):
+    params = StdioServerParameters(
+        command=sys.executable,
+        args=["-m", "kuska", "--project", str(project), "mcp", "--operator", "--agent", "boss"],
+    )
+
+    async def run() -> None:
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                names = {t.name for t in (await session.list_tools()).tools}
+                assert names == {s["name"] for s in ac.tools.TOOL_SPECS}
+                res = await session.call_tool("docs_set", {"key": "notes", "content": "x"})
+                assert not res.is_error
+                conn = ac.connect(ac.db_path(project))
+                assert ac.docs_list(conn)[-1]["updated_by"] == "boss"
+                conn.close()
+
+    anyio.run(run)

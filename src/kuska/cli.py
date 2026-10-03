@@ -5,7 +5,7 @@ Task and plan authoring lives in the web app, not here:
     kuska init              # create .agents/, project.db, default config.toml
     kuska serve             # Flask + HTMX web UI (project + agents pages)
     kuska daemon <name>     # run one agent's daemon (backend from config.toml)
-    kuska mcp               # MCP stdio server, for Codex / other external clients
+    kuska mcp --operator    # MCP stdio server, for Codex / other external clients
     kuska run-all           # run web server + all agents together
     kuska export            # one-off markdown export
     kuska migrate           # manage database migrations
@@ -96,7 +96,8 @@ def cmd_serve(args: argparse.Namespace) -> None:
 
 def cmd_mcp(args: argparse.Namespace) -> None:
     project = find_project(args.project)
-    run_mcp(project, args.agent, Path(args.db) if args.db else None)
+    agent = args.agent or ("operator" if args.operator else "codex")
+    run_mcp(project, agent, Path(args.db) if args.db else None, operator=args.operator)
 
 
 def cmd_daemon(args: argparse.Namespace) -> None:
@@ -527,7 +528,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_daemon.set_defaults(func=cmd_daemon)
 
     p_mcp = sub.add_parser("mcp", help="MCP stdio server for external clients")
-    p_mcp.add_argument("--agent", default="codex", help="agent name these tools act as")
+    p_mcp.add_argument("--agent", help="agent name these tools act as (default: codex; with --operator: operator)")
+    p_mcp.add_argument("--operator", action="store_true",
+                       help="act as the human's hands: every tool, on any task")
     p_mcp.add_argument("--db", help="explicit path to project.db")
     p_mcp.set_defaults(func=cmd_mcp)
 

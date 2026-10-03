@@ -14,12 +14,22 @@ from .project import db_path, load_config, sync_agents_from_config
 from .tools import call_tool, tool_result_text, toolset
 
 
-def run_mcp(project_dir: Path, agent_name: str, db: Path | None = None) -> None:
+def run_mcp(project_dir: Path, agent_name: str, db: Path | None = None, operator: bool = False) -> None:
+    agents = load_config(project_dir).get("agents", {})
+    cfg = agents.get(agent_name)
+    # operator mode is asked for; an unknown name is a typo, not a promotion
+    if operator:
+        specs = toolset(None)
+    elif cfg is None:
+        raise SystemExit(
+            f"'{agent_name}' is not an agent in config.toml "
+            f"(have: {', '.join(sorted(agents)) or 'none'}). Pass --operator to act as the human."
+        )
+    else:
+        specs = toolset(cfg)
     db = connect(db or db_path(project_dir))
     init_db(db)
     sync_agents_from_config(db, project_dir)
-    # a configured agent gets its flavor's tools; anyone else is an operator
-    specs = toolset(load_config(project_dir).get("agents", {}).get(agent_name))
 
     async def on_list_tools(ctx, params):
         return mt.ListToolsResult(
