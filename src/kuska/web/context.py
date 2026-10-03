@@ -37,7 +37,6 @@ from ..store import (
     task_dependents,
     task_events,
     task_messages,
-    update_task_status,
 )
 from .helpers import _activity_qs, _ago, _clock, _group_runs
 
@@ -274,7 +273,7 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
 
     def _merge_queue_context(tasks: list[dict]) -> dict:
         """Gather worktree info, diff stats, and blocking dependencies for each
-        task in ready_to_merge status, flipping merged tasks to done.
+        task in ready_to_merge status, without writing.
 
         Shared by the merge-queue page and its polled rows fragment so the
         merge-detection and sorting logic lives in exactly one place.
@@ -316,20 +315,17 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
             key=lambda t: (-blocks_map.get(t["id"], 0), t["id"])
         )
 
-        # Perform merge detection: flip tasks to done if branch is merged.
-        # A branch with no commits of its own is trivially "merged" by git's
-        # definition, so is_branch_merged also compares against the base sha
-        # recorded when the branch was created.
-        for task in tasks_sorted:
-            if task.get("worktree_path"):
-                path = Path(task["worktree_path"])
-                wt = next((w for w in wt_list if Path(w["path"]).resolve() == path.resolve()), None)
-                if wt and wt.get("branch") and worktree.is_branch_merged(
-                    project, wt["branch"], base, task.get("worktree_base_sha")
-                ):
-                    # Branch is merged - update task to done
-                    update_task_status(db(), task["id"], "done")
-                    task["status"] = "done"
+        # Read-only: the supervisor moves merged tasks to done. This only
+        # lets the page say so in the meantime.
+        def is_merged(task: dict) -> bool:
+            if task["status"] == "done":
+                return True
+            if not task.get("worktree_path"):
+                return False
+            branch = worktree.branch_for_path(project, task["worktree_path"])
+            return bool(branch) and worktree.is_branch_merged(
+                project, branch, base, task.get("worktree_base_sha")
+            )
 
         return {
             "tasks": tasks_sorted,
@@ -337,7 +333,7 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
             "diffs": diffs,
             "ahead": ahead,
             "blocks": blocks_map,
-            "merged": {task["id"]: task["status"] == "done" for task in tasks_sorted},
+            "merged": {task["id"]: is_merged(task) for task in tasks_sorted},
             # Git-level: the task's branch is reachable from base, so its
             # worktree can be pruned without losing commits.
             "prunable": {

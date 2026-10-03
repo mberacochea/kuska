@@ -29,6 +29,7 @@ flowchart LR
     Runtime["runtime.py<br/>compose_task_prompt · finish/fail_task · Monologue"]
     Guard["guardrails.py"]
     WT["worktree.py<br/>GitPython"]
+    Supervisor["supervisor.py<br/>expire dead runs · detect merges"]
     Project["project.py<br/>config · prompts · registry"]
     Store["store/<br/>tasks · features · deps · messages · docs · events · search · stats"]
     Models["models.py + migrations/<br/>peewee"]
@@ -42,7 +43,8 @@ flowchart LR
   Browser --> Web
   OpClient --> MCP
   Terminal --> Repo
-  CLI --> Web & Loop & MCP
+  CLI --> Web & Loop & MCP & Supervisor
+  Supervisor --> Store & WT
   Loop --> Claude & Codex & OAI
   Loop --> Runtime & WT & Project
   Claude -->|in-process| Tools
@@ -79,7 +81,10 @@ flowchart LR
 | `kuska serve` | The web UI (single-threaded Flask; the open project is process-wide state). |
 | `kuska daemon <agent>` | One agent's loop. One process per agent; run several for parallel work. |
 | `kuska mcp --agent <name>` | A stdio MCP server acting as `<name>`. Spawned per client: by the codex and openai daemons for every run, and by Claude Code through `.mcp.json`. |
-| `kuska run-all` | Web UI and one daemon per configured agent, as threads of one process. |
+| `kuska supervise` | The supervisor alone: every 15 s it abandons runs whose heartbeat is over 300 s old (blocking their `in_progress` task) and moves `ready_to_merge` tasks whose branch is merged to `done`. `kuska serve` and `kuska run-all` run it as a thread (`serve --no-supervisor` turns it off). |
+| `kuska run-all` | Web UI, the supervisor and one daemon per configured agent, as threads of one process. |
+
+A daemon must heartbeat its runs, and a supervisor (in `kuska serve`, `kuska run-all` or `kuska supervise`) must be running, or a crashed daemon's task stays `in_progress` and merges go unnoticed.
 
 SQLite runs in WAL mode with a 10 s busy timeout: many readers, one writer at
 a time. `claim_task` takes the write lock up front (`BEGIN IMMEDIATE`), so two

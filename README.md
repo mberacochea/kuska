@@ -170,11 +170,14 @@ by feature, and `list_features` reports each one's done/total count.
    status and spend straight out of it.
 6. If the task ran in a worktree, the agent commits there and the task
    enters `ready_to_merge`. A human reviews the branch, then merges it in a
-   terminal and marks it merged in the web UI, which releases anything that
-   depended on it.
+   terminal; the supervisor notices the merge and marks the task done (the web
+   UI's "Mark merged" does it by hand), which releases anything that depended
+   on it.
 7. A run that fails, times out or hits a limit (`max_turns`,
    `max_budget_usd`, `timeout_minutes`) blocks its task, with a note saying
-   why and whatever it spent.
+   why and whatever it spent. If the daemon itself dies mid-run, the
+   supervisor (`kuska serve`, `run-all` or `kuska supervise`) notices the
+   missing heartbeat after 5 minutes and blocks the task.
 
 An agent that needs something from another agent asks with a `question`
 message and replies `blocked`, rather than waiting inline. The question

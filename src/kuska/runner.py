@@ -17,6 +17,7 @@ from pathlib import Path
 from .daemons import run as run_daemon
 from .db import connect, init_db
 from .project import agent_config, config_path, db_path, find_project
+from .supervisor import run_supervisor
 from .web import create_app
 
 
@@ -138,6 +139,11 @@ def run_all(
     web_thread = threading.Thread(target=run_web_server, name="web", daemon=True)
     web_thread.start()
     threads.append(web_thread)
+
+    supervisor_thread = threading.Thread(
+        target=run_supervisor, args=(project, stop_event), name="supervisor", daemon=True
+    )
+    supervisor_thread.start()
 
     # Start agent daemons
     for agent_name in agents_to_run:
