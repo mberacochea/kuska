@@ -28,7 +28,7 @@ header h1 { font-size:1.05rem; margin:0; font-weight:650; }
 nav a { color:var(--muted); text-decoration:none; margin-right:1.1rem; }
 nav a:hover { color:var(--fg); }
 nav a.on { color:var(--fg); font-weight:650; border-bottom:2px solid var(--accent); padding-bottom:.15rem; }
-main { max-width:1120px; margin:0 auto; padding:1.5rem 1.5rem 5rem; }
+main { margin:0 auto; padding:1.5rem 1.5rem 5rem; }
 h2 {
   font-size:1rem; font-weight:650; margin:2.2rem 0 .7rem; padding-bottom:.35rem;
   border-bottom:1px solid var(--line);
