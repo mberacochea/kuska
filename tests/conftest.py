@@ -1,26 +1,8 @@
-"""Shared pytest setup.
-
-The big suites below are still plain scripts with a `main()` that exits at the
-first failure. They run as subprocesses from `test_legacy_suites.py`; pytest
-must not import them itself (`test_web.py` defines `test_web(project)`, which
-pytest would call with fixtures that do not exist).
-"""
+"""Shared pytest fixtures."""
 
 import pytest
 
 import kuska
-
-collect_ignore = [
-    "test_core.py",
-    "test_daemon.py",
-    "test_web.py",
-    "test_worktree.py",
-    "test_search.py",
-    "test_guardrails.py",
-    "test_concurrent_init.py",
-    "eventfmt_test.py",
-    "run_all.py",
-]
 
 
 @pytest.fixture

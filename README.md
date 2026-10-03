@@ -73,7 +73,7 @@ src/kuska/
     codex.py     # openai-codex SDK, tools over the stdio MCP server
     openai.py    # OpenAI-compatible chat completions, tools over the stdio MCP server
 packaging/entry.py + kuska.spec   # PyInstaller build
-tests/           # pytest (conftest.py fixtures) plus legacy script suites
+tests/           # pytest (conftest.py fixtures)
 docs/DEVELOPMENT.md        # development guide and troubleshooting
 ```
 
@@ -290,11 +290,9 @@ uv run pytest -k <name>    # one suite or test, e.g. -k test_web or -k token
 No API keys needed: the model call is stubbed, so the daemon loop, the web UI
 and the MCP server are all exercised without spending a token.
 
-New tests are plain pytest functions (`def test_...`, plain `assert`) using the
-`project` and `conn` fixtures in `tests/conftest.py`. The big legacy suites are
-still scripts that stop at their first failure; `tests/test_legacy_suites.py`
-runs each as a subprocess (one pytest case per file) until it is converted.
-`uv run tests/run_all.py` still works and passes its arguments to pytest.
+Tests are plain pytest functions (`def test_...`, plain `assert`) using the
+`project` and `conn` fixtures in `tests/conftest.py`. `uv run tests/run_all.py`
+still works and passes its arguments to pytest.
 
 ## Status against the build plan
 
