@@ -359,6 +359,7 @@ def claim_task(db: SqliteDatabase, agent_name: str) -> dict | None:
         )
         if candidate is None:
             return None
+        # the `claim` transition of store/lifecycle.TRANSITIONS, done inline to keep the claim atomic
         taken = (
             Task.update(status="in_progress", updated_at=now())
             .where((Task.id == candidate.id) & (Task.status == "ready"))

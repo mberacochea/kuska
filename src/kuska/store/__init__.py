@@ -43,6 +43,11 @@ from .events import (
     run_events,
     task_events,
 )
+from .lifecycle import (
+    TRANSITIONS,
+    InvalidTransition,
+    transition,
+)
 from .messages import (
     ANSWER_TAG,
     ask_agent,
@@ -94,6 +99,8 @@ from .tasks import (
 
 __all__ = [
     "ANSWER_TAG",
+    "TRANSITIONS",
+    "InvalidTransition",
     "add_dependency",
     "add_task",
     "annotations",
@@ -149,6 +156,7 @@ __all__ = [
     "task_messages",
     "task_status_counts",
     "token_usage_by_agent",
+    "transition",
     "update_feature",
     "update_task",
     "update_task_status",

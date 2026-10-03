@@ -78,6 +78,17 @@ stateDiagram-v2
   done --> [*]
 ```
 
+Every status change goes through `store/lifecycle.transition()`, which holds
+the one table of allowed moves. The events behind the arrows: `make_ready`
+(todo to ready), `claim` (ready to in_progress, done inline by `claim_task` to
+stay atomic), `finish` (in_progress to done, or to ready_to_merge when the
+task has a worktree), `hold` (to needs_approval), `block` (to blocked),
+`await_answer` (in_progress back to ready), `approve` (needs_approval to
+done), `merged` (ready_to_merge to done) and `requeue` (back to ready, or to
+todo when unassigned). Outside the diagram: `park` (back to todo), `close`
+(todo, ready, needs_approval or blocked straight to done) and `force` (a human
+sets any status; leaves a note).
+
 - A task is claimable only when it is `ready`, assigned to the claiming agent,
   and every task it depends on is `done`. Anything held (`needs_approval`,
   `ready_to_merge`, `blocked`) holds back its dependents too.
