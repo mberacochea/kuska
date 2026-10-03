@@ -115,6 +115,7 @@ def register(app, ctx) -> None:
                 ago=_ago,
                 summarize=eventfmt.summarize,
                 detail_html=eventfmt.detail_html,
+                preview_html=eventfmt.preview_html,
                 glyph=eventfmt.glyph,
                 _fmt_ts=_fmt_ts,
             )
@@ -133,6 +134,7 @@ def register(app, ctx) -> None:
                 ago=_ago,
                 summarize=eventfmt.summarize,
                 detail_html=eventfmt.detail_html,
+                preview_html=eventfmt.preview_html,
                 glyph=eventfmt.glyph,
                 _fmt_ts=_fmt_ts,
             )
@@ -165,6 +167,7 @@ def register(app, ctx) -> None:
             clock=_clock,
             summarize=eventfmt.summarize,
             detail_html=eventfmt.detail_html,
+            preview_html=eventfmt.preview_html,
             glyph=eventfmt.glyph,
             _fmt_ts=_fmt_ts,
         )
