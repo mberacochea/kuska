@@ -14,13 +14,13 @@
     {% set block_count = blocks.get(t.id, 0) %}
     {% if block_count > 0 %}<strong>{{ block_count }}</strong>{% else %}-{% endif %}
   </td>
-  <td>{{ '✓' if merged.get(t.id, False) else '-' }}</td>
+  <td>{{ '✓' if merged.get(t.id, False) or prunable.get(t.id, False) else '-' }}</td>
   <td style="display:flex; gap:.5rem">
     {% if not merged.get(t.id, False) %}
     <button class="link" hx-post="/tasks/{{ t.id }}/merged" hx-target="#merge-queue" hx-swap="outerHTML">Mark merged</button>
     {% endif %}
-    <button class="link" hx-post="/tasks/{{ t.id }}/prune" hx-target="body" hx-swap="innerHTML"
-            {%- if not merged.get(t.id, False) %} disabled title="Branch not merged"{% endif %}>Prune</button>
+    <button class="link" hx-post="/tasks/{{ t.id }}/prune" hx-target="#merge-queue" hx-swap="outerHTML"
+            {%- if not prunable.get(t.id, False) %} disabled title="Branch not merged"{% endif %}>Prune</button>
   </td>
 </tr>
 {% endfor %}

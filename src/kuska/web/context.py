@@ -335,6 +335,12 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
             "ahead": ahead,
             "blocks": blocks_map,
             "merged": {task["id"]: task["status"] == "done" for task in tasks_sorted},
+            # Git-level: the task's branch is reachable from base, so its
+            # worktree can be pruned without losing commits.
+            "prunable": {
+                task["id"]: worktrees_map.get(str(task["id"]), {}).get("branch") in merged
+                for task in tasks_sorted
+            },
         }
 
     def merge_queue_rows(tasks: list[dict]) -> str:

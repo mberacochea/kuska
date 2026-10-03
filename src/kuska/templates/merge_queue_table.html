@@ -1,5 +1,6 @@
 {# Merge queue table #}
-<table id="merge-queue" style="width:100%">
+<table id="merge-queue" style="width:100%"
+       hx-trigger="every 5s" hx-get="/merge-queue/rows" hx-swap="outerHTML">
 <thead><tr>
   <th class="num">#</th>
   <th>Title</th>

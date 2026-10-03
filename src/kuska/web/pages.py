@@ -11,7 +11,7 @@ from .. import worktree
 from ..db import HUMAN, TASK_STATUSES
 from ..export import export_markdown
 from ..markdown import render as md
-from ..project import find_project, registry_load
+from ..project import registry_load
 from ..store import (
     add_dependency,
     add_task,
@@ -474,36 +474,36 @@ def register(app, ctx) -> None:
 
     @app.post("/tasks/<int:task_id>/prune")
     def prune_task_worktree(task_id: int) -> str:
-        """POST /tasks/<id>/prune - Remove a task's worktree and branch."""
+        """POST /tasks/<id>/prune - Remove a merged task's worktree and branch,
+        then mark the task done so it leaves the queue."""
         task = get_task(db(), task_id)
         if not task:
             return "", 404
 
-        if not task.get("worktree_path"):
-            return _toast("No worktree for this task"), 200
+        def rows(message: str) -> str:
+            # Always 200: htmx doesn't swap 4xx bodies, so the toast would be lost
+            return merge_queue_rows(list_tasks(db(), status="ready_to_merge")) + _toast(message)
 
-        project = find_project(request.args.get("project"))
+        if not task.get("worktree_path"):
+            return rows("No worktree for this task")
+
+        project = state["project"]
         base = worktree.base_branch(project)
         path = Path(task["worktree_path"])
-        branch = worktree.list_worktrees(project)
 
         # Find the branch for this worktree
-        task_branch = None
-        for wt in branch:
-            if Path(wt["path"]).resolve() == path.resolve():
-                task_branch = wt.get("branch")
-                break
+        task_branch = next(
+            (wt.get("branch") for wt in worktree.list_worktrees(project)
+             if Path(wt["path"]).resolve() == path.resolve()),
+            None,
+        )
 
-        # Check if branch is merged
-        merged = worktree.merged_branches(project, base)
-        if task_branch and task_branch not in merged:
-            return _toast("Branch is not merged - cannot prune"), 400
+        if task_branch and task_branch not in worktree.merged_branches(project, base):
+            return rows("Branch is not merged - cannot prune")
 
-        # Remove the worktree
         success, msg = worktree.remove_worktree(project, path, task_branch)
-        if success:
-            # Clear the worktree_path from the task
-            update_task(db(), task_id, worktree_path=None)
-            return merge_queue_rows(list_tasks(db(), status="ready_to_merge"))
-        else:
-            return _toast(f"Failed to prune: {msg}"), 400
+        if not success:
+            return rows(f"Failed to prune: {msg}")
+        update_task(db(), task_id, worktree_path=None)
+        update_task_status(db(), task_id, "done")
+        return rows(f"task {task_id} pruned")

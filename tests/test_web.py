@@ -524,6 +524,28 @@ def test_web(project: Path) -> None:
     # Test marking merged
     marked = c.post(f"/tasks/{merge_task_1}/merged").get_data(as_text=True)
     check("POST /tasks/<id>/merged sets done", ac.get_task(conn, merge_task_1)["status"] == "done")
+    check("merge queue table keeps its polling trigger", 'hx-get="/merge-queue/rows"' in marked)
+
+    # Prune: disabled while the branch has unmerged commits, enabled once merged
+    def prune_button(html: str) -> str:
+        start = html.index(f'hx-post="/tasks/{merge_task_2}/prune"')
+        return html[start:html.index(">", start)]
+
+    (path2 / "change.txt").write_text("work")
+    subprocess.run(["git", "add", "."], cwd=path2, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "work"], cwd=path2, check=True, capture_output=True)
+    rows = c.get("/merge-queue/rows", headers=HX).get_data(as_text=True)
+    check("prune disabled for an unmerged branch", "disabled" in prune_button(rows))
+    subprocess.run(["git", "merge", "--no-ff", "-m", "merge", branch2], cwd=project, check=True, capture_output=True)
+    rows = c.get("/merge-queue/rows", headers=HX).get_data(as_text=True)
+    check("prune enabled once the branch is merged", "disabled" not in prune_button(rows))
+    check("prune swaps the queue, not the body", 'hx-target="#merge-queue"' in prune_button(rows))
+    pruned = c.post(f"/tasks/{merge_task_2}/prune", headers=HX)
+    check("POST /tasks/<id>/prune succeeds", pruned.status_code == 200 and "pruned" in pruned.get_data(as_text=True))
+    check("prune removes the worktree", not path2.exists())
+    check("prune marks the task done", ac.get_task(conn, merge_task_2)["status"] == "done")
+    # Re-open it so later checks that use this task still see it
+    ac.update_task_status(conn, merge_task_2, "ready_to_merge")
 
     # Test that diff command in task detail has three dots, not two
     task_detail = c.get(f"/tasks/{merge_task_2}", headers=HX).get_data(as_text=True)
