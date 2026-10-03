@@ -43,7 +43,7 @@ if not BUNDLE_CLIS:
     binaries = [b for b in binaries if keep(b)]
 
 # the daemons are reached through importlib, so PyInstaller cannot see them
-hiddenimports += ["kuska.daemons.claude", "kuska.daemons.codex"]
+hiddenimports += ["kuska.daemons.claude", "kuska.daemons.codex", "kuska.daemons.openai"]
 
 # Jinja templates, the stylesheet and the `kuska init` templates are read from
 # disk at runtime, so they have to travel with the binary, at the same path

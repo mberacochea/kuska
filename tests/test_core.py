@@ -798,6 +798,22 @@ def main() -> None:
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
+    print("lazy imports")
+    probes = [
+        (
+            "import kuska pulls in no front-end or SDK",
+            "import sys, kuska; bad = [m for m in ('flask', 'mcp', 'claude_agent_sdk', 'openai_codex', 'openai') if m in sys.modules]; print(bad); sys.exit(1 if bad else 0)",
+        ),
+        ("create_app and run_mcp load on demand", "import kuska; kuska.create_app; kuska.run_mcp"),
+        (
+            "kuska.daemons does not import the claude SDK",
+            "import sys, kuska.daemons as d; assert 'claude_agent_sdk' not in sys.modules",
+        ),
+    ]
+    for label, code in probes:
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+        check(label, r.returncode == 0, r.stdout + r.stderr)
+
     print(f"\n{PASSED} checks passed")
 
 

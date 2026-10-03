@@ -126,10 +126,29 @@ from .store import (
     wait_for_task,
 )
 from .tools import TOOL_SPECS, call_tool, tool_result_text, toolset
-from .web import create_app
-from .mcp_server import run_mcp
-
 __version__ = "0.1.0"
 
 
-__all__ = [n for n in dir() if not n.startswith("_")]
+def __getattr__(name):
+    """Import the heavy front-ends on first use (PEP 562).
+
+    ``create_app`` pulls in Flask/Jinja/flask-htmx and ``run_mcp`` the MCP SDK.
+    Importing them eagerly made every ``import kuska`` - each daemon, the MCP
+    server and every test - pay for both, and a broken or missing optional
+    dependency stopped unrelated agents from starting. ``kuska.create_app`` and
+    ``kuska.run_mcp`` still work; they just load on first access. Please do not
+    move these back to top-level imports.
+    """
+    if name == "create_app":
+        from .web import create_app
+
+        return create_app
+    if name == "run_mcp":
+        from .mcp_server import run_mcp
+
+        return run_mcp
+    raise AttributeError(f"module 'kuska' has no attribute {name!r}")
+
+
+# the lazy names are not in dir() until first accessed, so list them explicitly
+__all__ = [n for n in dir() if not n.startswith("_")] + ["create_app", "run_mcp"]
