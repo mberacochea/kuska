@@ -573,7 +573,7 @@ def test_features(conn):
     assert ac.get_task(conn, f1)["feature"] == "run-ledger", "task dict carries the feature name"
     assert ac.get_task(conn, f3)["feature"] is None and ac.get_task(conn, f3)["feature_id"] is None, "no feature is None"
     assert [t["id"] for t in ac.list_tasks(conn, feature="Run-Ledger")] == [f1, f2], "list_tasks filters by feature"
-    from kuska.store import filter_tasks
+    from kuska.store import filter_tasks, list_tags
     assert {t["id"] for t in filter_tasks(conn, feature=["run-ledger"])} == {f1, f2}, "filter_tasks by feature"
     assert (f3 in {t["id"] for t in filter_tasks(conn, feature=[""])}
           and f1 not in {t["id"] for t in filter_tasks(conn, feature=[""])}), "filter_tasks: empty string means no feature"
@@ -674,6 +674,52 @@ def test_migration_016_task_kind(tmp_path):
     )
     ac.init_db(old)
     assert [t["kind"] for t in ac.list_tasks(old)] == ["answer", "work"], "only the answer-tagged task is backfilled"
+    old.close()
+
+
+def test_task_tags_table(conn):
+    from kuska.store import filter_tasks, list_tags
+    t = ac.add_task(conn, "tag norm", tags="Bug, ui,bug")
+    assert ac.get_task(conn, t)["tags"] == "bug,ui", "add_task normalises tags"
+    d = ac.add_task(conn, "tag debug", tags="debug")
+    plain = ac.add_task(conn, "tag none")
+    got = {x["id"] for x in filter_tasks(conn, tags=["bug"])}
+    assert t in got and d not in got, "tag filter is exact: bug does not match debug"
+    got = {x["id"] for x in filter_tasks(conn, tags=[""])}
+    assert plain in got and t not in got and d not in got, "empty tag matches only untagged tasks"
+    assert ac.get_task(conn, plain)["tags"] is None, "untagged task has tags None"
+    assert {x["id"]: x["tags"] for x in ac.list_tasks(conn)}[t] == "bug,ui", "list_tasks fills tags"
+    before = ac.get_task(conn, t)["updated_at"]
+    time.sleep(0.01)
+    ac.update_task(conn, t, tags="")
+    after = ac.get_task(conn, t)
+    assert after["tags"] is None and after["updated_at"] > before, "update_task tags='' clears and bumps updated_at"
+    ac.add_task_tags(conn, t, "zeta, Alpha")
+    ac.add_task_tags(conn, t, "alpha")
+    assert ac.get_task(conn, t)["tags"] == "alpha,zeta", "add_task_tags adds without duplicates"
+    ac.remove_task_tags(conn, t, "ALPHA,missing")
+    assert ac.get_task(conn, t)["tags"] == "zeta", "remove_task_tags removes"
+    ac.set_task_tags(conn, t, "q")
+    assert ac.get_task(conn, t)["tags"] == "q", "set_task_tags replaces"
+    tags = list_tags(conn)
+    assert tags == sorted(set(tags)) and "debug" in tags and "q" in tags, "list_tags sorted and distinct"
+    ac.delete_task(conn, d)
+    n = conn.execute_sql("SELECT COUNT(*) FROM task_tags WHERE task_id = ?", (d,)).fetchone()[0]
+    assert n == 0, "deleting a task deletes its task_tags rows"
+
+
+def test_migration_017_task_tags(tmp_path):
+    from kuska.migration import run_migrations
+    old = ac.connect(tmp_path / "old17.db")
+    run_migrations(old, target_version="016_add_task_kind")
+    old.execute_sql(
+        "INSERT INTO tasks (title, status, tags, created_at, updated_at) VALUES "
+        "('a', 'todo', ' A,b ,,a', 0, 0)"
+    )
+    ac.init_db(old)
+    assert ac.list_tasks(old)[0]["tags"] == "a,b", "backfill normalises old tags"
+    names = [r[0] for r in old.execute_sql("SELECT name FROM sqlite_master WHERE tbl_name = 'task_tags' AND type = 'index'")]
+    assert len(names) == len(set(names)) == 2, "init_db adds no duplicate indexes"
     old.close()
 
 

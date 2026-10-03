@@ -31,6 +31,7 @@ from .models import (
     Run,
     Task,
     TaskDep,
+    TaskTag,
     row,
     rows,
 )
@@ -59,6 +60,13 @@ TABLES: dict[str, dict[str, Any]] = {
         "editable": ["task", "depends_on"],
         "insertable": ["task", "depends_on"],
         "note": "task waits for depends_on - a task only runs once every task it depends on is done",
+    },
+    "task_tags": {
+        "label": "Tags",
+        "model": TaskTag,
+        "order": lambda m: m.task,
+        "editable": ["task", "tag"],
+        "insertable": ["task", "tag"],
     },
     "agents": {
         "label": "Agents",

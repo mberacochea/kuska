@@ -79,7 +79,6 @@ class Task(Base):
         Feature, field="id", column_name="feature_id", null=True, backref="tasks",
         on_delete="SET NULL", lazy_load=False,
     )
-    tags = TextField(null=True)  # comma-separated tags for filtering and grouping
     worktree_path = TextField(null=True)  # path to the worktree, if one exists
     worktree_base_sha = TextField(null=True)  # commit the task branch started from
     created_at = FloatField(default=time.time)
@@ -103,6 +102,20 @@ class TaskDep(Base):
     class Meta:
         table_name = "task_deps"
         indexes = ((("task", "depends_on"), True),)  # one edge per pair
+
+
+class TaskTag(Base):
+    """One tag on one task (lowercase, unique per task)."""
+
+    id = AutoField()
+    task = ForeignKeyField(
+        Task, column_name="task_id", on_delete="CASCADE", backref="tag_rows", lazy_load=False
+    )
+    tag = CharField()
+
+    class Meta:
+        table_name = "task_tags"
+        indexes = ((("task", "tag"), True),)
 
 
 class Message(Base):
@@ -189,7 +202,7 @@ class Run(Base):
         table_name = "runs"
 
 
-MODELS = [Agent, Feature, Task, TaskDep, Message, Doc, Event, Run]
+MODELS = [Agent, Feature, Task, TaskDep, TaskTag, Message, Doc, Event, Run]
 
 # per connection. WAL is not among them: it is a property of the file, set
 # once by connect() - see _ensure_wal

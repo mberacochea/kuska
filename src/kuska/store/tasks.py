@@ -10,7 +10,7 @@ from typing import Any
 from peewee import JOIN, SqliteDatabase, fn
 
 from ..db import TASK_KINDS, TASK_STATUSES, now
-from ..models import Feature, Task, TaskDep, row, rows
+from ..models import Feature, Task, TaskDep, TaskTag, row, rows
 from .common import bound
 from .features import ensure_feature, norm_feature_name
 
@@ -36,6 +36,53 @@ def _norm_tags(value: str | None) -> str | None:
         if tag:
             tags.add(tag)
     return ','.join(sorted(tags)) if tags else None
+
+
+def _tag_set(value: str | None) -> list[str]:
+    """The normalised tags in a comma-separated string, sorted."""
+    norm = _norm_tags(value)
+    return norm.split(",") if norm else []
+
+
+def _with_tags(task_dicts: list[dict]) -> list[dict]:
+    """Set each dict's "tags" to its sorted comma-joined tags, None when it has none.
+
+    One query for all of them; the storage is the task_tags table but callers
+    still see the comma-separated string."""
+    by_task: dict[int, list[str]] = {}
+    ids = [t["id"] for t in task_dicts]
+    if ids:
+        for r in TaskTag.select(TaskTag.task, TaskTag.tag).where(TaskTag.task.in_(ids)).tuples():
+            by_task.setdefault(r[0], []).append(r[1])
+    for t in task_dicts:
+        t["tags"] = ",".join(sorted(by_task[t["id"]])) if t["id"] in by_task else None
+    return task_dicts
+
+
+@bound
+def set_task_tags(db: SqliteDatabase, task_id: int, tags: str | None) -> None:
+    """Replace all of a task's tags with the given comma-separated ones.
+
+    None or "" clears them. Tags are stripped, lowercased and deduplicated."""
+    with db.atomic():
+        TaskTag.delete().where(TaskTag.task == task_id).execute()
+        for tag in _tag_set(tags):
+            TaskTag.create(task=task_id, tag=tag)
+
+
+@bound
+def add_task_tags(db: SqliteDatabase, task_id: int, tags: str) -> None:
+    """Add comma-separated tags to a task; tags it already has are kept as they are."""
+    for tag in _tag_set(tags):
+        TaskTag.insert(task=task_id, tag=tag).on_conflict_ignore().execute()
+
+
+@bound
+def remove_task_tags(db: SqliteDatabase, task_id: int, tags: str) -> None:
+    """Remove comma-separated tags from a task; ones it does not have are ignored."""
+    named = _tag_set(tags)
+    if named:
+        TaskTag.delete().where((TaskTag.task == task_id) & TaskTag.tag.in_(named)).execute()
 
 
 @bound
@@ -85,10 +132,10 @@ def add_task(
         status="todo",
         kind=kind,
         feature_id=ensure_feature(db, feature),
-        tags=_norm_tags(tags),
         created_at=ts,
         updated_at=ts,
     )
+    set_task_tags(db, task.id, tags)
     return int(task.id)
 
 
@@ -189,10 +236,12 @@ def update_task(db: SqliteDatabase, task_id: int, **fields: Any) -> None:
         sets["assigned_to"] = sets["assigned_to"] or None
     if "feature" in sets:
         sets["feature_id"] = ensure_feature(db, sets.pop("feature"))
-    if "tags" in sets:
-        sets["tags"] = _norm_tags(sets["tags"])
+    tags = sets.pop("tags", None) if "tags" in sets else None
     sets["updated_at"] = now()
-    Task.update(**sets).where(Task.id == task_id).execute()
+    with db.atomic():
+        Task.update(**sets).where(Task.id == task_id).execute()
+        if "tags" in fields:
+            set_task_tags(db, task_id, tags)
 
 
 @bound
@@ -228,7 +277,7 @@ def list_tasks(
         query = query.where(Task.status == status)
     if feature:
         query = query.where(Feature.name == norm_feature_name(feature))
-    return rows(query)
+    return _with_tags(rows(query))
 
 
 @bound
@@ -255,7 +304,7 @@ def filter_tasks(
                  in the list also matches tasks with no feature.
         tags: Optional list of tags to include. Tasks matching any of the tags
               are included. An empty string in the list also matches untagged
-              tasks (Task.tags IS NULL).
+              tasks (no task_tags rows).
         sort_by: One of "title", "assigned_to", "status", "created_at",
                  "updated_at". Defaults to updated_at desc, created_at desc.
                  Rows are always grouped by feature first (ungrouped last),
@@ -289,10 +338,12 @@ def filter_tasks(
 
     if tags:
         named = [t for t in tags if t]
-        conditions = [Task.tags.contains(tag) for tag in named]
+        conditions = []
+        if named:
+            conditions.append(Task.id.in_(TaskTag.select(TaskTag.task).where(TaskTag.tag.in_(named))))
         if "" in tags:
             # also match untagged tasks
-            conditions.append(Task.tags.is_null())
+            conditions.append(Task.id.not_in(TaskTag.select(TaskTag.task)))
         if conditions:
             query = query.where(functools.reduce(operator.or_, conditions))
 
@@ -314,7 +365,7 @@ def filter_tasks(
             group, fn.COALESCE(Task.updated_at, 0).desc(), fn.COALESCE(Task.created_at, 0).desc()
         )
 
-    return rows(query)
+    return _with_tags(rows(query))
 
 
 @bound
@@ -331,15 +382,7 @@ def list_tags(db: SqliteDatabase) -> list[str]:
         >>> list_tags(db)
         ["bug", "feature", "urgent"]
     """
-    query = Task.select(Task.tags).where(Task.tags.is_null(False)).distinct()
-    all_tags = set()
-    for task in rows(query):
-        if task.get("tags"):
-            for tag in task["tags"].split(","):
-                tag = tag.strip()
-                if tag:
-                    all_tags.add(tag)
-    return sorted(list(all_tags))
+    return [r[0] for r in TaskTag.select(TaskTag.tag).distinct().order_by(TaskTag.tag).tuples()]
 
 
 @bound
@@ -353,7 +396,8 @@ def get_task(db: SqliteDatabase, task_id: int) -> dict | None:
     Returns:
         dict: Task record, or None if not found.
     """
-    return row(_tasks().where(Task.id == task_id))
+    found = row(_tasks().where(Task.id == task_id))
+    return _with_tags([found])[0] if found else None
 
 
 def _unmet_dependency_tasks():
@@ -426,7 +470,7 @@ def claim_task(db: SqliteDatabase, agent_name: str) -> dict | None:
         )
         if not taken:  # another daemon claimed it between the select and here
             return None
-        return row(_tasks().where(Task.id == candidate.id))
+        return _with_tags([row(_tasks().where(Task.id == candidate.id))])[0]
 
 
 @bound

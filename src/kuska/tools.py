@@ -23,6 +23,7 @@ from .runtime import store_workflow_context
 from .store import (
     add_dependency,
     add_task,
+    add_task_tags,
     ask_agent,
     docs_get,
     docs_list,
@@ -33,6 +34,7 @@ from .store import (
     list_features,
     list_tags,
     list_tasks,
+    remove_task_tags,
     reply,
     send_message,
     set_run_result_message,
@@ -194,58 +196,19 @@ def _operator_docs_set_handler(db, agent, args):
 def _add_tag_handler(db, agent, args):
     """Handler for the add_tag tool."""
     task_id = args["task_id"]
-    new_tags = args["tags"]
-
-    task = get_task(db, task_id)
-    if not task:
+    if not get_task(db, task_id):
         return {"error": f"Task {task_id} not found"}
-
-    # Get existing tags
-    existing_tags = set()
-    if task.get("tags"):
-        existing_tags = set(task["tags"].split(","))
-
-    # Add new tags
-    for tag in new_tags.split(","):
-        tag = tag.strip().lower()
-        if tag:
-            existing_tags.add(tag)
-
-    # Update task with combined tags
-    combined_tags = ",".join(sorted(existing_tags)) if existing_tags else None
-    update_task(db, task_id, tags=combined_tags)
-
-    # Return updated task
-    updated_task = get_task(db, task_id)
-    return updated_task or {}
+    add_task_tags(db, task_id, args["tags"])
+    return get_task(db, task_id) or {}
 
 
 def _remove_tag_handler(db, agent, args):
     """Handler for the remove_tag tool."""
     task_id = args["task_id"]
-    tags_to_remove = args["tags"]
-
-    task = get_task(db, task_id)
-    if not task:
+    if not get_task(db, task_id):
         return {"error": f"Task {task_id} not found"}
-
-    # Get existing tags
-    existing_tags = set()
-    if task.get("tags"):
-        existing_tags = set(task["tags"].split(","))
-
-    # Remove tags
-    for tag in tags_to_remove.split(","):
-        tag = tag.strip().lower()
-        existing_tags.discard(tag)
-
-    # Update task with remaining tags
-    combined_tags = ",".join(sorted(existing_tags)) if existing_tags else None
-    update_task(db, task_id, tags=combined_tags)
-
-    # Return updated task
-    updated_task = get_task(db, task_id)
-    return updated_task or {}
+    remove_task_tags(db, task_id, args["tags"])
+    return get_task(db, task_id) or {}
 
 
 TOOL_SPECS: list[dict] = [

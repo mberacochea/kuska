@@ -92,6 +92,7 @@ a file lock, so processes starting together take turns.
 erDiagram
   AGENTS ||--o{ TASKS : "assigned_to"
   FEATURES ||--o{ TASKS : "feature_id"
+  TASKS ||--o{ TASK_TAGS : "task_id"
   TASKS ||--o{ TASK_DEPS : "task_id waits"
   TASKS ||--o{ TASK_DEPS : "depends_on"
   TASKS ||--o{ DOCS : "task_id (optional)"
@@ -120,8 +121,11 @@ erDiagram
     string status "see agents_flow.md"
     string kind "work, answer, review"
     int feature_id FK
-    string tags "comma-separated"
     string worktree_path
+  }
+  TASK_TAGS {
+    int task_id FK
+    string tag
   }
   TASK_DEPS {
     int task_id FK
