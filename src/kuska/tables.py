@@ -105,7 +105,8 @@ TABLES: dict[str, dict[str, Any]] = {
 }
 
 # columns whose name says they hold a timestamp, rendered as "3m ago"
-TS_COLUMNS = ("ts", "created_at", "updated_at", "last_heartbeat", "read_at", "claimed_at")
+TS_COLUMNS = ("ts", "created_at", "updated_at", "last_heartbeat", "read_at", "claimed_at",
+              "started_at", "heartbeat_at", "ended_at")
 
 
 def spec(table: str) -> dict:
