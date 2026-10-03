@@ -705,6 +705,20 @@ def main() -> None:
         from kuska.tables import TABLES
         check("runs is on the Data page", "runs" in TABLES)
 
+        print("reply tool links the run's result message")
+        lt = ac.add_task(conn, "linked reply subject", assigned_to="dev-agent")
+        ac.update_task_status(conn, lt, "in_progress")
+        ac.start_run(conn, "r1", lt, "dev-agent")
+        out = ac.call_tool(conn, "dev-agent", "reply", {"task_id": lt, "payload": "ok"},
+                           ac.toolset({"flavor": "dev"}))
+        check("reply tool stores its message id on the run",
+              ac.get_run(conn, "r1")["result_message_id"] == out["id"], (out, ac.get_run(conn, "r1")))
+        mid = ac.finish_task(conn, "dev-agent", lt, "text", since=time.time() + 1000, run_id="r1", cost_usd=0.2)
+        results = [m for m in ac.task_messages(conn, lt) if m["msg_type"] == "result"]
+        check("finish_task with a run id books usage on the linked reply, whatever `since` says",
+              mid == out["id"] and len(results) == 1 and results[0]["id"] == out["id"]
+              and results[0]["cost_usd"] == 0.2, (mid, results))
+
         print("lifecycle")
         from kuska.store import TRANSITIONS, InvalidTransition, transition
 
