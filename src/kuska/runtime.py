@@ -195,7 +195,7 @@ def compose_task_prompt(
 
     # leave them unread for now: the daemon marks them read only once a run has
     # succeeded, so a run that fails cannot swallow a message it never acted on
-    inbox = get_inbox(db, agent_name, mark_read=False)
+    inbox = get_inbox(db, agent_name, mark_read=False, for_task=task["id"])
     inbox_message_ids = [m["id"] for m in inbox]
     all_history = [
         m for m in task_messages(db, task["id"]) if m["id"] not in {i["id"] for i in inbox}
@@ -223,8 +223,7 @@ def compose_task_prompt(
     if inbox:
         parts += ["## New messages for you", ""]
         for m in inbox:
-            scope = f" (task {m['task_id']})" if m["task_id"] and m["task_id"] != task["id"] else ""
-            parts += [f"**{m['sender']}**{scope} ({m['msg_type']}):", m["payload"] or "", ""]
+            parts += [f"**{m['sender']}** ({m['msg_type']}):", m["payload"] or "", ""]
 
     return "\n".join(parts), inbox_message_ids
 

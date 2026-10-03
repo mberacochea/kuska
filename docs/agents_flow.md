@@ -118,7 +118,8 @@ sets any status; leaves a note).
 
 A message to an agent stays unread until one of that agent's runs has seen it
 in its prompt and succeeded; the daemon marks it read then, so a failed run
-never swallows a message.
+never swallows a message. A run's prompt includes only unread messages about
+its own task or about no task; messages about other tasks wait for those tasks.
 
 ## Asking another agent
 

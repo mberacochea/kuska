@@ -248,7 +248,12 @@ def record_usage(db: SqliteDatabase, message_id: int, **usage: Any) -> None:
 
 
 @bound
-def get_inbox(db: SqliteDatabase, agent_name: str, mark_read: bool = True) -> list[dict]:
+def get_inbox(
+    db: SqliteDatabase,
+    agent_name: str,
+    mark_read: bool = True,
+    for_task: int | None = None,
+) -> list[dict]:
     """Fetch unread messages addressed to this agent, oldest first.
 
     On each invocation, agents call get_inbox() to learn what the human or other
@@ -259,6 +264,7 @@ def get_inbox(db: SqliteDatabase, agent_name: str, mark_read: bool = True) -> li
         db: SqliteDatabase instance for this project.
         agent_name: Agent to fetch messages for.
         mark_read: If True (default), mark fetched messages as read.
+        for_task: If given, keep only messages about this task or about no task.
 
     Returns:
         list[dict]: Unread message records, chronologically ordered. Each has:
@@ -270,11 +276,12 @@ def get_inbox(db: SqliteDatabase, agent_name: str, mark_read: bool = True) -> li
         >>> for msg in inbox:
         ...     print(f"{msg['sender']}: {msg['payload']}")
     """
-    unread = rows(
-        Message.select()
-        .where((Message.recipient == agent_name) & Message.read_at.is_null())
-        .order_by(Message.ts)
+    query = Message.select().where(
+        (Message.recipient == agent_name) & Message.read_at.is_null()
     )
+    if for_task is not None:
+        query = query.where(Message.task_id.is_null() | (Message.task_id == for_task))
+    unread = rows(query.order_by(Message.ts))
     if unread and mark_read:
         Message.update(read_at=now()).where(
             Message.id.in_([m["id"] for m in unread])
