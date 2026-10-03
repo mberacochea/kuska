@@ -28,6 +28,7 @@ from .models import (
     Event,
     Feature,
     Message,
+    Run,
     Task,
     TaskDep,
     row,
@@ -92,6 +93,14 @@ TABLES: dict[str, dict[str, Any]] = {
         "editable": ["kind", "label", "body"],
         "insertable": ["agent", "task_id", "run_id", "kind", "label", "body"],
         "note": "the agent monologue - normally append-only, deletable here to prune",
+    },
+    "runs": {
+        "label": "Runs",
+        "model": Run,
+        "order": lambda m: m.started_at.desc(),
+        "editable": ["status", "exit_reason"],
+        "insertable": [],
+        "note": "one row per agent invocation - the daemon writes these",
     },
 }
 

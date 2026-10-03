@@ -27,6 +27,9 @@ HUMAN = "human"
 TASK_STATUSES = ("todo", "ready", "in_progress", "needs_approval", "ready_to_merge", "blocked", "done")
 HOLDING_STATUSES = ("needs_approval", "ready_to_merge", "blocked")
 AGENT_STATUSES = ("idle", "working", "offline")
+# a run (one agent invocation, table `runs`) is 'running' until it ends; 'abandoned'
+# is for a run whose process vanished without ending it (found by a stale heartbeat)
+RUN_STATUSES = ("running", "finished", "failed", "abandoned")
 
 # What one agent invocation narrates as it works. `messages` stays what agents
 # and humans say to each other; this is the monologue underneath it.
