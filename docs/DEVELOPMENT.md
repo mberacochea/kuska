@@ -82,15 +82,10 @@ uv run pytest              # everything
 uv run pytest -k <name>    # one suite or test, e.g. -k test_web or -k token
 ```
 
-New tests are plain pytest functions using the `project` and `conn` fixtures in
-`tests/conftest.py`. The big legacy suites (`test_core.py`, `test_daemon.py`,
-`test_web.py`, `test_worktree.py`, `test_search.py`, `test_guardrails.py`,
-`test_concurrent_init.py`, `eventfmt_test.py`) are scripts that stop at their
-first failing check; `tests/test_legacy_suites.py` runs each as a subprocess
-until it is converted. To convert one, rewrite it as pytest functions and remove
-it from `collect_ignore` in `conftest.py` and from the list in
-`test_legacy_suites.py`. `uv run tests/run_all.py` forwards its arguments to
-pytest.
+Tests are plain pytest functions (`def test_...`, plain `assert`) using the
+`project` and `conn` fixtures in `tests/conftest.py`. `test_core.py`,
+`test_web.py` and `test_board.py` share one project per file and run in file
+order. `uv run tests/run_all.py` forwards its arguments to pytest.
 
 ## Monitoring
 
@@ -291,4 +286,4 @@ Context is automatically included in agent prompts via `compose_task_prompt()`.
 - **Dev → Review**: 15-20% (skips re-reading implementation details)
 - **Total for workflow**: 20-30% across the chain
 
-See test `check_workflow_context` in `tests/test_daemon.py` for verification.
+See test `test_workflow_context` in `tests/test_daemon.py` for verification.

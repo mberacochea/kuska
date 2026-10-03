@@ -1,6 +1,5 @@
-#!/usr/bin/env python3
-"""Standalone checks for the guardrail matcher - no test framework, no DB:
-`uv run tests/test_guardrails.py`.
+"""Checks for the guardrail matcher - no DB:
+`uv run pytest tests/test_guardrails.py`.
 
 Written against the CONTRACT task 4 pinned, not against guardrails.py's
 internals (segments()/flags()/matches()/etc. are never imported or called
@@ -27,22 +26,13 @@ case below climbs, which would land back inside the "allowed" temp zone
 and falsely pass. A path under the repo avoids that entirely.
 """
 
-import sys
 from pathlib import Path
 
 import kuska as core
 
-PASSED = 0
-
-
-def check(label: str, cond: bool, detail: str = "") -> None:
-    global PASSED
-    if cond:
-        PASSED += 1
-        print(f"  ok   {label}")
-    else:
-        print(f"  FAIL {label} {detail}")
-        sys.exit(1)
+# Not created on disk - see the module docstring for why this must not
+# be a tempdir. normalize_path()/Path.resolve() don't need it to exist.
+project = Path(__file__).resolve().parent / "_fake_project_do_not_create"
 
 
 def deny(command: str, project=None, rule: str | None = None) -> dict:
@@ -50,29 +40,22 @@ def deny(command: str, project=None, rule: str | None = None) -> dict:
     the commands where exactly one rule can possibly fire.
     """
     v = core.check_command(command, project)
-    check(f"denied: {command}", v.get("allowed") is False, v)
+    assert v.get("allowed") is False, f"denied: {command} {v}"
     if rule is not None:
-        check(f"  rule is {rule}: {command}", v.get("rule") == rule, v)
+        assert v.get("rule") == rule, f"rule is {rule}: {command} {v}"
     return v
 
 
 def allow(command: str, project=None) -> dict:
     v = core.check_command(command, project)
-    check(f"allowed: {command}", v == {"allowed": True}, v)
+    assert v == {"allowed": True}, f"allowed: {command} {v}"
     return v
 
 
-def main() -> None:
-    # Not created on disk - see the module docstring for why this must not
-    # be a tempdir. normalize_path()/Path.resolve() don't need it to exist.
-    project = Path(__file__).resolve().parent / "_fake_project_do_not_create"
-
-    # ------------------------------------------------------------
-    print("true positives - one per rule")
-    # ------------------------------------------------------------
+def test_true_positives():
     deny("rm -rf /", project, "rm-rf")
-    deny("rm -fr build", project, "rm-rf")           # bundled flags, reversed order
-    deny("rm -r -f .", project, "rm-rf")             # separate flags
+    deny("rm -fr build", project, "rm-rf")  # bundled flags, reversed order
+    deny("rm -r -f .", project, "rm-rf")  # separate flags
     deny("sudo rm x", project, "sudo")
     deny("git reset --hard HEAD~3", project, "git-reset-hard")
     deny("git push --force origin main", project, "git-push-force")
@@ -102,23 +85,25 @@ def main() -> None:
     deny("git worktree list", project, "git-worktree")
     deny("git worktree remove path", project, "git-worktree")
 
-    # ------------------------------------------------------------
-    print("evasions")
-    # ------------------------------------------------------------
+
+def test_evasions():
     v = deny("ls && rm -rf /", project, "rm-rf")
-    check("command is the segment, not the pipeline", v["command"] == "rm -rf /", v)
-    check("the harmless half is not quoted back", "ls" not in v["command"], v)
+    assert v["command"] == "rm -rf /", "command is the segment, not the pipeline"
+    assert "ls" not in v["command"], "the harmless half is not quoted back"
 
-    v = deny("ls;rm -rf /", project, "rm-rf")  # no space - plain shlex.split glues "ls;rm" together
-    check("command is the segment, not the pipeline", v["command"] == "rm -rf /", v)
-    check("the harmless half is not quoted back", "ls" not in v["command"], v)
+    v = deny(
+        "ls;rm -rf /", project, "rm-rf"
+    )  # no space - plain shlex.split glues "ls;rm" together
+    assert v["command"] == "rm -rf /", "command is the segment, not the pipeline"
+    assert "ls" not in v["command"], "the harmless half is not quoted back"
 
-    deny("nohup sudo rm -rf x", project, "sudo")  # wrapper-stripped before the program check
-    deny("true | sudo sh", project, "sudo")       # second segment of a pipe, not the first
+    deny(
+        "nohup sudo rm -rf x", project, "sudo"
+    )  # wrapper-stripped before the program check
+    deny("true | sudo sh", project, "sudo")  # second segment of a pipe, not the first
 
-    # ------------------------------------------------------------
-    print("false positives - substring matching would trip on all of these")
-    # ------------------------------------------------------------
+
+def test_false_positives():
     allow("touch 'rm -rf.txt'", project)
     allow('echo "rm -rf /"', project)
     allow('git commit -m "remove rm -rf from the docs"', project)
@@ -131,85 +116,99 @@ def main() -> None:
     allow("cat install.sh | grep curl", project)
     allow("chmod 755 script.sh", project)
     allow("chmod +x script.sh", project)
-    allow("echo hi > out.txt", project)       # inside the project
+    allow("echo hi > out.txt", project)  # inside the project
     allow("echo hi > /dev/null", project)
     allow("pytest tests/ 2>&1", project)
-    allow("rm build/stale.o", project)        # non-recursive, inside the project
+    allow("rm build/stale.o", project)  # non-recursive, inside the project
     allow('sqlite3 .agents/project.db "select count(*) from tasks"', project)
     allow("sqlite3 .agents/project.db .schema", project)
     allow("uv run tests/run_all.py", project)
 
     v = allow('echo "unbalanced', project)  # unbalanced quote: shlex can't parse it
-    check("fallback allows rather than denies", v == {"allowed": True}, v)
+    assert v == {"allowed": True}, "fallback allows rather than denies"
     allow("git restore src/foo.py", project)
     allow("git restore .", project)
     allow("git stash", project)
     allow("git stash pop", project)
     allow("git commit -m 'message'", project)
 
-    # ------------------------------------------------------------
-    print("project=None skips the path-aware checks")
-    # ------------------------------------------------------------
+
+def test_project_none_skips_path_checks():
     # still refused: the declarative table and download-pipe check don't need a project
     deny("rm -rf /", None, "rm-rf")
     # allowed now: outside-project/project-db are undefined without a project root
     allow("echo x > /etc/hosts", None)
     allow('sqlite3 .agents/project.db "DROP TABLE tasks"', None)
 
-    # ------------------------------------------------------------
-    print("edge cases")
-    # ------------------------------------------------------------
-    check("empty command is allowed", core.check_command("", project) == {"allowed": True})
-    check("whitespace-only command is allowed", core.check_command("   ", project) == {"allowed": True})
 
-    # ------------------------------------------------------------
-    print("verdict shape")
-    # ------------------------------------------------------------
+def test_edge_cases():
+    assert core.check_command("", project) == {"allowed": True}, (
+        "empty command is allowed"
+    )
+    assert core.check_command("   ", project) == {"allowed": True}, (
+        "whitespace-only command is allowed"
+    )
+
+
+def test_verdict_shape():
     v = core.check_command("rm -rf /", project)
-    check("allowed is False", v["allowed"] is False, v)
-    check("rule is a non-empty string", isinstance(v["rule"], str) and v["rule"], v)
-    check("reason is a non-empty string", isinstance(v["reason"], str) and v["reason"], v)
-    check("command is a non-empty string", isinstance(v["command"], str) and v["command"], v)
+    assert v["allowed"] is False, "allowed is False"
+    assert isinstance(v["rule"], str) and v["rule"], "rule is a non-empty string"
+    assert isinstance(v["reason"], str) and v["reason"], "reason is a non-empty string"
+    assert isinstance(v["command"], str) and v["command"], (
+        "command is a non-empty string"
+    )
     ok = core.check_command("git log", project)
-    check("an allowed verdict is just the one key", ok == {"allowed": True}, ok)
+    assert ok == {"allowed": True}, "an allowed verdict is just the one key"
 
-    # ------------------------------------------------------------
-    print("check_tool")
-    # ------------------------------------------------------------
+
+def test_check_tool():
     v = core.check_tool("Bash", {"command": "rm -rf /"}, project)
-    check("check_tool parses Bash commands", v["allowed"] is False and v["rule"] == "rm-rf", v)
+    assert v["allowed"] is False and v["rule"] == "rm-rf", (
+        "check_tool parses Bash commands"
+    )
     v = core.check_tool("Bash", {"command": "git log"}, project)
-    check("check_tool allows a harmless Bash command", v == {"allowed": True}, v)
+    assert v == {"allowed": True}, "check_tool allows a harmless Bash command"
     v = core.check_tool("Bash", {}, project)
-    check("check_tool tolerates a missing command", v == {"allowed": True}, v)
+    assert v == {"allowed": True}, "check_tool tolerates a missing command"
     v = core.check_tool("Edit", {"file_path": "/etc/passwd"}, project)
-    check("check_tool has nothing to say about non-Bash tools", v == {"allowed": True}, v)
+    assert v == {"allowed": True}, "check_tool has nothing to say about non-Bash tools"
     v = core.check_tool("Write", {"file_path": "anything"}, project)
-    check("check_tool has nothing to say about non-Bash tools (2)", v == {"allowed": True}, v)
+    assert v == {"allowed": True}, (
+        "check_tool has nothing to say about non-Bash tools (2)"
+    )
 
-    # ------------------------------------------------------------
-    print("refusal_text")
-    # ------------------------------------------------------------
+
+def test_refusal_text():
     v = core.check_command("rm -rf /", project)
     text = core.refusal_text(v)
-    check("names what was refused", "rm -rf /" in text, text)
-    check("points at needs_approval", "needs_approval" in text, text)
-    check("allowed verdicts have nothing to say", core.refusal_text({"allowed": True}) == "")
+    assert "rm -rf /" in text, "names what was refused"
+    assert "needs_approval" in text, "points at needs_approval"
+    assert core.refusal_text({"allowed": True}) == "", (
+        "allowed verdicts have nothing to say"
+    )
 
-    # ------------------------------------------------------------
-    print("RULES")
-    # ------------------------------------------------------------
-    check("RULES is a non-empty list of dicts", isinstance(core.RULES, list) and len(core.RULES) > 0)
-    check("every rule has an id and a reason",
-          all(isinstance(r, dict) and r.get("id") and r.get("reason") for r in core.RULES), core.RULES)
+
+def test_rules():
+    assert isinstance(core.RULES, list) and len(core.RULES) > 0, (
+        "RULES is a non-empty list of dicts"
+    )
+    assert all(
+        isinstance(r, dict) and r.get("id") and r.get("reason") for r in core.RULES
+    ), "every rule has an id and a reason"
     ids = [r["id"] for r in core.RULES]
-    check("rule ids are unique", len(ids) == len(set(ids)), ids)
-    for expected in ("rm-rf", "git-reset-hard", "git-push-force", "git-clean-force", "sudo", "chmod-777",
-                     "git-rebase", "git-merge", "git-checkout-branch", "git-switch", "git-worktree"):
-        check(f"table covers {expected}", expected in ids, ids)
-
-    print(f"\n{PASSED} checks passed")
-
-
-if __name__ == "__main__":
-    main()
+    assert len(ids) == len(set(ids)), "rule ids are unique"
+    for expected in (
+        "rm-rf",
+        "git-reset-hard",
+        "git-push-force",
+        "git-clean-force",
+        "sudo",
+        "chmod-777",
+        "git-rebase",
+        "git-merge",
+        "git-checkout-branch",
+        "git-switch",
+        "git-worktree",
+    ):
+        assert expected in ids, f"table covers {expected}"
