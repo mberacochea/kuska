@@ -71,9 +71,26 @@ uv run kuska run-all --host 127.0.0.1 --port 8080
 - **`task dev`** - Runs web UI + MCP + all configured agents in parallel (recommended!)
 - **`task run-all-agents AGENTS=<list>`** - Run web UI + MCP + specific agents
 - **`task export`** - Export project as markdown
-- **`task test`** - Run all tests
+- **`task test`** - Run all tests (`uv run pytest`)
 - **`task build`** - Build PyInstaller binary (dist/kuska)
 - **`task clean`** - Remove build artifacts and cache
+
+## Tests
+
+```bash
+uv run pytest              # everything
+uv run pytest -k <name>    # one suite or test, e.g. -k test_web or -k token
+```
+
+New tests are plain pytest functions using the `project` and `conn` fixtures in
+`tests/conftest.py`. The big legacy suites (`test_core.py`, `test_daemon.py`,
+`test_web.py`, `test_worktree.py`, `test_search.py`, `test_guardrails.py`,
+`test_concurrent_init.py`, `eventfmt_test.py`) are scripts that stop at their
+first failing check; `tests/test_legacy_suites.py` runs each as a subprocess
+until it is converted. To convert one, rewrite it as pytest functions and remove
+it from `collect_ignore` in `conftest.py` and from the list in
+`test_legacy_suites.py`. `uv run tests/run_all.py` forwards its arguments to
+pytest.
 
 ## Monitoring
 

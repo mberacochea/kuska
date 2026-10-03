@@ -1,127 +1,84 @@
-#!/usr/bin/env python3
 """Test cost anomaly detection.
 
 Cost rather than token volume: cache reads are priced an order of magnitude
 below fresh input, so a token total mixes two prices and compares nothing.
 """
 
-import shutil
-import sys
-import tempfile
-from pathlib import Path
+import pytest
 
 import kuska as ac
 
-PASSED = 0
+
+def _complete_task(conn, title, *, cost_usd, input_tokens, output_tokens,
+                   cache_read_tokens, tool_rounds):
+    task_id = ac.add_task(conn, title, assigned_to="dev-agent")
+    ac.send_message(
+        conn,
+        sender="dev-agent",
+        recipient="human",
+        task_id=task_id,
+        msg_type="result",
+        payload=f"Completed {title}",
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        tool_rounds=tool_rounds,
+        cost_usd=cost_usd,
+    )
+    return task_id
 
 
-def check(label: str, cond: bool, detail: str = "") -> None:
-    global PASSED
-    if cond:
-        PASSED += 1
-        print(f"  ok   {label}")
-    else:
-        print(f"  FAIL {label} {detail}")
-        sys.exit(1)
-
-
-def main() -> None:
-    tmp = Path(tempfile.mkdtemp(prefix="kuska-token-test-"))
-    try:
-        project = tmp / "myproject"
-        (project / ".agents" / "prompts").mkdir(parents=True)
-        ac.config_path(project).write_text(
-            '[agents.dev-agent]\nbackend = "claude"\nrole = "builder"\n'
+@pytest.fixture
+def baseline(conn):
+    """Ten typical completions: mostly cache reads, one cent each."""
+    ac.heartbeat(conn, "dev-agent", "idle")
+    for i in range(10):
+        _complete_task(
+            conn, f"Task {i}", cost_usd=0.01, input_tokens=1000,
+            output_tokens=4000, cache_read_tokens=40000, tool_rounds=12,
         )
-        conn = ac.connect(ac.db_path(project))
-        ac.init_db(conn)
-
-        print("cost anomaly detection")
-
-        # Register agent
-        ac.register_agent(conn, "dev-agent", "claude", "builder")
-        ac.heartbeat(conn, "dev-agent", "idle")
-
-        # Create baseline tasks with normal token usage
-        print("  creating baseline tasks...")
-        for i in range(10):
-            task_id = ac.add_task(conn, f"Task {i}", assigned_to="dev-agent")
-            # Simulate a typical completion: mostly cache reads, one cent
-            ac.send_message(
-                conn,
-                sender="dev-agent",
-                recipient="human",
-                task_id=task_id,
-                msg_type="result",
-                payload=f"Completed task {i}",
-                input_tokens=1000,
-                output_tokens=4000,
-                cache_read_tokens=40000,
-                tool_rounds=12,
-                cost_usd=0.01,
-            )
-
-        # Check rolling average (should be around $0.01)
-        avg = ac.calculate_rolling_cost_average(conn, window_size=10)
-        check("rolling average calculated", avg > 0, f"avg={avg}")
-        check("rolling average in expected range", 0.005 < avg < 0.015, f"avg={avg}")
-
-        # Create a task that actually cost far more
-        print("  creating anomalous task...")
-        anomaly_task_id = ac.add_task(conn, "Expensive Task", assigned_to="dev-agent")
-        ac.send_message(
-            conn,
-            sender="dev-agent",
-            recipient="human",
-            task_id=anomaly_task_id,
-            msg_type="result",
-            payload="Task that burned through round-trips",
-            input_tokens=50000,
-            output_tokens=50000,
-            cache_read_tokens=3000000,
-            tool_rounds=90,
-            cost_usd=0.1,
-        )
-
-        # Check for anomaly (should detect $0.10 >> $0.01 average)
-        result = ac.check_cost_anomaly(
-            conn,
-            task_id=anomaly_task_id,
-            cost_usd=0.1,
-            anomaly_threshold=2.0,
-            window_size=10,
-        )
-
-        check("anomaly detected", result["is_anomaly"], f"result={result}")
-        check("anomaly cost recorded", result["cost_usd"] == 0.1, f"cost={result['cost_usd']}")
-        check("anomaly multiplier > 2x", result["multiplier"] > 2.0, f"multiplier={result['multiplier']}")
-        check("anomaly event logged", result["event_id"] is not None, f"event_id={result['event_id']}")
-
-        # Verify warning event was logged
-        events = ac.recent_events(conn, limit=5)
-        check("warning event in recent events", any(e["kind"] == "warning" for e in events),
-              f"events={[e['kind'] for e in events]}")
-
-        # A run at the average cost must not be flagged, however many tokens it
-        # moved through cache - that is the whole point of costing it.
-        normal_task_id = ac.add_task(conn, "Normal Task", assigned_to="dev-agent")
-        result2 = ac.check_cost_anomaly(
-            conn,
-            task_id=normal_task_id,
-            cost_usd=0.011,
-            anomaly_threshold=2.0,
-            window_size=10,
-        )
-
-        check("normal cost not flagged", not result2["is_anomaly"], f"result={result2}")
-        check("normal cost no event", result2["event_id"] is None, f"event_id={result2['event_id']}")
-
-        print(f"\nPassed: {PASSED} checks")
-        return 0
-
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+    return conn
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+@pytest.fixture
+def anomaly(baseline):
+    """A task that cost ten times the baseline, plus the check's result."""
+    task_id = _complete_task(
+        baseline, "Expensive Task", cost_usd=0.1, input_tokens=50000,
+        output_tokens=50000, cache_read_tokens=3000000, tool_rounds=90,
+    )
+    return ac.check_cost_anomaly(
+        baseline, task_id=task_id, cost_usd=0.1,
+        anomaly_threshold=2.0, window_size=10,
+    )
+
+
+def test_rolling_average_in_expected_range(baseline):
+    avg = ac.calculate_rolling_cost_average(baseline, window_size=10)
+    assert 0.005 < avg < 0.015
+
+
+def test_expensive_task_is_flagged(anomaly):
+    assert anomaly["is_anomaly"]
+
+
+def test_anomaly_records_cost_and_multiplier(anomaly):
+    assert anomaly["cost_usd"] == 0.1
+    assert anomaly["multiplier"] > 2.0
+
+
+def test_anomaly_logs_warning_event(anomaly, conn):
+    assert anomaly["event_id"] is not None
+    events = ac.recent_events(conn, limit=5)
+    assert any(e["kind"] == "warning" for e in events)
+
+
+def test_normal_cost_not_flagged(baseline):
+    """However many tokens moved through cache, an average-cost run is normal."""
+    task_id = ac.add_task(baseline, "Normal Task", assigned_to="dev-agent")
+    result = ac.check_cost_anomaly(
+        baseline, task_id=task_id, cost_usd=0.011,
+        anomaly_threshold=2.0, window_size=10,
+    )
+    assert not result["is_anomaly"]
+    assert result["event_id"] is None
