@@ -1532,3 +1532,101 @@ def test_worktree_blocked_stays_blocked(tmp_path):
     assert task["status"] == "blocked", "worktree blocked task stays blocked"
 
     conn.close()
+
+
+# ---- supervisor ----
+
+
+def _stale_run(conn, task_id, run_id, age_s=600, status="running"):
+    core.start_run(conn, run_id, task_id, "dev-agent")
+    conn.execute_sql(
+        "UPDATE runs SET heartbeat_at = ?, status = ? WHERE id = ?",
+        (time.time() - age_s, status, run_id),
+    )
+
+
+def test_expire_runs(project):
+    from kuska import supervisor
+
+    conn = core.connect(core.db_path(project))
+    t_dead = add_ready(conn, "dead", "", "dev-agent")
+    t_fresh = add_ready(conn, "fresh", "", "dev-agent")
+    t_done = add_ready(conn, "finished", "", "dev-agent")
+    t_human = add_ready(conn, "moved", "", "dev-agent")
+    for t in (t_dead, t_fresh, t_done, t_human):
+        core.update_task_status(conn, t, "in_progress")
+    _stale_run(conn, t_dead, "r-dead")
+    _stale_run(conn, t_fresh, "r-fresh", age_s=1)
+    _stale_run(conn, t_done, "r-done", status="finished")
+    _stale_run(conn, t_human, "r-human")
+    core.update_task_status(conn, t_human, "todo")
+
+    assert sorted(supervisor.expire_runs(conn)) == ["r-dead", "r-human"]
+    assert core.get_run(conn, "r-dead")["status"] == "abandoned"
+    assert core.get_task(conn, t_dead)["status"] == "blocked"
+    msgs = core.task_messages(conn, t_dead)
+    assert any(m["msg_type"] == "blocker" and "abandoned" in m["payload"] for m in msgs)
+    assert core.get_run(conn, "r-fresh")["status"] == "running"
+    assert core.get_task(conn, t_fresh)["status"] == "in_progress"
+    assert core.get_run(conn, "r-done")["status"] == "finished"
+    assert core.get_run(conn, "r-human")["status"] == "abandoned"
+    assert core.get_task(conn, t_human)["status"] == "todo"
+    conn.close()
+
+
+def _git(cwd, *args):
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+def test_detect_merges(project):
+    from kuska import supervisor
+
+    _git(project, "init", "-b", "main")
+    _git(project, "config", "user.email", "t@example.com")
+    _git(project, "config", "user.name", "t")
+    _git(project, "config", "commit.gpgsign", "false")
+    (project / "a.txt").write_text("a")
+    _git(project, "add", "a.txt")
+    _git(project, "commit", "-m", "init")
+    conn = core.connect(core.db_path(project))
+    branches = {}
+    for name in ("merged", "open"):
+        tid = add_ready(conn, name, "", "dev-agent")
+        path, branch, _ = worktree.ensure_worktree(project, tid, name, "main")
+        core.update_task(
+            conn, tid, worktree_path=str(path),
+            worktree_base_sha=worktree.merge_base(project, branch, "main"),
+        )
+        (path / f"{name}.txt").write_text(name)
+        _git(path, "add", ".")
+        _git(path, "-c", "commit.gpgsign=false", "commit", "-m", name)
+        core.update_task_status(conn, tid, "ready_to_merge")
+        branches[name] = (tid, branch)
+    _git(project, "merge", "--no-ff", "-m", "merge", branches["merged"][1])
+
+    assert supervisor.detect_merges(conn, project) == [branches["merged"][0]]
+    assert core.get_task(conn, branches["merged"][0])["status"] == "done"
+    assert core.get_task(conn, branches["open"][0])["status"] == "ready_to_merge"
+    conn.close()
+
+
+def test_run_supervisor_sweeps_and_stops(project):
+    from kuska import supervisor
+
+    conn = core.connect(core.db_path(project))
+    tid = add_ready(conn, "dead", "", "dev-agent")
+    core.update_task_status(conn, tid, "in_progress")
+    _stale_run(conn, tid, "r-dead")
+    conn.close()
+
+    stop = threading.Event()
+    th = threading.Thread(target=supervisor.run_supervisor, args=(project, stop, 0.05))
+    th.start()
+    time.sleep(0.2)
+    stop.set()
+    th.join(timeout=5)
+    assert not th.is_alive()
+    conn = core.connect(core.db_path(project))
+    assert core.get_run(conn, "r-dead")["status"] == "abandoned"
+    assert core.get_task(conn, tid)["status"] == "blocked"
+    conn.close()

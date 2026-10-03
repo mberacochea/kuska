@@ -17,6 +17,7 @@ sequenceDiagram
   participant A as Agent run (LLM + kuska tools)
   participant B as Other agent
   participant G as Git
+  participant S as Supervisor (supervisor.py)
 
   H->>W: create task, assign agent, pick feature
   W->>DB: INSERT task (todo)
@@ -56,9 +57,17 @@ sequenceDiagram
   end
   D->>DB: heartbeat idle
   H->>G: review + merge branch
-  W->>DB: merge-queue poll sees merged branch, sets done
+  S->>DB: sees merged branch, sets done
   Note over DB: dependents unblocked and claimable
 ```
+
+## Crash recovery
+
+A daemon that dies mid-run stops heartbeating its `runs` row. The supervisor
+(a thread of `kuska serve` and `kuska run-all`, or `kuska supervise`) ends any
+run silent for 300 s as `abandoned`, sends the human a `blocker` message and
+blocks the task if it is still `in_progress`. It also sets the agent offline.
+The same sweep moves `ready_to_merge` tasks whose branch is merged to `done`.
 
 ## Task statuses
 

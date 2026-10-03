@@ -10,6 +10,7 @@ import subprocess
 import pytest
 
 import kuska as ac
+from kuska import supervisor as _sv  # noqa: F401
 
 HX = {"HX-Request": "true"}
 
@@ -597,7 +598,10 @@ def test_merge_queue(c, conn, project):
         subprocess.run(["git", "commit", "-m", "work"], cwd=p, check=True, capture_output=True)
         ac.update_task_status(conn, tid, "ready_to_merge")
     subprocess.run(["git", "merge", "--no-ff", "-m", "merge", branch3], cwd=project, check=True, capture_output=True)
-    c.get("/merge-queue")
+    page = c.get("/merge-queue").get_data(as_text=True)
+    assert ac.get_task(conn, merge_task_3)["status"] == "ready_to_merge", "GET /merge-queue writes no status"
+    assert "merged" in page, "the page still reports the merge"
+    assert _sv.detect_merges(conn, project) == [merge_task_3], "supervisor finds the merged branch"
     assert ac.get_task(conn, merge_task_3)["status"] == "done", "merged branch flips its task to done"
     assert ac.get_task(conn, merge_task_4)["status"] == "ready_to_merge", "unmerged task stays ready_to_merge"
 

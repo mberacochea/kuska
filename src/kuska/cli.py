@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import os
+import threading
 from pathlib import Path
 
 from playhouse.migrations import Runner
@@ -47,6 +48,7 @@ from .project import (
     write_prompt,
 )
 from .runner import run_all
+from .supervisor import SWEEP_EVERY_S, run_supervisor
 from .store import docs_get, docs_set, list_tasks, update_task
 from .web import create_app
 
@@ -87,11 +89,24 @@ def cmd_serve(args: argparse.Namespace) -> None:
     project = find_project(args.project)
     app = create_app(project)
     print(f"serving {project} on http://{args.host}:{args.port}")
+    if not args.no_supervisor:
+        threading.Thread(
+            target=run_supervisor, args=(project, threading.Event()), name="supervisor", daemon=True
+        ).start()
     # Single-threaded by design: the app holds one process-wide open project
     # in state["db"], and closing that handle while another thread queries it
     # causes an unhandled exception. Kuska is single-user, so serial request
     # handling is the correct fix, not a global lock.
     app.run(host=args.host, port=args.port, debug=args.debug, threaded=False)
+
+
+def cmd_supervise(args: argparse.Namespace) -> None:
+    project = find_project(args.project)
+    print(f"supervising {project} every {args.interval:g}s (Ctrl+C to stop)")
+    try:
+        run_supervisor(project, threading.Event(), interval_s=args.interval)
+    except KeyboardInterrupt:
+        print("\nstopped")
 
 
 def cmd_mcp(args: argparse.Namespace) -> None:
@@ -513,7 +528,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_serve.add_argument("--host", default="127.0.0.1")
     p_serve.add_argument("--port", type=int, default=5055)
     p_serve.add_argument("--debug", action="store_true")
+    p_serve.add_argument(
+        "--no-supervisor", action="store_true", help="don't sweep for dead runs and merged branches"
+    )
     p_serve.set_defaults(func=cmd_serve)
+
+    p_supervise = sub.add_parser(
+        "supervise", help="block tasks of dead runs and mark merged tasks done"
+    )
+    p_supervise.add_argument("--interval", type=float, default=SWEEP_EVERY_S)
+    p_supervise.set_defaults(func=cmd_supervise)
 
     p_daemon = sub.add_parser("daemon", help="run one agent's daemon")
     p_daemon.add_argument("agent", help="agent name, as listed in .agents/config.toml")

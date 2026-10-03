@@ -17,6 +17,7 @@ from pathlib import Path
 from .daemons import run as run_daemon
 from .db import connect, init_db
 from .mcp_server import run_mcp
+from .supervisor import run_supervisor
 from .project import agent_config, config_path, db_path, find_project
 from .web import create_app
 
@@ -154,6 +155,11 @@ def run_all(
     mcp_thread = threading.Thread(target=run_mcp_server, name="mcp", daemon=True)
     mcp_thread.start()
     threads.append(mcp_thread)
+
+    supervisor_thread = threading.Thread(
+        target=run_supervisor, args=(project, stop_event), name="supervisor", daemon=True
+    )
+    supervisor_thread.start()
 
     # Start agent daemons
     for agent_name in agents_to_run:

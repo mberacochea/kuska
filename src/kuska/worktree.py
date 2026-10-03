@@ -394,6 +394,15 @@ def list_worktrees(project: Path) -> list[dict]:
         return []
 
 
+def branch_for_path(project: Path, path: str | Path) -> str | None:
+    """The branch checked out in the worktree at `path`, or None."""
+    target = Path(path).resolve()
+    for wt in list_worktrees(project):
+        if wt.get("branch") and Path(wt["path"]).resolve() == target:
+            return wt["branch"]
+    return None
+
+
 def remove_worktree(project: Path, path: Path, branch: str | None) -> tuple[bool, str]:
     """Remove a worktree and its branch.
 
