@@ -48,7 +48,7 @@ tasks:
   test:
     desc: "Run all tests"
     cmds:
-      - uv run tests/run_all.py
+      - uv run pytest
 
   lint:
     desc: "Run ruff and fix issues"
