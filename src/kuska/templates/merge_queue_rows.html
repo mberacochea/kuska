@@ -16,7 +16,9 @@
   </td>
   <td>{{ '✓' if merged.get(t.id, False) or prunable.get(t.id, False) else '-' }}</td>
   <td style="display:flex; gap:.5rem">
-    {% if not merged.get(t.id, False) %}
+    {% if unconfirmed == t.id %}
+    <button class="link" hx-post="/tasks/{{ t.id }}/merged" hx-vals='{"confirm": "1"}' hx-target="#merge-queue" hx-swap="outerHTML">Mark merged anyway</button>
+    {% elif not merged.get(t.id, False) %}
     <button class="link" hx-post="/tasks/{{ t.id }}/merged" hx-target="#merge-queue" hx-swap="outerHTML">Mark merged</button>
     {% endif %}
     <button class="link" hx-post="/tasks/{{ t.id }}/prune" hx-target="#merge-queue" hx-swap="outerHTML"

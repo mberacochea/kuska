@@ -71,7 +71,7 @@ def test_tasks(c, conn):
     c.post("/tasks/1", data={"assigned_to": "dev-agent"})
 
     detail = c.get("/tasks/1", headers=HX).get_data(as_text=True)
-    assert "carefully" in detail and "No messages yet." in detail, "task page shows detail"
+    assert "carefully" in detail and "status forced" in detail, "task page shows detail"
     assert "Re-queue" in detail, "requeue offered when not todo/ready"
     c.post("/tasks/1/requeue")
     assert ac.get_task(conn, 1)["status"] == "ready", "requeued"
@@ -559,8 +559,8 @@ def test_merge_queue(c, conn, project):
     assert task_1_pos < task_2_pos and task_1_pos > 0, "ordering puts blocking task above non-blocking one"
 
     # Test marking merged
-    marked = c.post(f"/tasks/{merge_task_1}/merged").get_data(as_text=True)
-    assert ac.get_task(conn, merge_task_1)["status"] == "done", "POST /tasks/<id>/merged sets done"
+    marked = c.post(f"/tasks/{merge_task_1}/merged", data={"confirm": "1"}).get_data(as_text=True)
+    assert ac.get_task(conn, merge_task_1)["status"] == "done", "POST /tasks/<id>/merged with confirm sets done"
     assert 'hx-get="/merge-queue/rows"' in marked, "merge queue table keeps its polling trigger"
 
     # Prune: disabled while the branch has unmerged commits, enabled once merged
@@ -605,6 +605,64 @@ def test_merge_queue(c, conn, project):
     task_detail = c.get(f"/tasks/{merge_task_2}", headers=HX).get_data(as_text=True)
     assert f"git diff {branch2[len('kuska/'):]}" not in task_detail or "..." in task_detail, "diff command in HTML has three dots"
     assert "...<" not in task_detail, "diff command has three dots not two"
+
+
+def test_web_status_changes_go_through_lifecycle(c, conn, project):
+    # approve: only from needs_approval
+    tid = ac.add_task(conn, "lifecycle approve", "", "dev-agent")
+    ac.update_task_status(conn, tid, "needs_approval")
+    c.post(f"/tasks/{tid}/approve")
+    assert ac.get_task(conn, tid)["status"] == "done", "approve gives done"
+    busy = ac.add_task(conn, "lifecycle busy", "", "dev-agent")
+    ac.update_task_status(conn, busy, "in_progress")
+    resp = c.post(f"/tasks/{busy}/approve")
+    assert resp.status_code == 200 and "cannot approve" in resp.get_data(as_text=True), "refusal toast shown"
+    assert ac.get_task(conn, busy)["status"] == "in_progress", "approve leaves in_progress alone"
+
+    # board drops
+    rtm = ac.add_task(conn, "lifecycle rtm", "", "dev-agent")
+    ac.update_task_status(conn, rtm, "ready_to_merge")
+    resp = c.post(f"/tasks/{rtm}/move", data={"column": "finished"})
+    assert ac.get_task(conn, rtm)["status"] == "ready_to_merge", "ready_to_merge card stays put"
+    assert "waiting to merge" in resp.get_data(as_text=True), "board says why"
+    card = ac.add_task(conn, "lifecycle card", "", "dev-agent")
+    c.post(f"/tasks/{card}/move", data={"column": "ready"})
+    assert ac.get_task(conn, card)["status"] == "ready", "todo to ready"
+    c.post(f"/tasks/{card}/move", data={"column": "todo"})
+    assert ac.get_task(conn, card)["status"] == "todo", "ready to todo"
+    ac.update_task_status(conn, card, "done")
+    c.post(f"/tasks/{card}/move", data={"column": "ready"})
+    assert ac.get_task(conn, card)["status"] == "ready", "done to ready"
+
+    # the status dropdown is a forced, noted override
+    c.post(f"/tasks/{card}", data={"status": "blocked"})
+    assert ac.get_task(conn, card)["status"] == "blocked", "dropdown changes the status"
+    assert any("forced" in m["payload"] for m in ac.task_messages(conn, card)), "forced status leaves a note"
+
+
+def test_mark_merged_checks_git(c, conn, project):
+    def make(title: str):
+        tid = ac.add_task(conn, title, "x", "dev-agent")
+        path, branch, _ = ac.worktree.ensure_worktree(project, tid, title, "main")
+        ac.update_task(conn, tid, worktree_path=str(path),
+                       worktree_base_sha=ac.worktree.merge_base(project, branch, "main"))
+        (path / "work.txt").write_text(title)
+        subprocess.run(["git", "add", "."], cwd=path, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "work"], cwd=path, check=True, capture_output=True)
+        ac.update_task_status(conn, tid, "ready_to_merge")
+        return tid, branch
+
+    open_id, _ = make("Mark merged open")
+    resp = c.post(f"/tasks/{open_id}/merged").get_data(as_text=True)
+    assert ac.get_task(conn, open_id)["status"] == "ready_to_merge", "unmerged branch is not marked done"
+    assert "not merged" in resp and "Mark merged anyway" in resp, "toast and confirm button shown"
+    c.post(f"/tasks/{open_id}/merged", data={"confirm": "1"})
+    assert ac.get_task(conn, open_id)["status"] == "done", "confirm=1 marks it done"
+
+    real_id, real_branch = make("Mark merged real")
+    subprocess.run(["git", "merge", "--no-ff", "-m", "merge", real_branch], cwd=project, check=True, capture_output=True)
+    c.post(f"/tasks/{real_id}/merged")
+    assert ac.get_task(conn, real_id)["status"] == "done", "a really merged branch needs no confirm"
 
 
 def test_search_view(c, conn):

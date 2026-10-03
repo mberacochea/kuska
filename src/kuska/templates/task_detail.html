@@ -55,7 +55,7 @@
   <div class="md" style="margin:.6rem 0">{{ description_html|safe }}</div>
   <a href="/tasks/{{ t.id }}?edit=1" class="link" hx-get="/tasks/{{ t.id }}?edit=1" hx-target="#task-detail"
      hx-swap="outerHTML" hx-push-url="/tasks/{{ t.id }}?edit=1">edit</a>
-  {% if t.status not in ('todo', 'ready', 'needs_approval') %}
+  {% if t.status in ('needs_approval', 'ready_to_merge', 'blocked', 'done') %}
   <button class="link" hx-post="/tasks/{{ t.id }}/requeue" hx-target="#task-detail" hx-swap="outerHTML">
     Re-queue</button>
   {% endif %}

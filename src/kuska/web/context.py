@@ -346,9 +346,13 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
             },
         }
 
-    def merge_queue_rows(tasks: list[dict]) -> str:
-        """Render the merge queue rows fragment."""
-        return render_template("merge_queue_table.html", **_merge_queue_context(tasks))
+    def merge_queue_rows(tasks: list[dict], unconfirmed: int | None = None) -> str:
+        """Render the merge queue rows fragment.
+
+        `unconfirmed` is the id of a row whose "Mark merged" was refused because
+        git can't see the merge; that row offers "Mark merged anyway".
+        """
+        return render_template("merge_queue_table.html", unconfirmed=unconfirmed, **_merge_queue_context(tasks))
 
     # ========== Helper: Agent Rendering ==========
 
