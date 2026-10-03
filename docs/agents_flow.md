@@ -107,6 +107,17 @@ sets any status; leaves a note).
   target, a task already in progress stays put, and `ready` needs an agent;
   tasks that cannot go are skipped and named in the toast.
 
+## Review before merge
+
+A dev agent configured with `reviewer = "<agent>"` gets a review task created
+when its task reaches `ready_to_merge`. The review task is `kind = "review"`,
+assigned to the reviewer, `ready`, and linked to the reviewed task by
+`review_of`. Its description names the branch, base branch, worktree and the
+author's handover doc. After `max_review_rounds` reviews (default 2) of one
+task, the human gets a note and the task is left for them. Running the review
+in the author's worktree and acting on its outcome are described in the
+following tasks.
+
 ## Messages
 
 | `msg_type` | Sent by | Meaning |

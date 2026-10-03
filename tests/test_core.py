@@ -957,3 +957,40 @@ def test_run_all_agent_selection():
     with pytest.raises(SystemExit):
         runner.select_agents(["a"], ["zzz"])
     assert not hasattr(runner, "run_mcp"), "runner has no run_mcp"
+
+
+def test_request_review(conn):
+    from kuska.store import request_review, task_reviews
+
+    def ready_to_merge(title="Add parser", **kw):
+        tid = ac.add_task(conn, title, "handle quotes", assigned_to="dev-agent", feature="parsing", **kw)
+        ac.update_task(conn, tid, worktree_path="/tmp/wt")
+        ac.update_task_status(conn, tid, "ready_to_merge")
+        return tid
+
+    tid = ready_to_merge()
+    rid = request_review(conn, tid, "bench-agent", "main")
+    review = ac.get_task(conn, rid)
+    assert review["status"] == "ready" and review["kind"] == "review", "review task is ready"
+    assert review["assigned_to"] == "bench-agent" and review["review_of"] == tid, "assigned and linked"
+    assert review["feature"] == "parsing", "same feature"
+    assert "kuska/" + str(tid) + "-add-parser" in review["description"], "branch named"
+    assert "Do not modify files" in review["description"], "instructions included"
+    assert f"task_{tid}_dev-agent_context" in review["description"], "handover key named"
+    assert [r["id"] for r in task_reviews(conn, tid)] == [rid], "task_reviews lists it"
+
+    assert request_review(conn, tid, "bench-agent", "main") is None, "no second review while one is open"
+
+    ac.update_task_status(conn, rid, "done")
+    assert request_review(conn, tid, "bench-agent", "main", max_rounds=1) is None, "over the round limit"
+    notes = [m for m in ac.task_messages(conn, tid) if m["msg_type"] == "note"]
+    assert any("over to you" in m["payload"] for m in notes), "human told"
+    assert request_review(conn, tid, "bench-agent", "main") is not None, "a second round is allowed"
+
+    assert request_review(conn, 999999, "bench-agent", "main") is None, "missing task"
+    todo = ac.add_task(conn, "Not ready", assigned_to="dev-agent")
+    assert request_review(conn, todo, "bench-agent", "main") is None, "not ready_to_merge"
+    ans = ready_to_merge("An answer", kind="answer")
+    assert request_review(conn, ans, "bench-agent", "main") is None, "answer task"
+    other = ready_to_merge("Other")
+    assert request_review(conn, other, "nobody-agent", "main") is None, "unknown reviewer"

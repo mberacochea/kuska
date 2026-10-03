@@ -23,6 +23,7 @@ model = "claude-opus-5"
 role = "Implements features and fixes bugs"
 flavor = "dev"
 worktree = true             # each task on its own branch in .agents/worktrees/ - needs a git repo with a commit
+reviewer = "review-agent"    # reviews each branch when it is ready to merge, before you merge it
 
 [agents.review-agent]
 backend = "claude"

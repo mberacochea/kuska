@@ -1532,3 +1532,43 @@ def test_worktree_blocked_stays_blocked(tmp_path):
     assert task["status"] == "blocked", "worktree blocked task stays blocked"
 
     conn.close()
+
+
+def _review_project(tmp_path, reviewer: bool) -> Path:
+    project = tmp_path / "review-project"
+    (project / ".agents" / "prompts").mkdir(parents=True)
+    for args in (["init"], ["config", "user.email", "t@example.com"], ["config", "user.name", "T"]):
+        subprocess.run(["git", *args], cwd=project, check=True, capture_output=True)
+    (project / "README.md").write_text("# Test")
+    subprocess.run(["git", "add", "."], cwd=project, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=project, check=True, capture_output=True)
+    core.config_path(project).write_text(
+        '[agents.dev-agent]\nbackend = "claude"\nmodel = "claude-opus-5"\nrole = "builder"\nworktree = true\n'
+        + ('reviewer = "codex-1"\n' if reviewer else "")
+        + '[agents.codex-1]\nbackend = "codex"\nmodel = "gpt-5-codex"\nrole = "reviewer"\n'
+    )
+    conn = core.connect(core.db_path(project))
+    core.init_db(conn)
+    core.sync_agents_from_config(conn, project)
+    conn.close()
+    return project
+
+
+@pytest.mark.parametrize("reviewer", [True, False])
+def test_review_requested_on_ready_to_merge(tmp_path, reviewer):
+    project = _review_project(tmp_path, reviewer)
+    conn = core.connect(core.db_path(project))
+    tid = add_ready(conn, "Add the parser", "d", "dev-agent")
+
+    async def fake(prompt, options, mono):
+        return "done", usage(10, 5)
+
+    run_loop(project, fake, max_tasks=1)
+    assert core.get_task(conn, tid)["status"] == "ready_to_merge", "dev task awaits merge"
+    reviews = core.task_reviews(conn, tid)
+    if reviewer:
+        assert len(reviews) == 1, "one review task"
+        assert reviews[0]["assigned_to"] == "codex-1" and reviews[0]["status"] == "ready", "ready for reviewer"
+    else:
+        assert reviews == [], "no reviewer, no review"
+    conn.close()

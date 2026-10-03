@@ -71,6 +71,10 @@ from .features import (
     norm_feature_name,
     update_feature,
 )
+from .reviews import (
+    request_review,
+    task_reviews,
+)
 from .runs import (
     end_run,
     get_run,
@@ -166,6 +170,7 @@ __all__ = [
     "record_usage",
     "reply",
     "reply_to_task",
+    "request_review",
     "run_events",
     "running_runs",
     "send_message",
@@ -178,6 +183,7 @@ __all__ = [
     "task_dependents",
     "task_events",
     "task_messages",
+    "task_reviews",
     "task_runs",
     "task_status_counts",
     "token_usage_by_agent",

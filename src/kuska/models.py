@@ -81,6 +81,12 @@ class Task(Base):
     )
     worktree_path = TextField(null=True)  # path to the worktree, if one exists
     worktree_base_sha = TextField(null=True)  # commit the task branch started from
+    # set on a review task: the task it reviews, and how the review came out
+    review_of = ForeignKeyField(
+        "self", column_name="review_of", null=True, on_delete="CASCADE",
+        backref="reviews", lazy_load=False,
+    )
+    review_outcome = CharField(null=True)  # passed, changes_requested or inconclusive
     created_at = FloatField(default=time.time)
     updated_at = FloatField(default=time.time)
 
