@@ -6,7 +6,7 @@ Task and plan authoring lives in the web app, not here:
     kuska serve             # Flask + HTMX web UI (project + agents pages)
     kuska daemon <name>     # run one agent's daemon (backend from config.toml)
     kuska mcp               # MCP stdio server, for Codex / other external clients
-    kuska run-all           # run web server + MCP server + all agents together
+    kuska run-all           # run web server + all agents together
     kuska export            # one-off markdown export
     kuska migrate           # manage database migrations
     kuska doctor            # check (and --repair) database integrity
@@ -336,7 +336,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
 
 
 def cmd_run_all(args: argparse.Namespace) -> None:
-    """Run web server, MCP server, and agent daemons together."""
+    """Run web server and agent daemons together."""
     agents = None
     if args.agents:
         # Parse comma-separated agent names, or special "*" for all
@@ -562,11 +562,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_run_all = sub.add_parser(
         "run-all",
-        help="run web server, MCP server, and agents together (for dev or production)",
+        help="run web server and agents together (for dev or production)",
     )
     p_run_all.add_argument(
         "--agents",
-        help="comma-separated agent names, or '*' for all (default: first configured agent)",
+        help="comma-separated agent names, or '*' for all (default: every configured agent)",
     )
     p_run_all.add_argument("--host", default="127.0.0.1")
     p_run_all.add_argument("--port", type=int, default=5055)

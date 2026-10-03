@@ -1,4 +1,4 @@
-"""Run multiple services together: web server, MCP server, and agent daemons.
+"""Run multiple services together: web server and agent daemons.
 
 This is useful for:
   - Development: all services in one command
@@ -16,9 +16,20 @@ from pathlib import Path
 
 from .daemons import run as run_daemon
 from .db import connect, init_db
-from .mcp_server import run_mcp
 from .project import agent_config, config_path, db_path, find_project
 from .web import create_app
+
+
+def select_agents(configured: list[str], requested: list[str] | None) -> list[str]:
+    """None or ["*"] -> every configured agent; otherwise the requested ones, each of which must be configured."""
+    if requested is None or requested == ["*"]:
+        return list(configured)
+    for agent in requested:
+        if agent not in configured:
+            raise SystemExit(
+                f"Agent '{agent}' not configured. Available: {', '.join(configured)}"
+            )
+    return list(requested)
 
 
 def run_all(
@@ -28,7 +39,7 @@ def run_all(
     port: int = 5055,
     poll_interval: float = 2.0,
 ) -> None:
-    """Run web server, MCP server, and agent daemons together.
+    """Run web server and agent daemons together.
 
     Args:
         project_path: Project directory (default: nearest .agents/)
@@ -54,21 +65,8 @@ def run_all(
         raise SystemExit(f"No agents configured in {cfg_path}")
 
     # Determine which agents to run
-    if agents is None:
-        agents_to_run = configured_agents[:1]  # Run first agent by default
-        print(f"No agents specified; running: {', '.join(agents_to_run)}")
-    elif agents == ["*"]:
-        agents_to_run = configured_agents
-        print(f"Running all configured agents: {', '.join(agents_to_run)}")
-    else:
-        # Validate requested agents
-        for agent in agents:
-            if agent not in configured_agents:
-                raise SystemExit(
-                    f"Agent '{agent}' not configured. "
-                    f"Available: {', '.join(configured_agents)}"
-                )
-        agents_to_run = agents
+    agents_to_run = select_agents(configured_agents, agents)
+    print(f"Running agents: {', '.join(agents_to_run)}")
 
     db.close()
 
@@ -97,15 +95,6 @@ def run_all(
             # causes an unhandled exception. Kuska is single-user, so serial request
             # handling is the correct fix, not a global lock.
             app.run(host=host, port=port, debug=False, use_reloader=False, threaded=False)
-        except Exception as e:
-            exceptions.append(e)
-            stop_event.set()
-
-    def run_mcp_server():
-        """Run the MCP stdio server."""
-        try:
-            print("[mcp] Starting MCP server")
-            run_mcp(project, "coordinator", Path(db_path(project)))
         except Exception as e:
             exceptions.append(e)
             stop_event.set()
@@ -149,11 +138,6 @@ def run_all(
     web_thread = threading.Thread(target=run_web_server, name="web", daemon=True)
     web_thread.start()
     threads.append(web_thread)
-
-    # Start MCP server in a thread
-    mcp_thread = threading.Thread(target=run_mcp_server, name="mcp", daemon=True)
-    mcp_thread.start()
-    threads.append(mcp_thread)
 
     # Start agent daemons
     for agent_name in agents_to_run:

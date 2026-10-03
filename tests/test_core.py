@@ -900,6 +900,20 @@ def main() -> None:
         r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
         check(label, r.returncode == 0, r.stdout + r.stderr)
 
+    print("run-all agent selection")
+    import kuska.runner as runner
+
+    check("none -> all", runner.select_agents(["a", "b"], None) == ["a", "b"])
+    check("star -> all", runner.select_agents(["a", "b"], ["*"]) == ["a", "b"])
+    check("subset", runner.select_agents(["a", "b"], ["b"]) == ["b"])
+    try:
+        runner.select_agents(["a"], ["zzz"])
+        raised = False
+    except SystemExit:
+        raised = True
+    check("unknown agent exits", raised)
+    check("runner has no run_mcp", not hasattr(runner, "run_mcp"))
+
     print(f"\n{PASSED} checks passed")
 
 

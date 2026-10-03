@@ -24,12 +24,12 @@ tasks:
       - uv run kuska mcp
 
   run-all:
-    desc: "Run everything: web server + MCP server + all agents (via single run-all command)"
+    desc: "Run everything: web server + all agents (via single run-all command)"
     cmds:
       - uv run kuska run-all
 
   run-all-agents:
-    desc: "Run web server + MCP server + specific agents (e.g., task run-all-agents AGENTS=dev-agent,codex-1)"
+    desc: "Run web server + specific agents (e.g., task run-all-agents AGENTS=dev-agent,codex-1)"
     vars:
       AGENTS: '{{.AGENTS | default "dev-agent"}}'
     cmds:

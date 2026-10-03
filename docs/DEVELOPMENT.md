@@ -31,10 +31,10 @@ task daemon AGENT=dev-agent
 # Run the MCP server
 task mcp
 
-# Run all services together (web + MCP + all agents)
+# Run all services together (web + all agents)
 task dev
 
-# Run specific agents with web + MCP
+# Run specific agents with web
 task run-all-agents AGENTS=dev-agent,codex-1
 
 # Show all available tasks
@@ -68,8 +68,8 @@ uv run kuska run-all --host 127.0.0.1 --port 8080
 - **`task serve`** - Starts Flask web UI on http://0.0.0.0:5055 with debug mode enabled
 - **`task daemon <agent>`** - Runs a single agent daemon (reads backend from config.toml)
 - **`task mcp`** - Starts MCP server for external clients (Codex, etc.)
-- **`task dev`** - Runs web UI + MCP + all configured agents in parallel (recommended!)
-- **`task run-all-agents AGENTS=<list>`** - Run web UI + MCP + specific agents
+- **`task dev`** - Runs web UI + all configured agents in parallel (recommended!)
+- **`task run-all-agents AGENTS=<list>`** - Run web UI + specific agents
 - **`task export`** - Export project as markdown
 - **`task test`** - Run all tests (`uv run pytest`)
 - **`task build`** - Build PyInstaller binary (dist/kuska)
@@ -201,12 +201,12 @@ already merged into main.
 The system consists of:
 
 1. **Web Server** (Flask) - Project planning, agent configuration, live status
-2. **MCP Server** - Coordination tools (send_message, docs_get, etc.) for external clients
-3. **Agent Daemons** - Run continuously, poll for tasks, report progress
+2. **Agent Daemons** - Run continuously, poll for tasks, report progress
 
-`run-all` starts all three in separate threads:
+The MCP server (`kuska mcp`) is separate: clients start their own, so `run-all` does not.
+
+`run-all` starts both in separate threads:
 - Web server blocks the main thread
-- MCP server runs in background
 - Each agent daemon runs in its own thread, polling for tasks
 
 Ctrl+C cleanly shuts down all services.
