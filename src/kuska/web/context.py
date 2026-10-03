@@ -28,6 +28,7 @@ from ..store import (
     blocking_map,
     docs_list,
     list_agents,
+    list_features,
     list_tags,
     list_tasks,
     recent_events,
@@ -111,6 +112,7 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
         tag_list: list[str] | None = None,
         sort_by: str | None = None,
         sort_dir: str = "asc",
+        feature_list: list[str] | None = None,
     ) -> str:
         """Render the task table together with its filter/sort controls.
 
@@ -126,6 +128,8 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
             agents=list_agents(db()),
             statuses=TASK_STATUSES,
             tags=list_tags(db()),
+            features=list_features(db()),
+            feature_list=feature_list or [],
             search=search,
             status_list=status_list or [],
             agent_list=agent_list or [],
@@ -193,6 +197,7 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
             dependencies=task_dependencies(db(), task["id"]),
             dependents=task_dependents(db(), task["id"]),
             candidates=dependency_candidates(task),
+            features=list_features(db()) if edit else [],
             messages=task_messages(db(), task["id"]),
             activity=task_activity(task["id"]),
             worktree_info=worktree_info,

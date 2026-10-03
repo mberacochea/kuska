@@ -23,7 +23,7 @@ from .db import (
 from .export import export_markdown
 from .guardrails import RULES, check_command, check_tool, refusal_text
 from .markdown import as_markdown
-from .models import MODELS, Agent, Doc, Event, Message, Task, TaskDep
+from .models import MODELS, Agent, Doc, Event, Feature, Message, Task, TaskDep
 from .project import (
     AGENT_FIELD_KEYS,
     AGENT_FIELDS,
@@ -75,13 +75,17 @@ from .store import (
     calculate_rolling_cost_average,
     check_cost_anomaly,
     claim_task,
+    delete_feature,
     delete_task,
     docs_get,
     docs_list,
     docs_set,
+    ensure_feature,
     full_text_search,
     get_agent,
     get_event,
+    get_feature,
+    get_feature_by_name,
     get_inbox,
     get_task,
     heartbeat,
@@ -103,6 +107,7 @@ from .store import (
     task_events,
     task_messages,
     token_usage_by_agent,
+    update_feature,
     update_task,
     update_task_status,
     wait_for_task,

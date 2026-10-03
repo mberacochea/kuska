@@ -18,8 +18,8 @@ owns them (see `daemons/loop.py`).
 
 | Caller | Tools |
 |---|---|
-| `dev` or `reviewer` flavor (or no flavor) | the base set: `get_inbox`, `send_message`, `reply`, `docs_get`, `docs_set`, `docs_list`, `create_task`, `list_tasks`, `search`, `list_tags` |
-| `planner` flavor | the base set, plus `add_tag` and `remove_tag` |
+| `dev` or `reviewer` flavor (or no flavor) | the base set: `get_inbox`, `send_message`, `reply`, `docs_get`, `docs_set`, `docs_list`, `create_task`, `list_tasks`, `list_features`, `search`, `list_tags` |
+| `planner` flavor | the base set, plus `add_tag`, `remove_tag` and `set_task_feature` |
 | not in config.toml (an **operator**) | every tool, with a human's authority - see below |
 
 Calling a tool outside your set fails exactly like calling one that does not
@@ -99,14 +99,22 @@ sections.
 - `docs_set` overwrites the whole value. To add to a doc, read it, edit it,
   then write it back.
 
-### `create_task(title, description="", assigned_to=None, tags=None, depends_on=[])`
+### `create_task(title, description="", assigned_to=None, tags=None, feature=None, depends_on=[])`
 
 File new work. It lands in `todo`, a waiting list, and a human moves it to
-`ready` before any agent picks it up.
+`ready` before any agent picks it up. `feature` names the feature the task
+belongs to (created if it does not exist yet) - use one name for every task
+of one piece of work.
 
-### `list_tasks(status=None)`, `list_tags()`
+### `list_tasks(status=None, feature=None)`, `list_tags()`, `list_features()`
 
-Read the task list (optionally filtered by status) and the tags in use.
+Read the task list (optionally filtered by status and/or feature), the tags
+in use, and the features with how many of their tasks are done.
+
+### `set_task_feature(task_id, feature)` (planners)
+
+Move a task into a feature by name (created if new); an empty `feature`
+takes it out of its feature.
 
 ### `search(query, tables=None, limit=20)`
 

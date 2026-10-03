@@ -13,6 +13,10 @@
       {% for s in statuses %}<option value="{{ s }}" {{ 'selected' if s == t.status }}>{{ s }}</option>{% endfor %}
     </select>
   </td>
+  <td class="small">
+    {% if t.feature %}<a class="chip small" href="/tasks?feature={{ t.feature|urlencode }}">{{ t.feature }}</a>
+    {% else %}<span class="muted">-</span>{% endif %}
+  </td>
   <td class="tags-cell">
     <div class="tags-display" id="tags-display-{{ t.id }}" style="display:flex; gap:.3rem; flex-wrap:wrap; align-items:center; min-height:1.5rem;">
       {% if t.tags %}

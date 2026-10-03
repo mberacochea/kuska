@@ -142,6 +142,14 @@ task list as a "waiting on" chip.
 Resolving a hold is two buttons: **approve** (mark it done, releasing whatever
 waited on it) or **send back** (re-queue it for the agent).
 
+## Features
+
+A feature is a named group of related tasks (`features` table; a task points
+at one through `tasks.feature_id`). Set it when creating a task - in the web
+UI's "Feature" field, or `create_task(feature="search")` from an agent - and
+an unknown name creates the feature. The tasks page filters and shows tasks
+by feature, and `list_features` reports each one's done/total count.
+
 ## The loop
 
 1. A human adds a task in the web UI and assigns it to an agent.
@@ -193,7 +201,7 @@ Four pages, in increasing order of bluntness:
 - **Agents** - per-agent settings, prompts, live status and spend.
 - **Docs** - the shared knowledge agents read and write through `docs_get` /
   `docs_set`: create a key, edit its content, delete it.
-- **Data** - every table in the DB (`tasks`, `task_deps`, `agents`,
+- **Data** - every table in the DB (`tasks`, `features`, `task_deps`, `agents`,
   `messages`, `docs`, `events`), row by row: list with paging, insert, edit the columns that are
   safe to edit, delete. It is driven by one spec per table in `tables.py`, so
   a new table means one entry there rather than a new page.

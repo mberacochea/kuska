@@ -7,16 +7,20 @@ import operator
 import time
 from typing import Any
 
-from peewee import Case, SqliteDatabase, fn
+from peewee import JOIN, SqliteDatabase, fn
 
 from ..db import TASK_STATUSES, now
-from ..models import Task, TaskDep, row, rows
+from ..models import Feature, Task, TaskDep, row, rows
 from .common import bound
+from .features import ensure_feature, norm_feature_name
 
 
-def _norm_feature(value: str | None) -> str | None:
-    """Free text in, a stable group key out. None means ungrouped."""
-    return ((value or "").strip().lower())[:40] or None
+def _tasks():
+    """Every task query starts here: the task's columns plus its feature's
+    name as "feature" (None when it has none) next to "feature_id"."""
+    return Task.select(Task, Feature.name.alias("feature")).join(
+        Feature, JOIN.LEFT_OUTER, on=(Task.feature_id == Feature.id)
+    )
 
 
 def _norm_tags(value: str | None) -> str | None:
@@ -53,9 +57,9 @@ def add_task(
         title: Short task name.
         description: Optional longer explanation of what to do.
         assigned_to: Optional agent name to assign this task to.
-        feature: Optional free-text feature group this task belongs to (e.g.
-                 "search"). Normalised via _norm_feature; empty/None means
-                 ungrouped.
+        feature: Optional name of the feature this task belongs to (e.g.
+                 "search"); created if it does not exist yet. Empty/None
+                 means no feature.
         tags: Optional comma-separated tags for filtering (e.g. "frontend,bug").
 
     Returns:
@@ -72,7 +76,7 @@ def add_task(
         description=description,
         assigned_to=assigned_to or None,
         status="todo",
-        feature=_norm_feature(feature),
+        feature_id=ensure_feature(db, feature),
         tags=_norm_tags(tags),
         created_at=ts,
         updated_at=ts,
@@ -112,8 +116,8 @@ def update_task(db: SqliteDatabase, task_id: int, **fields: Any) -> None:
                   - description (str): Task description.
                   - assigned_to (str | None): Assign to an agent or None.
                   - status (str): Must be in TASK_STATUSES.
-                  - feature (str | None): Free-text feature group, or None
-                    to ungroup. Normalised via _norm_feature.
+                  - feature (str | None): Feature name (created if new), or
+                    None/"" to take the task out of its feature.
                   - tags (str | None): Comma-separated tags for filtering.
                   - worktree_path (str | None): Path to the task's git
                     worktree, or None once it's been removed.
@@ -135,7 +139,7 @@ def update_task(db: SqliteDatabase, task_id: int, **fields: Any) -> None:
     if "assigned_to" in sets:
         sets["assigned_to"] = sets["assigned_to"] or None
     if "feature" in sets:
-        sets["feature"] = _norm_feature(sets["feature"])
+        sets["feature_id"] = ensure_feature(db, sets.pop("feature"))
     if "tags" in sets:
         sets["tags"] = _norm_tags(sets["tags"])
     sets["updated_at"] = now()
@@ -162,19 +166,19 @@ def list_tasks(
     Args:
         db: SqliteDatabase instance for this project.
         status: Optional status filter (e.g., "todo", "in_progress", "done").
-        feature: Optional feature filter. Normalised via _norm_feature before
-                 matching, so callers can pass raw free text.
+        feature: Optional feature name filter. Normalised before matching, so
+                 callers can pass raw free text.
 
     Returns:
         list[dict]: Task records in insertion order, with keys: id, title,
-                    description, assigned_to, status, feature, created_at,
-                    updated_at.
+                    description, assigned_to, status, feature_id, feature
+                    (its name), tags, worktree_path, created_at, updated_at.
     """
-    query = Task.select().order_by(Task.id)
+    query = _tasks().order_by(Task.id)
     if status:
         query = query.where(Task.status == status)
     if feature:
-        query = query.where(Task.feature == _norm_feature(feature))
+        query = query.where(Feature.name == norm_feature_name(feature))
     return rows(query)
 
 
@@ -198,8 +202,8 @@ def filter_tasks(
         status: Optional list of statuses to include (default: all).
         agent: Optional list of assigned agent names to include. An empty
                string in the list also matches unassigned tasks.
-        feature: Optional list of feature groups to include. An empty string
-                 in the list also matches ungrouped tasks (Task.feature IS NULL).
+        feature: Optional list of feature names to include. An empty string
+                 in the list also matches tasks with no feature.
         tags: Optional list of tags to include. Tasks matching any of the tags
               are included. An empty string in the list also matches untagged
               tasks (Task.tags IS NULL).
@@ -212,7 +216,7 @@ def filter_tasks(
     Returns:
         list[dict]: Matching task records, pre-grouped by feature.
     """
-    query = Task.select()
+    query = _tasks()
 
     search = search.strip()
     if search:
@@ -228,10 +232,11 @@ def filter_tasks(
             query = query.where(Task.assigned_to.in_(agent))
 
     if feature:
+        names = [norm_feature_name(f) for f in feature if f]
         if "" in feature:
-            query = query.where(Task.feature.in_(feature) | Task.feature.is_null())
+            query = query.where(Feature.name.in_(names) | Task.feature_id.is_null())
         else:
-            query = query.where(Task.feature.in_(feature))
+            query = query.where(Feature.name.in_(names))
 
     if tags:
         named = [t for t in tags if t]
@@ -243,7 +248,7 @@ def filter_tasks(
             query = query.where(functools.reduce(operator.or_, conditions))
 
     # ungrouped sorts last: "~~~" sorts after any lowercase feature name
-    group = fn.COALESCE(Task.feature, "~~~")
+    group = fn.COALESCE(Feature.name, "~~~")
 
     sort_fields = {
         "title": fn.LOWER(fn.COALESCE(Task.title, "")),
@@ -260,35 +265,6 @@ def filter_tasks(
             group, fn.COALESCE(Task.updated_at, 0).desc(), fn.COALESCE(Task.created_at, 0).desc()
         )
 
-    return rows(query)
-
-
-@bound
-def list_features(db: SqliteDatabase) -> list[dict]:
-    """List distinct feature groups with per-feature task totals, for the
-    filter dropdown and the group headings on the task list.
-
-    Args:
-        db: SqliteDatabase instance for this project.
-
-    Returns:
-        list[dict]: One row per distinct feature, each with keys: feature,
-                    total, done. Ordered by feature name, with the ungrouped
-                    bucket (feature=None) last.
-
-    Examples:
-        >>> list_features(db)
-        [{"feature": "search", "total": 4, "done": 2}, {"feature": None, "total": 1, "done": 0}]
-    """
-    query = (
-        Task.select(
-            Task.feature,
-            fn.COUNT(Task.id).alias("total"),
-            fn.SUM(Case(None, [(Task.status == "done", 1)], 0)).alias("done"),
-        )
-        .group_by(Task.feature)
-        .order_by(fn.COALESCE(Task.feature, "~~~"))
-    )
     return rows(query)
 
 
@@ -328,7 +304,7 @@ def get_task(db: SqliteDatabase, task_id: int) -> dict | None:
     Returns:
         dict: Task record, or None if not found.
     """
-    return row(Task.select().where(Task.id == task_id))
+    return row(_tasks().where(Task.id == task_id))
 
 
 def _unmet_dependency_tasks():
@@ -390,7 +366,7 @@ def claim_task(db: SqliteDatabase, agent_name: str) -> dict | None:
         )
         if not taken:  # another daemon claimed it between the select and here
             return None
-        return row(Task.select().where(Task.id == candidate.id))
+        return row(_tasks().where(Task.id == candidate.id))
 
 
 @bound

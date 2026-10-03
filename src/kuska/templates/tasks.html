@@ -9,6 +9,10 @@
     <option value="">unassigned</option>
     {% for a in agents %}<option value="{{ a.name }}">{{ a.name }}</option>{% endfor %}
   </select>
+  <input type="text" name="feature" placeholder="Feature (optional)" aria-label="Task feature" list="feature-names">
+  <datalist id="feature-names">
+    {% for f in features %}<option value="{{ f.name }}">{% endfor %}
+  </datalist>
   <button class="primary" type="submit">Add task</button>
 </form>
 <div id="form-errors"></div>

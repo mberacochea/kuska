@@ -21,6 +21,7 @@ from ..store import (
     filter_tasks,
     get_task,
     list_agents,
+    list_features,
     list_tags,
     list_tasks,
     remove_dependency,
@@ -79,6 +80,7 @@ def register(app, ctx) -> None:
         status_list = request.args.getlist("status")
         agent_list = request.args.getlist("agent")
         tag_list = request.args.getlist("tag")
+        feature_list = request.args.getlist("feature")
         sort_by = request.args.get("sort") or None
         sort_dir = request.args.get("direction", "asc")
         filtered = filter_tasks(
@@ -86,11 +88,14 @@ def register(app, ctx) -> None:
             search,
             status=status_list or None,
             agent=agent_list or None,
+            feature=feature_list or None,
             tags=tag_list or None,
             sort_by=sort_by,
             sort_dir=sort_dir,
         )
-        container = tasks_container(filtered, search, status_list, agent_list, tag_list, sort_by, sort_dir)
+        container = tasks_container(
+            filtered, search, status_list, agent_list, tag_list, sort_by, sort_dir, feature_list
+        )
 
         if wants_fragment():
             return container
@@ -101,6 +106,7 @@ def register(app, ctx) -> None:
             agents=list_agents(db()),
             statuses=TASK_STATUSES,
             tags=list_tags(db()),
+            features=list_features(db()),
             tasks_container=container,
         )
 
@@ -133,6 +139,7 @@ def register(app, ctx) -> None:
         title = request.form.get("title", "").strip()
         description = request.form.get("description", "").strip()
         assigned_to = request.form.get("assigned_to") or None
+        feature = request.form.get("feature", "").strip() or None
 
         # Validate title
         title_error = validate_task_title(title, db())
@@ -150,7 +157,7 @@ def register(app, ctx) -> None:
             return _bad_request(tasks_container(), "assigned_to", agent_error)
 
         try:
-            add_task(db(), title, description, assigned_to)
+            add_task(db(), title, description, assigned_to, feature=feature)
         except (ValueError, PeeweeException) as exc:
             return _bad_request(tasks_container(), "form", f"Failed to create task: {exc}")
 
@@ -158,12 +165,15 @@ def register(app, ctx) -> None:
 
     @app.post("/tasks/<int:task_id>")
     def patch_task(task_id: int) -> tuple[str, int]:
-        """POST /tasks/<id> - Update task fields (title, description, assigned_to, status, tags)."""
+        """POST /tasks/<id> - Update task fields (title, description, assigned_to, status, tags, feature)."""
         task = get_task(db(), task_id)
         if not task:
             return "", 404
 
-        fields = {k: v for k, v in request.form.items() if k in {"title", "description", "assigned_to", "status", "tags"}}
+        fields = {
+            k: v for k, v in request.form.items()
+            if k in {"title", "description", "assigned_to", "status", "tags", "feature"}
+        }
 
         # Validate title if provided
         if "title" in fields:

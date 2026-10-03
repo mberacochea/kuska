@@ -598,6 +598,30 @@ def test_web(project: Path) -> None:
     check("events shown in order", "prompt" in transcript and "Read" in transcript)
     check("transcript reads top to bottom", transcript.index("prompt") < transcript.index("Read"))
 
+    print("features")
+    c.post("/tasks", data={"title": "Grouped one", "assigned_to": "", "feature": "Run-Ledger"})
+    c.post("/tasks", data={"title": "Grouped two", "feature": "run-ledger"})
+    c.post("/tasks", data={"title": "Loose one"})
+    grouped = [t for t in ac.list_tasks(conn) if t["title"].startswith("Grouped")]
+    check("new-task form sets a feature", [t["feature"] for t in grouped] == ["run-ledger", "run-ledger"], grouped)
+    page = c.get("/tasks").get_data(as_text=True)
+    check("feature filter offered", 'name="feature"' in page and "run-ledger (0/2)" in page)
+    check("feature column shown", "<th>Feature</th>" in page)
+    filtered = c.get("/tasks?feature=run-ledger", headers=HX).get_data(as_text=True)
+    check("feature filter narrows the table",
+          "Grouped one" in filtered and "Grouped two" in filtered and "Loose one" not in filtered)
+    loose = c.get("/tasks?feature=", headers=HX).get_data(as_text=True)
+    check("no-feature filter", "Loose one" in loose and "Grouped one" not in loose)
+    gid = grouped[0]["id"]
+    editor = c.get(f"/tasks/{gid}?edit=1", headers=HX).get_data(as_text=True)
+    check("task editor offers the feature", 'name="feature"' in editor and 'value="run-ledger"' in editor)
+    panel = c.post(f"/tasks/{gid}", data={"title": "Grouped one", "description": "", "feature": "supervisor"}).get_data(as_text=True)
+    check("task editor moves it to another feature",
+          ac.get_task(conn, gid)["feature"] == "supervisor" and "supervisor" in panel)
+    c.post(f"/tasks/{gid}", data={"title": "Grouped one", "description": "", "feature": ""})
+    check("task editor clears the feature", ac.get_task(conn, gid)["feature_id"] is None)
+    check("features on the Data page", c.get("/data/features").status_code == 200)
+
     # Test malformed run_id validation
     bad_run = c.get("/runs/not-a-hex-id").get_data(as_text=True)
     check("malformed run_id rejected", "Invalid" in bad_run or "error" in bad_run.lower())

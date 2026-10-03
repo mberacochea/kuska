@@ -7,7 +7,7 @@
     {% if show_status %}<span class="chip small s-{{ t.status }}">{{ t.status }}</span>{% endif %}
   </div>
   <a class="kcard-title" href="/tasks/{{ t.id }}">{{ t.title }}</a>
-  <div class="kcard-agent small muted">{{ t.assigned_to or 'unassigned' }}</div>
+  <div class="kcard-agent small muted">{{ t.assigned_to or 'unassigned' }}{% if t.feature %} · <span class="chip small">{{ t.feature }}</span>{% endif %}</div>
   {% if picker %}
   <form class="kcard-pick small" hx-post="/tasks/{{ t.id }}/move" hx-target="#board" hx-swap="outerHTML">
     <input type="hidden" name="column" value="ready">

@@ -30,6 +30,7 @@ from .store import (
     full_text_search,
     get_inbox,
     get_task,
+    list_features,
     list_tags,
     list_tasks,
     reply,
@@ -57,10 +58,13 @@ def _create_task_handler(db, agent, args):
     description = args.get("description", "")
     assigned_to = args.get("assigned_to")
     tags = args.get("tags")
+    feature = args.get("feature")
     depends_on = args.get("depends_on", [])
 
     # Create the task
-    task_id = add_task(db, title, description=description, assigned_to=assigned_to, tags=tags)
+    task_id = add_task(
+        db, title, description=description, assigned_to=assigned_to, tags=tags, feature=feature
+    )
 
     # Add dependencies if provided
     for dep_id in depends_on:
@@ -121,6 +125,14 @@ def _send_message_handler(db, agent, args):
                 f"and stop; task {args['task_id']} resumes with the answer."
             )
     return out
+
+
+def _set_task_feature_handler(db, agent, args):
+    """Move a task into a feature (created if new), or out of its feature."""
+    if not get_task(db, args["task_id"]):
+        raise ValueError(f"task {args['task_id']} not found")
+    update_task(db, args["task_id"], feature=args.get("feature") or None)
+    return get_task(db, args["task_id"])
 
 
 def _search_handler(db, agent, args):
@@ -338,6 +350,13 @@ TOOL_SPECS: list[dict] = [
                 "description": {**_STR, "description": "Optional longer explanation of what to do"},
                 "assigned_to": {**_STR, "description": "Optional agent name to assign this task to"},
                 "tags": {**_STR, "description": "Optional comma-separated tags for filtering (e.g. 'bug,urgent')"},
+                "feature": {
+                    **_STR,
+                    "description": (
+                        "Optional feature this task belongs to, by name (e.g. 'search'); "
+                        "created if it does not exist. Group related tasks under one feature."
+                    ),
+                },
                 "depends_on": {
                     "type": "array",
                     "items": _INT,
@@ -351,7 +370,7 @@ TOOL_SPECS: list[dict] = [
     {
 
         "name": "list_tasks",
-        "description": "List all tasks, optionally filtered by status.",
+        "description": "List all tasks, optionally filtered by status and/or feature.",
         "schema": _obj(
             {
                 "status": {
@@ -359,9 +378,28 @@ TOOL_SPECS: list[dict] = [
                     "enum": list(TASK_STATUSES),
                     "description": "Optional status filter",
                 },
+                "feature": {**_STR, "description": "Optional feature name filter"},
             }
         ),
-        "handler": lambda db, agent, a: list_tasks(db, status=a.get("status")),
+        "handler": lambda db, agent, a: list_tasks(db, status=a.get("status"), feature=a.get("feature")),
+    },
+    {
+        "name": "list_features",
+        "description": "List the project's features (named groups of related tasks), with task totals.",
+        "schema": _obj({}),
+        "handler": lambda db, agent, a: list_features(db),
+    },
+    {
+        "name": "set_task_feature",
+        "description": "Put a task in a feature by name (created if new), or pass an empty feature to take it out.",
+        "schema": _obj(
+            {
+                "task_id": {**_INT, "description": "ID of the task"},
+                "feature": {**_STR, "description": "Feature name; empty to remove the task from its feature"},
+            },
+            ["task_id", "feature"],
+        ),
+        "handler": lambda db, agent, a: _set_task_feature_handler(db, agent, a),
     },
     {
         "name": "search",
@@ -425,16 +463,16 @@ TOOL_SPECS: list[dict] = [
 ]
 
 
-# every agent's tools; planners also curate tags. create_task is in the base
+# every agent's tools; planners also curate tags and features. create_task is in the base
 # set because a new task lands in `todo`, where a human decides whether it runs
 BASE_TOOLS = (
     "get_inbox", "send_message", "reply", "docs_get", "docs_set", "docs_list",
-    "create_task", "list_tasks", "search", "list_tags",
+    "create_task", "list_tasks", "list_features", "search", "list_tags",
 )
 FLAVOR_TOOLS = {
     "dev": BASE_TOOLS,
     "reviewer": BASE_TOOLS,
-    "planner": (*BASE_TOOLS, "add_tag", "remove_tag"),
+    "planner": (*BASE_TOOLS, "add_tag", "remove_tag", "set_task_feature"),
 }
 
 # what changes for a caller acting as the human's hands rather than as an agent

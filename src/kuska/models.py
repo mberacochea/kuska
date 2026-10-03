@@ -48,6 +48,21 @@ class Agent(Base):
         table_name = "agents"
 
 
+class Feature(Base):
+    """A named group of related tasks, e.g. "run-ledger". A task belongs to at
+    most one; the feature outlives its tasks and is the unit later per-feature
+    work (agent coordination, summaries) will hang off."""
+
+    id = AutoField()
+    name = CharField(unique=True)  # normalised by store.features.norm_feature_name
+    description = TextField(null=True)
+    created_at = FloatField(default=time.time)
+    updated_at = FloatField(default=time.time)
+
+    class Meta:
+        table_name = "features"
+
+
 class Task(Base):
     id = AutoField()
     title = TextField(null=True)
@@ -57,7 +72,12 @@ class Task(Base):
         on_delete="SET NULL", lazy_load=False,
     )
     status = CharField(default="todo")  # see db.TASK_STATUSES
-    feature = CharField(null=True, index=True)  # free-text group, e.g. "search"
+    # the feature this task belongs to; deleting the feature ungroups its tasks.
+    # Task dicts from store.tasks also carry the feature's name as "feature".
+    feature_id = ForeignKeyField(
+        Feature, field="id", column_name="feature_id", null=True, backref="tasks",
+        on_delete="SET NULL", lazy_load=False,
+    )
     tags = TextField(null=True)  # comma-separated tags for filtering and grouping
     worktree_path = TextField(null=True)  # path to the worktree, if one exists
     created_at = FloatField(default=time.time)
@@ -140,7 +160,7 @@ class Event(Base):
         indexes = ((("task_id", "id"), False), (("run_id", "id"), False))
 
 
-MODELS = [Agent, Task, TaskDep, Message, Doc, Event]
+MODELS = [Agent, Feature, Task, TaskDep, Message, Doc, Event]
 
 # per connection. WAL is not among them: it is a property of the file, set
 # once by connect() - see _ensure_wal

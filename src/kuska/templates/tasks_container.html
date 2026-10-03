@@ -37,6 +37,16 @@
     </div>
 
     <div class="filter-group">
+      <label for="task-feature">Feature:</label>
+      <select id="task-feature" name="feature" multiple class="task-filter-select" aria-label="Filter by feature">
+        <option value="" {{ 'selected' if '' in feature_list }}>No feature</option>
+        {% for f in features %}
+        <option value="{{ f.name }}" {{ 'selected' if f.name in feature_list }}>{{ f.name }} ({{ f.done }}/{{ f.total }})</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="filter-group">
       <label for="task-tags">Tags:</label>
       <select id="task-tags" name="tag" multiple class="task-filter-select" aria-label="Filter by tags">
         <option value="" {{ 'selected' if '' in tag_list }}>Untagged</option>

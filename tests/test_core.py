@@ -373,13 +373,16 @@ def main() -> None:
         print("tools")
         check("tool set", [s["name"] for s in ac.TOOL_SPECS] == [
             "get_inbox", "send_message", "reply", "docs_get", "docs_set",
-            "docs_list", "create_task", "list_tasks", "search",
-            "add_tag", "remove_tag", "list_tags"])
+            "docs_list", "create_task", "list_tasks", "list_features", "set_task_feature",
+            "search", "add_tag", "remove_tag", "list_tags"])
         names = lambda cfg: [s["name"] for s in ac.toolset(cfg)]  # noqa: E731
         check("dev and reviewer get the base set", names({"flavor": "dev"}) == names({"flavor": "reviewer"})
               == list(ac.tools.BASE_TOOLS))
         check("planners also curate tags", {"add_tag", "remove_tag"} <= set(names({"flavor": "planner"}))
               and "add_tag" not in names({"flavor": "dev"}))
+        check("planners also curate features", "set_task_feature" in names({"flavor": "planner"})
+              and "set_task_feature" not in names({"flavor": "dev"})
+              and "list_features" in names({"flavor": "dev"}))
         check("no flavor means dev", names({}) == names({"flavor": "dev"}))
         check("an operator gets every tool", names(None) == [s["name"] for s in ac.TOOL_SPECS])
         dev_tools = ac.toolset({"flavor": "dev"})
@@ -541,6 +544,77 @@ def main() -> None:
         check("unassigned todo stays todo", ac.get_task(conn, m_loose)["status"] == "todo")
         check("soft-deleted todo untouched",
               conn.execute_sql("SELECT status FROM tasks WHERE id = ?", (m_deleted,)).fetchone()[0] == "todo")
+
+        print("features")
+        f1 = ac.add_task(conn, "feature one", feature="  Run-Ledger ")
+        f2 = ac.add_task(conn, "feature two", feature="run-ledger")
+        f3 = ac.add_task(conn, "no feature")
+        ledger = ac.get_feature_by_name(conn, "RUN-LEDGER")
+        check("feature created on first use, normalised", ledger and ledger["name"] == "run-ledger", ledger)
+        check("same name reuses the feature",
+              ac.get_task(conn, f1)["feature_id"] == ac.get_task(conn, f2)["feature_id"] == ledger["id"])
+        check("task dict carries the feature name", ac.get_task(conn, f1)["feature"] == "run-ledger")
+        check("no feature is None", ac.get_task(conn, f3)["feature"] is None and ac.get_task(conn, f3)["feature_id"] is None)
+        check("list_tasks filters by feature", [t["id"] for t in ac.list_tasks(conn, feature="Run-Ledger")] == [f1, f2])
+        from kuska.store import filter_tasks
+        check("filter_tasks by feature", {t["id"] for t in filter_tasks(conn, feature=["run-ledger"])} == {f1, f2})
+        check("filter_tasks: empty string means no feature",
+              f3 in {t["id"] for t in filter_tasks(conn, feature=[""])}
+              and f1 not in {t["id"] for t in filter_tasks(conn, feature=[""])})
+        ac.update_task_status(conn, f2, "done")
+        counts = {f["name"]: (f["done"], f["total"]) for f in ac.list_features(conn)}
+        check("list_features counts tasks", counts.get("run-ledger") == (1, 2), counts)
+        ac.ensure_feature(conn, "empty one", description="nothing yet")
+        counts = {f["name"]: (f["done"], f["total"]) for f in ac.list_features(conn)}
+        check("a feature with no tasks is listed with zero", counts.get("empty one") == (0, 0), counts)
+        check("ensure_feature sets a missing description only",
+              ac.ensure_feature(conn, "run-ledger", description="runs") == ledger["id"]
+              and ac.get_feature(conn, ledger["id"])["description"] == "runs"
+              and ac.ensure_feature(conn, "run-ledger", description="other") == ledger["id"]
+              and ac.get_feature(conn, ledger["id"])["description"] == "runs")
+        ac.update_task(conn, f3, feature="Supervisor")
+        check("update_task moves a task into a (new) feature", ac.get_task(conn, f3)["feature"] == "supervisor")
+        ac.update_task(conn, f3, feature="")
+        check("update_task with empty feature removes it", ac.get_task(conn, f3)["feature_id"] is None)
+        ac.update_feature(conn, ledger["id"], name="Ledger")
+        check("rename follows to tasks", ac.get_task(conn, f1)["feature"] == "ledger")
+        try:
+            ac.update_feature(conn, ledger["id"], name="supervisor")
+            check("rename onto a taken name refused", False)
+        except ValueError:
+            check("rename onto a taken name refused", True)
+        check("delete_feature ungroups its tasks",
+              ac.delete_feature(conn, ledger["id"]) == 2 and ac.get_task(conn, f1)["feature_id"] is None
+              and ac.get_feature(conn, ledger["id"]) is None)
+
+        print("feature tools")
+        made = ac.call_tool(conn, "dev-agent", "create_task", {"title": "via tool", "feature": "tooling"})
+        check("create_task tool takes a feature", made["feature"] == "tooling", made)
+        listed = ac.call_tool(conn, "dev-agent", "list_tasks", {"feature": "tooling"})
+        check("list_tasks tool filters by feature", [t["id"] for t in listed] == [made["id"]], listed)
+        check("list_features tool", "tooling" in [f["name"] for f in ac.call_tool(conn, "dev-agent", "list_features", {})])
+        planner = ac.toolset({"flavor": "planner"})
+        moved = ac.call_tool(conn, "planning-agent", "set_task_feature", {"task_id": made["id"], "feature": "other"}, planner)
+        check("set_task_feature moves a task", moved["feature"] == "other", moved)
+        moved = ac.call_tool(conn, "planning-agent", "set_task_feature", {"task_id": made["id"], "feature": ""}, planner)
+        check("set_task_feature with empty removes it", moved["feature"] is None, moved)
+
+        print("migration 013 (features)")
+        from kuska.migration import run_migrations
+        old = ac.connect(tmp / "old.db")
+        run_migrations(old, target_version="012_add_ready_status")
+        old.execute_sql(
+            "INSERT INTO tasks (title, status, feature, created_at, updated_at) VALUES "
+            "('a', 'todo', 'Search ', 0, 0), ('b', 'todo', 'search', 0, 0), "
+            "('c', 'todo', NULL, 0, 0), ('d', 'todo', 'ui', 0, 0)"
+        )
+        ac.init_db(old)
+        check("free-text features become rows", [f["name"] for f in ac.list_features(old)] == ["search", "ui"])
+        check("tasks linked to their backfilled feature",
+              [t["feature"] for t in ac.list_tasks(old)] == ["search", "search", None, "ui"])
+        check("old column kept for older processes",
+              "feature" in {c.name for c in old.get_columns("tasks")})
+        old.close()
 
         conn.close()
     finally:

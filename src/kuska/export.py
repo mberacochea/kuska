@@ -44,10 +44,15 @@ def export_markdown(db: SqliteDatabase, out_dir: str | os.PathLike) -> list[Path
     plan_file.write_text("\n".join(plan))
     written.append(plan_file)
 
-    tasks = ["# Tasks", "", "| # | Title | Assigned | Status | Updated |", "| --- | --- | --- | --- | --- |"]
+    tasks = [
+        "# Tasks", "",
+        "| # | Title | Feature | Assigned | Status | Updated |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
     for t in list_tasks(db):
         tasks.append(
-            f"| {t['id']} | {t['title']} | {t['assigned_to'] or '-'} | {t['status']} | {_fmt_ts(t['updated_at'])} |"
+            f"| {t['id']} | {t['title']} | {t['feature'] or '-'} | {t['assigned_to'] or '-'} "
+            f"| {t['status']} | {_fmt_ts(t['updated_at'])} |"
         )
     tasks.append("")
     for t in list_tasks(db):
