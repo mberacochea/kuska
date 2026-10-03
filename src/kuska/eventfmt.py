@@ -379,15 +379,19 @@ def preview_html(event: dict, max_lines: int = PREVIEW_LINES) -> tuple[str, int]
         text, is_md = _display_source(event)
         if not text:
             return "", 0
-        lines = text.split("\n")
-        hidden = 0
-        if len(lines) > max_lines:
-            hidden = len(lines) - max_lines
-            lines = lines[:max_lines]
+        all_lines = text.split("\n")
+        lines = all_lines[:max_lines]
         shown = "\n".join(lines)
         if len(shown) > PREVIEW_MAX_CHARS:
+            # Char backstop: count lines not fully shown (a partly shown
+            # last line counts as hidden).
+            fully = shown.count("\n", 0, PREVIEW_MAX_CHARS)
+            if shown[PREVIEW_MAX_CHARS] == "\n":
+                fully += 1
             shown = shown[:PREVIEW_MAX_CHARS]
-            hidden = max(hidden, 1)
+            hidden = max(len(all_lines) - fully, 1)
+        else:
+            hidden = len(all_lines) - len(lines)
         return _emit(shown, is_md), hidden
     except Exception:
         return '<pre class="raw">(unreadable event)</pre>', 0

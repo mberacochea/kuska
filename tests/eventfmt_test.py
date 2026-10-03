@@ -199,6 +199,9 @@ def main() -> None:
     check("empty body is empty", preview_html(ev(kind="text", body="")) == ("", 0))
     h, hidden = preview_html(ev(kind="text", label=None, body="x" * 100_000))
     check("giant single line is backstopped", hidden >= 1 and len(h) < 20_000)
+    huge = "\n".join("y" * 5000 for _ in range(4))
+    h, hidden = preview_html(ev(kind="tool_result", label=None, body=huge))
+    check("char backstop counts the cut lines", hidden == 3, hidden)
     for hostile in (None, 5, b"\xff", "\x00\ud800" if False else "\x00", "{" * 50, "[1,"):
         for kind in ("text", "tool_result", "bogus"):
             r = preview_html({"kind": kind, "body": hostile})
