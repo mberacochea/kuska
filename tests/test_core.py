@@ -561,6 +561,31 @@ def main() -> None:
         check("filter_tasks: empty string means no feature",
               f3 in {t["id"] for t in filter_tasks(conn, feature=[""])}
               and f1 not in {t["id"] for t in filter_tasks(conn, feature=[""])})
+        b_ok = ac.add_task(conn, "bulk owned", "", "dev-agent")
+        b_free = ac.add_task(conn, "bulk unowned", "", None)
+        b_run = ac.add_task(conn, "bulk running", "", "dev-agent")
+        ac.update_task_status(conn, b_run, "in_progress")
+        res = ac.bulk_update_status(conn, [b_ok, b_free, b_run, 99999, b_ok], "ready")
+        check("bulk ready moves only what may go",
+              res["moved"] == [b_ok] and ac.get_task(conn, b_ok)["status"] == "ready"
+              and ac.get_task(conn, b_free)["status"] == "todo", res)
+        check("bulk skips say why",
+              dict(res["skipped"]) == {b_free: "no agent", b_run: "in progress", 99999: "not found"}, res)
+        check("bulk in_progress task is untouched", ac.get_task(conn, b_run)["status"] == "in_progress")
+        res = ac.bulk_update_status(conn, [b_ok, b_free], "done")
+        check("bulk to done needs no agent",
+              res["moved"] == [b_ok, b_free] and not res["skipped"]
+              and ac.get_task(conn, b_free)["status"] == "done", res)
+        check("bulk to the current status counts as moved",
+              ac.bulk_update_status(conn, [b_free], "done")["moved"] == [b_free])
+        for bad in ("in_progress", "bogus"):
+            try:
+                ac.bulk_update_status(conn, [b_ok], bad)
+                check(f"bulk refuses {bad}", False)
+            except ValueError:
+                check(f"bulk refuses {bad}", True)
+        for tid in (b_ok, b_free, b_run):
+            ac.delete_task(conn, tid)
         ac.update_task_status(conn, f2, "done")
         counts = {f["name"]: (f["done"], f["total"]) for f in ac.list_features(conn)}
         check("list_features counts tasks", counts.get("run-ledger") == (1, 2), counts)

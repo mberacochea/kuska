@@ -81,6 +81,7 @@ from .stats import (
 )
 from .tasks import (
     add_task,
+    bulk_update_status,
     claim_task,
     delete_task,
     filter_tasks,
@@ -96,6 +97,7 @@ __all__ = [
     "ANSWER_TAG",
     "add_dependency",
     "add_task",
+    "bulk_update_status",
     "annotations",
     "ask_agent",
     "avg_task_duration",

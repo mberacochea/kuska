@@ -102,6 +102,47 @@ def update_task_status(db: SqliteDatabase, task_id: int, status: str) -> None:
 
 
 @bound
+def bulk_update_status(db: SqliteDatabase, task_ids: list[int], status: str) -> dict:
+    """Move several tasks to one status, skipping the ones that may not go.
+
+    The same rules as the board: only an agent starts work, so `in_progress`
+    is never a target and a task that is in progress is left alone; a task
+    needs an agent before it can be `ready`.
+
+    Args:
+        db: SqliteDatabase instance for this project.
+        task_ids: Tasks to move. Unknown ids are skipped.
+        status: Target status; must be one of TASK_STATUSES.
+
+    Returns:
+        dict: `moved` (ids changed) and `skipped` (a list of (id, reason)).
+        A task already in the target status counts as moved, not skipped.
+
+    Raises:
+        ValueError: If status is unknown or is "in_progress".
+    """
+    if status not in TASK_STATUSES:
+        raise ValueError(f"unknown task status: {status}")
+    if status == "in_progress":
+        raise ValueError("only an agent moves a task to in_progress")
+    moved: list[int] = []
+    skipped: list[tuple[int, str]] = []
+    for task_id in dict.fromkeys(task_ids):
+        task = get_task(db, task_id)
+        if not task:
+            skipped.append((task_id, "not found"))
+        elif task["status"] == "in_progress":
+            skipped.append((task_id, "in progress"))
+        elif status == "ready" and not task["assigned_to"]:
+            skipped.append((task_id, "no agent"))
+        else:
+            if task["status"] != status:
+                update_task_status(db, task_id, status)
+            moved.append(task_id)
+    return {"moved": moved, "skipped": skipped}
+
+
+@bound
 def update_task(db: SqliteDatabase, task_id: int, **fields: Any) -> None:
     """Update one or more fields on a task.
 

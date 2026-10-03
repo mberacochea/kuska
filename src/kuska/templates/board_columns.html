@@ -1,6 +1,10 @@
 <div id="board" class="board">
   {% for col in columns %}
-  <section class="kcol" data-column="{{ col.key }}" {% if col.drop %}data-drop="1"{% endif %}>
+  {# A column grows to up to three sub-columns of cards as it fills, and the
+     board gives it that much more width (--sub is its share, see app.css),
+     so a long column spreads sideways instead of running down the page. #}
+  {% set sub = 1 if col.cards|length <= 5 else (2 if col.cards|length <= 10 else 3) %}
+  <section class="kcol" style="--sub:{{ sub }}" data-column="{{ col.key }}" {% if col.drop %}data-drop="1"{% endif %}>
     <h2>{{ col.title }} <span class="muted small">{{ col.cards|length }}</span></h2>
     <div class="kcol-body">
       {% for t in col.cards %}

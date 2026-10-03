@@ -333,6 +333,51 @@ def test_web(project: Path) -> None:
     reloaded_html = c.get("/tasks?status=todo").get_data(as_text=True)
     check("direct reload of a filtered URL gets the full layout", "<html" in reloaded_html and "Test for reload" in reloaded_html)
 
+    print("faceted filters")
+    c.post("/tasks", data={"title": "Facet A", "assigned_to": "dev-agent", "feature": "facets"})
+    c.post("/tasks", data={"title": "Facet B", "feature": "facets"})
+    fa = next(t["id"] for t in ac.list_tasks(conn) if t["title"] == "Facet A")
+    fb = next(t["id"] for t in ac.list_tasks(conn) if t["title"] == "Facet B")
+    ac.update_task(conn, fa, tags="alpha")
+    ac.update_task_status(conn, fa, "ready")
+    page = c.get("/tasks").get_data(as_text=True)
+    check("facet chips replace the multiselects", 'class="facet-chip' in page and "<select id=\"task-status\"" not in page)
+    check("facet chips use the filter params",
+          'name="status"' in page and 'name="agent"' in page and 'name="feature"' in page and 'name="tag"' in page)
+    check("shown count", "Showing" in page and " of " in page)
+    only_facets = c.get("/tasks?feature=facets", headers=HX).get_data(as_text=True)
+    check("filter by feature shows both", "Facet A" in only_facets and "Facet B" in only_facets)
+    check("feature chip is ticked", 'value="facets" checked' in only_facets)
+    check("status chip counts respect the other filters",
+          'value="ready" ' in only_facets
+          and "Showing 2 of" in only_facets)
+    by_status = c.get("/tasks?feature=facets&status=ready", headers=HX).get_data(as_text=True)
+    check("status facet narrows the table", "Facet A" in by_status and "Facet B" not in by_status)
+    check("counts for the ticked facet ignore itself",
+          'value="todo" >' in by_status.replace("  ", " ").replace("\n", " ") or "facet-count" in by_status)
+
+    print("bulk status move")
+    check("bulk checkboxes in rows", f'name="ids" value="{fa}"' in page and 'id="bulk-all"' in page)
+    check("bulk bar offers every status but in_progress",
+          'value="needs_approval"' in page.split('id="bulk-status"')[1].split("</select>")[0]
+          and 'value="in_progress"' not in page.split('id="bulk-status"')[1].split("</select>")[0])
+    moved = c.post("/tasks/bulk", data={"ids": [fa, fb], "to_status": "ready", "status": "ready",
+                                        "feature": "facets"}).get_data(as_text=True)
+    check("bulk ready moves the owned one", ac.get_task(conn, fa)["status"] == "ready")
+    check("bulk ready skips the unowned one", ac.get_task(conn, fb)["status"] == "todo")
+    check("toast names the skip", 'id="toast"' in moved and f"no agent: #{fb}" in moved and "1 moved to ready" in moved)
+    check("bulk response keeps the filtered view", 'id="tasks-container"' in moved and "Facet B" not in moved)
+    c.post("/tasks/bulk", data={"ids": [fa, fb], "to_status": "done"})
+    check("bulk done moves both", ac.get_task(conn, fa)["status"] == "done" and ac.get_task(conn, fb)["status"] == "done")
+    check("bulk in_progress refused",
+          "only an agent" in c.post("/tasks/bulk", data={"ids": [fa], "to_status": "in_progress"}).get_data(as_text=True)
+          and ac.get_task(conn, fa)["status"] == "done")
+    check("bulk with nothing ticked says so",
+          "tick some tasks" in c.post("/tasks/bulk", data={"to_status": "todo"}).get_data(as_text=True))
+    check("bulk ignores junk ids", "1 moved to todo" in c.post("/tasks/bulk", data={"ids": ["x", str(fa)], "to_status": "todo"}).get_data(as_text=True))
+    for tid in (fa, fb):
+        c.post(f"/tasks/{tid}/delete")
+
     print("docs page")
     html = c.get("/docs").get_data(as_text=True)
     check("lists existing docs", "description" in html)
@@ -605,7 +650,8 @@ def test_web(project: Path) -> None:
     grouped = [t for t in ac.list_tasks(conn) if t["title"].startswith("Grouped")]
     check("new-task form sets a feature", [t["feature"] for t in grouped] == ["run-ledger", "run-ledger"], grouped)
     page = c.get("/tasks").get_data(as_text=True)
-    check("feature filter offered", 'name="feature"' in page and "run-ledger (0/2)" in page)
+    check("feature filter offered", 'name="feature"' in page and 'value="run-ledger"' in page)
+    check("feature chip carries its progress", 'title="0/2 done"' in page)
     check("feature column shown", "<th>Feature</th>" in page)
     filtered = c.get("/tasks?feature=run-ledger", headers=HX).get_data(as_text=True)
     check("feature filter narrows the table",
@@ -672,6 +718,9 @@ def test_board(project: Path) -> None:
     check("finished shows status label", "needs_approval" in page)
     check("waiting card sits above done cards", page.index("Waiting card") < page.index("Done 21"))
     check("only 20 done cards", page.count("Done ") == 20 and "Done 0<" not in page and "Done 1<" not in page)
+    check("columns carry a sub-column share", page.count('style="--sub:') == 4)
+    check("a long column gets three sub-columns", 'style="--sub:3" data-column="finished"' in page)
+    check("a short column gets one", 'style="--sub:1" data-column="in_progress"' in page)
     check("fragment is bare board", c.get("/board", headers={"HX-Request": "true"}).get_data(as_text=True).lstrip().startswith('<div id="board"'))
 
     print("board moves")

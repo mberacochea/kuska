@@ -85,6 +85,10 @@ stateDiagram-v2
   decides when they run.
 - The status dropdown on the tasks page and the Data page can set any status
   directly; the arrows above are the transitions the code makes on its own.
+- The tasks page can also move several tasks at once: tick rows, pick a
+  status, Move. It follows the board's rules, so `in_progress` is never a
+  target, a task already in progress stays put, and `ready` needs an agent;
+  tasks that cannot go are skipped and named in the toast.
 
 ## Messages
 
