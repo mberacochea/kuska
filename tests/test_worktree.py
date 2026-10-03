@@ -355,6 +355,38 @@ def test_merged_branches(tmp_path):
     assert base not in merged, "base not in merged"
 
 
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+def test_is_branch_merged(tmp_path):
+    """A branch is merged once its own commits are in base."""
+    init_git_repo(tmp_path)
+    base = worktree.base_branch(tmp_path)
+    path, branch, _ = worktree.ensure_worktree(tmp_path, 20, "Merge me", base)
+    sha = worktree.merge_base(tmp_path, branch, base)
+    assert sha and len(sha) == 40, "merge_base returns a sha"
+    assert worktree.merge_base(tmp_path, "nope", base) is None, "merge_base of a bad branch is None"
+    assert not worktree.is_branch_merged(tmp_path, branch, base, sha), "untouched branch is not merged"
+
+    (path / "a.txt").write_text("a")
+    commit_all = worktree.commit_all(path, "work")
+    assert commit_all is not None, "worktree commit made"
+    assert not worktree.is_branch_merged(tmp_path, branch, base, sha), "branch with unmerged commits is not merged"
+    assert not worktree.is_branch_merged(tmp_path, branch, base, None), "no base_sha means not merged"
+
+    _git(tmp_path, "merge", "--no-ff", "-m", "merge", branch)
+    assert worktree.is_branch_merged(tmp_path, branch, base, sha), "--no-ff merged branch is merged"
+    assert not worktree.is_branch_merged(tmp_path, branch, base, None), "no base_sha still not merged"
+
+    path2, branch2, _ = worktree.ensure_worktree(tmp_path, 21, "Fast forward", base)
+    sha2 = worktree.merge_base(tmp_path, branch2, base)
+    (path2 / "b.txt").write_text("b")
+    worktree.commit_all(path2, "more work")
+    _git(tmp_path, "merge", "--ff-only", branch2)
+    assert worktree.is_branch_merged(tmp_path, branch2, base, sha2), "--ff-only merged branch is merged"
+
+
 def test_list_worktrees(tmp_path):
     """Test listing worktrees."""
     init_git_repo(tmp_path)

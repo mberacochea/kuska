@@ -95,9 +95,14 @@ def prepare_workdir(db, project: Path, agent_name: str, task: dict, mono) -> tup
         path, branch, created = worktree.ensure_worktree(project, task["id"], task["title"], base)
     except RuntimeError as exc:
         raise core.RunAborted(f"could not set up a worktree for this task: {exc}") from None
-    if not created:  # re-queued task: its base may be stale
+    base_sha = None
+    if created:
+        base_sha = worktree.merge_base(project, branch, base)
+    else:  # re-queued task: its base may be stale
         ok, detail = worktree.rebase_onto(path, base)
-        if not ok:
+        if ok:
+            base_sha = worktree.merge_base(project, branch, base)
+        else:
             mono.record("warning", detail, label=f"rebase onto {base} failed - continuing on the old base")
             core.send_message(
                 db, agent_name, core.HUMAN, task["id"], "note",
@@ -105,7 +110,10 @@ def prepare_workdir(db, project: Path, agent_name: str, task: dict, mono) -> tup
                 f"Working from the old base; resolve by hand before merging."
             )
     # set before the run: reply() reads it to hold the task for review
-    core.update_task(db, task["id"], worktree_path=str(path))
+    fields = {"worktree_path": str(path)}
+    if base_sha:  # a failed rebase leaves the recorded base unchanged
+        fields["worktree_base_sha"] = base_sha
+    core.update_task(db, task["id"], **fields)
     return path, branch
 
 

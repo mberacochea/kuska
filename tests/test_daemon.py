@@ -907,6 +907,14 @@ def test_worktree_agent(tmp_path):
     repo = git.Repo(project)
     assert branch in [h.name for h in repo.heads], "branch exists in repo"
 
+    # prepare_workdir records the branch's base commit
+    task_id2 = add_ready(conn, "Base sha task", "d", "dev-agent")
+    task2 = core.get_task(conn, task_id2)
+    mono = core.Monologue(conn, "dev-agent", task_id2, quiet=True)
+    loop.prepare_workdir(conn, project, "dev-agent", task2, mono)
+    head = git.Repo(project).head.commit.hexsha
+    assert core.get_task(conn, task_id2)["worktree_base_sha"] == head, "prepare_workdir records worktree_base_sha"
+
     # Cleanup
     conn.close()
 
