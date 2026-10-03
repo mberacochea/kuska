@@ -77,6 +77,7 @@ def test_web(project: Path) -> None:
     check("human message posted", "check the edge case" in thread)
     check("message is routed to assignee", ac.get_inbox(conn, "dev-agent")[0]["payload"] == "check the edge case")
 
+    ac.update_task_status(conn, 1, "in_progress")
     ac.reply(conn, "dev-agent", 1, "Shipped.", input_tokens=10, output_tokens=5, cost_usd=0.01)
     detail = c.get("/tasks/1", headers=HX).get_data(as_text=True)
     check("result shows in thread", "Shipped." in detail and "$0.0100" in detail)

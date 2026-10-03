@@ -11,9 +11,8 @@ from __future__ import annotations
 from peewee import SqliteDatabase
 
 from ..db import HUMAN, TASK_STATUSES, now
-from ..models import Task
+from ..models import Message, Task
 from .common import bound
-from .messages import send_message
 from .tasks import get_task
 
 
@@ -88,5 +87,12 @@ def transition(db: SqliteDatabase, task_id: int, event: str, actor: str = HUMAN,
         raise InvalidTransition(f"cannot {event} task {task_id}: it is {status}")
 
     if event == "force" and task["status"] != target:
-        send_message(db, actor, HUMAN, task_id, "note", f"status forced from {task['status']} to {target}")
+        Message.create(
+            ts=now(),
+            sender=actor,
+            recipient=HUMAN,
+            task_id=task_id,
+            msg_type="note",
+            payload=f"status forced from {task['status']} to {target}",
+        )
     return get_task(db, task_id)

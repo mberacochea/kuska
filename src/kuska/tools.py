@@ -36,6 +36,7 @@ from .store import (
     reply,
     send_message,
     set_run_result_message,
+    transition,
     update_task,
 )
 
@@ -112,9 +113,19 @@ def _operator_reply_handler(db, agent, args):
     status = args.get("status", "done")
     if status not in REPLY_STATUSES:
         raise ValueError(f"status must be one of {', '.join(REPLY_STATUSES)}, not {status!r}")
-    if not get_task(db, args["task_id"]):
+    task = get_task(db, args["task_id"])
+    if not task:
         raise ValueError(f"task {args['task_id']} not found")
-    return _reply(db, agent, args["task_id"], args, status)
+    if task["status"] == "in_progress":
+        return _reply(db, agent, args["task_id"], args, status)
+    task_id = args["task_id"]
+    if args.get("handover"):
+        store_workflow_context(db, agent, task_id, args["handover"])
+    msg_id = send_message(db, agent, HUMAN, task_id, "result", args["payload"])
+    # a worktree task's "done" waits for its merge, as it does for an agent
+    to = "ready_to_merge" if status == "done" and task["worktree_path"] else status
+    transition(db, task_id, "force", actor=HUMAN, to=to)
+    return {"id": msg_id}
 
 
 def _send_message_handler(db, agent, args):
