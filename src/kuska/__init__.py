@@ -25,7 +25,7 @@ from .db import (
 from .export import export_markdown
 from .guardrails import RULES, check_command, check_tool, refusal_text
 from .markdown import as_markdown
-from .models import MODELS, Agent, Doc, Event, Feature, Message, Run, Task, TaskDep
+from .models import MODELS, Agent, Doc, Event, Feature, Message, Run, Task, TaskDep, TaskTag
 from .project import (
     AGENT_FIELD_KEYS,
     AGENT_FIELDS,
@@ -72,6 +72,7 @@ from .store import (
     transition,
     add_dependency,
     add_task,
+    add_task_tags,
     ask_agent,
     bulk_update_status,
     is_answer_task,
@@ -108,11 +109,13 @@ from .store import (
     recent_runs,
     register_agent,
     remove_dependency,
+    remove_task_tags,
     reply,
     run_events,
     running_runs,
     send_message,
     set_run_result_message,
+    set_task_tags,
     stale_runs,
     start_run,
     task_dependencies,
