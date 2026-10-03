@@ -323,6 +323,38 @@ def merged_branches(project: Path, base: str) -> set[str]:
         return set()
 
 
+def merge_base(project: Path, branch: str, base: str) -> str | None:
+    """The commit `branch` and `base` diverge from (`git merge-base`), or None on failure."""
+    try:
+        repo = git.Repo(project)
+        return repo.git.merge_base(branch, base).strip() or None
+    except Exception:
+        return None
+
+
+def is_branch_merged(project: Path, branch: str, base: str, base_sha: str | None) -> bool:
+    """True when `branch` had commits of its own and all of them are in `base`.
+
+    git lists a fresh branch with no commits as merged too, so the tip must
+    differ from base_sha, the commit the branch started from. Without a
+    recorded base_sha the branch cannot be judged: False. Any failure: False.
+    """
+    if not base_sha:
+        return False
+    try:
+        repo = git.Repo(project)
+        tip = repo.git.rev_parse(branch).strip()
+        if tip == base_sha:
+            return False
+        try:
+            repo.git.merge_base("--is-ancestor", tip, base)
+        except git.GitCommandError:
+            return False
+        return True
+    except Exception:
+        return False
+
+
 def list_worktrees(project: Path) -> list[dict]:
     """List all worktrees in the project.
 

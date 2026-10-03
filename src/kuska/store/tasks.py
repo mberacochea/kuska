@@ -171,7 +171,7 @@ def update_task(db: SqliteDatabase, task_id: int, **fields: Any) -> None:
         >>> update_task(db, 42, assigned_to="alice")  # assign to alice
         >>> update_task(db, 42, assigned_to=None)  # unassign
     """
-    allowed = {"title", "description", "assigned_to", "status", "feature", "tags", "worktree_path"}
+    allowed = {"title", "description", "assigned_to", "status", "feature", "tags", "worktree_path", "worktree_base_sha"}
     sets = {k: v for k, v in fields.items() if k in allowed}
     if not sets:
         return

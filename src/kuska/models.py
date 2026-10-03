@@ -80,6 +80,7 @@ class Task(Base):
     )
     tags = TextField(null=True)  # comma-separated tags for filtering and grouping
     worktree_path = TextField(null=True)  # path to the worktree, if one exists
+    worktree_base_sha = TextField(null=True)  # commit the task branch started from
     created_at = FloatField(default=time.time)
     updated_at = FloatField(default=time.time)
 

@@ -317,14 +317,16 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
         )
 
         # Perform merge detection: flip tasks to done if branch is merged.
-        # A branch that never diverged from base is trivially "merged" by
-        # git's own definition, so also require it to actually be ahead -
-        # otherwise every freshly-created worktree would auto-flip to done.
+        # A branch with no commits of its own is trivially "merged" by git's
+        # definition, so is_branch_merged also compares against the base sha
+        # recorded when the branch was created.
         for task in tasks_sorted:
             if task.get("worktree_path"):
                 path = Path(task["worktree_path"])
                 wt = next((w for w in wt_list if Path(w["path"]).resolve() == path.resolve()), None)
-                if wt and wt.get("branch") and wt["branch"] in merged and ahead.get(task["id"], 0) > 0:
+                if wt and wt.get("branch") and worktree.is_branch_merged(
+                    project, wt["branch"], base, task.get("worktree_base_sha")
+                ):
                     # Branch is merged - update task to done
                     update_task_status(db(), task["id"], "done")
                     task["status"] = "done"

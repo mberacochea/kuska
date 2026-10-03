@@ -434,6 +434,43 @@ def test_merged_branches():
         shutil.rmtree(tmp)
 
 
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+def test_is_branch_merged():
+    """A branch is merged once its own commits are in base."""
+    print("\nmerge_base() / is_branch_merged()")
+    tmp = Path(tempfile.mkdtemp(prefix="kuska-test-"))
+    try:
+        init_git_repo(tmp)
+        base = worktree.base_branch(tmp)
+        path, branch, _ = worktree.ensure_worktree(tmp, 20, "Merge me", base)
+        sha = worktree.merge_base(tmp, branch, base)
+        check("merge_base returns a sha", bool(sha) and len(sha) == 40)
+        check("merge_base of a bad branch is None", worktree.merge_base(tmp, "nope", base) is None)
+        check("untouched branch is not merged", not worktree.is_branch_merged(tmp, branch, base, sha))
+
+        (path / "a.txt").write_text("a")
+        commit_all = worktree.commit_all(path, "work")
+        check("worktree commit made", commit_all is not None)
+        check("branch with unmerged commits is not merged", not worktree.is_branch_merged(tmp, branch, base, sha))
+        check("no base_sha means not merged", not worktree.is_branch_merged(tmp, branch, base, None))
+
+        _git(tmp, "merge", "--no-ff", "-m", "merge", branch)
+        check("--no-ff merged branch is merged", worktree.is_branch_merged(tmp, branch, base, sha))
+        check("no base_sha still not merged", not worktree.is_branch_merged(tmp, branch, base, None))
+
+        path2, branch2, _ = worktree.ensure_worktree(tmp, 21, "Fast forward", base)
+        sha2 = worktree.merge_base(tmp, branch2, base)
+        (path2 / "b.txt").write_text("b")
+        worktree.commit_all(path2, "more work")
+        _git(tmp, "merge", "--ff-only", branch2)
+        check("--ff-only merged branch is merged", worktree.is_branch_merged(tmp, branch2, base, sha2))
+    finally:
+        shutil.rmtree(tmp)
+
+
 def test_list_worktrees():
     """Test listing worktrees."""
     print("\nlist_worktrees()")
@@ -525,6 +562,7 @@ def main() -> None:
     test_rebase_conflict()
     test_diff_stat()
     test_merged_branches()
+    test_is_branch_merged()
     test_list_worktrees()
     test_remove_worktree()
     test_prune()

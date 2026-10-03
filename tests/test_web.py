@@ -563,6 +563,23 @@ def test_web(project: Path) -> None:
     # Re-open it so later checks that use this task still see it
     ac.update_task_status(conn, merge_task_2, "ready_to_merge")
 
+    # Merge detection: a merged branch flips to done, an unmerged one stays
+    merge_task_3 = ac.add_task(conn, "Merged by hand", "x", "dev-agent")
+    merge_task_4 = ac.add_task(conn, "Still open", "x", "dev-agent")
+    path3, branch3, _ = ac.worktree.ensure_worktree(project, merge_task_3, "Merged by hand", "main")
+    path4, branch4, _ = ac.worktree.ensure_worktree(project, merge_task_4, "Still open", "main")
+    for tid, p, b in ((merge_task_3, path3, branch3), (merge_task_4, path4, branch4)):
+        ac.update_task(conn, tid, worktree_path=str(p),
+                       worktree_base_sha=ac.worktree.merge_base(project, b, "main"))
+        (p / "work.txt").write_text(b)
+        subprocess.run(["git", "add", "."], cwd=p, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "work"], cwd=p, check=True, capture_output=True)
+        ac.update_task_status(conn, tid, "ready_to_merge")
+    subprocess.run(["git", "merge", "--no-ff", "-m", "merge", branch3], cwd=project, check=True, capture_output=True)
+    c.get("/merge-queue")
+    check("merged branch flips its task to done", ac.get_task(conn, merge_task_3)["status"] == "done")
+    check("unmerged task stays ready_to_merge", ac.get_task(conn, merge_task_4)["status"] == "ready_to_merge")
+
     # Test that diff command in task detail has three dots, not two
     task_detail = c.get(f"/tasks/{merge_task_2}", headers=HX).get_data(as_text=True)
     check("diff command in HTML has three dots", f"git diff {branch2[len('kuska/'):]}" not in task_detail or "..." in task_detail)
