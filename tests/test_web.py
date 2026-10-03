@@ -306,6 +306,7 @@ def test_web(project: Path) -> None:
     agents_stream = c.get("/agents/activity").get_data(as_text=True)
     check("agents tail previews body inline", "line 49" in agents_stream and "70 more lines" in agents_stream)
     check("poll pauses on expanded events", ".ev.expanded" in agents_stream and "details[open]" not in agents_stream)
+    check("expanded events can be collapsed to resume polling", 'class="ev-more ev-less"' in agents_stream and "classList.remove('expanded')" in agents_stream)
     import re as _re
     ev_id = int(_re.findall(r'hx-get="/events/(\d+)/detail\?full=1"', agents_stream)[0])
     full = c.get(f"/events/{ev_id}/detail?full=1").get_data(as_text=True)
