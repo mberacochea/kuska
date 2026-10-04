@@ -128,6 +128,63 @@ def strip_wrappers(argv: list[str]) -> list[str]:
     return argv
 
 
+_GIT_ENV_RE = re.compile(
+    r"^(GIT_CONFIG_(COUNT|GLOBAL|SYSTEM|PARAMETERS|KEY_[0-9]+|VALUE_[0-9]+)|GIT_EXEC_PATH)="
+)
+_ENV_OPTS_WITH_ARG = {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}
+_EXPORT_BUILTINS = {"export", "declare", "typeset"}
+
+_GIT_CONFIG_ENV_REASON = (
+    "kuska already turns signing off for the run, and git config injected through "
+    "the environment (GIT_CONFIG_*, GIT_EXEC_PATH) is refused for the same reason "
+    "as `git -c`: git runs outside the sandbox and that config becomes an "
+    "unsandboxed shell"
+)
+
+
+def _sets_git_config_env(argv: list[str]) -> bool:
+    """Does this segment *set* a GIT_CONFIG_* / GIT_EXEC_PATH variable?
+
+    Looks at the assignments `strip_wrappers` throws away (bare `VAR=x`,
+    `env VAR=x`) plus `export`/`declare`/`typeset` arguments. Reads, unsets
+    (`unset X`, `env -u X`) and mere mentions in arguments don't count.
+    """
+    argv = list(argv)
+    while argv:
+        head = argv[0]
+        if head == "env":
+            argv = argv[1:]
+            while argv and (argv[0].startswith("-") or _ASSIGNMENT_RE.match(argv[0])):
+                if _GIT_ENV_RE.match(argv[0]):
+                    return True
+                skip = 2 if argv[0] in _ENV_OPTS_WITH_ARG else 1
+                argv = argv[skip:]
+            continue
+        if head in _WRAPPER_PROGRAMS:
+            argv = argv[1:]
+            continue
+        if _ASSIGNMENT_RE.match(head):
+            if _GIT_ENV_RE.match(head):
+                return True
+            argv = argv[1:]
+            continue
+        break
+    if argv and os.path.basename(argv[0]) in _EXPORT_BUILTINS:
+        return any(_GIT_ENV_RE.match(a) for a in argv[1:])
+    return False
+
+
+def check_git_config_env(seg: dict) -> dict | None:
+    if not _sets_git_config_env(seg.get("argv") or []):
+        return None
+    return {
+        "allowed": False,
+        "rule": "git-config-env",
+        "reason": _GIT_CONFIG_ENV_REASON,
+        "command": shlex.join(seg["argv"]),
+    }
+
+
 def flags(argv: list[str]) -> list[str]:
     """Expand short-flag bundles (``-rf`` -> ``-r``, ``-f``); collect long
     flags verbatim; stop at a bare ``--``. ``argv[0]`` is the program name
@@ -551,6 +608,9 @@ def check_command(command: str, project=None) -> dict:
     for seg in segs:
         if not seg["argv"]:
             continue
+        verdict = check_git_config_env(seg)
+        if verdict:
+            return verdict
         for rule in RULES:
             if matches(rule, seg):
                 return {

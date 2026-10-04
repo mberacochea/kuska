@@ -244,6 +244,36 @@ def test_git_config_exec():
         assert core.check_command(cmd, project)["allowed"], cmd
 
 
+def test_git_config_env():
+    inj = "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/tmp/h"
+    for cmd in (
+        f"{inj} git commit -m x",
+        f"env {inj} git commit -m x",
+        f"export {inj}",
+        f"declare -x {inj}",
+        f"typeset -x {inj}",
+        "GIT_CONFIG_GLOBAL=/tmp/x git status",
+        "GIT_EXEC_PATH=/tmp git status",
+        "env GIT_CONFIG_SYSTEM=/tmp/x git status",
+        "true && export GIT_CONFIG_PARAMETERS=\"'alias.x=!sh'\"",
+        "ls; GIT_CONFIG_COUNT=1 git status",
+        "echo hi | GIT_EXEC_PATH=/tmp cat",
+    ):
+        deny(cmd, project, rule="git-config-env")
+    for cmd in (
+        "echo $GIT_CONFIG_COUNT",
+        "printenv GIT_CONFIG_COUNT",
+        "env | grep GIT",
+        "unset GIT_CONFIG_COUNT",
+        "env -u GIT_CONFIG_COUNT git status",
+        "grep -n GIT_CONFIG_COUNT src/kuska/worktree.py",
+        "git commit -m x",
+        "git status",
+        "FOO=1 git status",
+    ):
+        assert core.check_command(cmd, project)["allowed"], cmd
+
+
 def test_write_outside_workdir():
     hook = "/home/martin/Projects/ai/kuska/.git/hooks/post-commit"
     for tool in ("Write", "Edit"):

@@ -276,7 +276,7 @@ codex_bin = "/usr/local/bin/codex"   # only needed for the PyInstaller build
 both claude and codex and is on by default (see below). Adding another option means one entry in `AGENT_FIELDS` in
 `project.py` - the form, validation and the daemon read it from there.
 
-Destructive shell commands are refused by `src/kuska/guardrails.py` before they run, regardless of `permission_mode`: `rm -rf`, `git reset --hard`, `git push --force`, `git clean -fd`, `git branch -D`, `sudo`, downloads piped into a shell, `chmod 777`, writes outside the project, anything aimed at `.agents/project.db`, and anything aimed at `.agents/worktrees`. Adding a rule is one dict in the `RULES` table.
+Destructive shell commands are refused by `src/kuska/guardrails.py` before they run, regardless of `permission_mode`: `rm -rf`, `git reset --hard`, `git push --force`, `git clean -fd`, `git branch -D`, `sudo`, downloads piped into a shell, `chmod 777`, writes outside the project, git config set through `GIT_CONFIG_*` / `GIT_EXEC_PATH` environment variables, anything aimed at `.agents/project.db`, and anything aimed at `.agents/worktrees`. Adding a rule is one dict in the `RULES` table.
 
 This enforcement catches mistakes, not a determined agent — `sh -c "rm -rf build"`, `find -delete`, and `python -c "shutil.rmtree(...)"` all pass through. The guardrails are wired into the Claude daemon's `PreToolUse` hook only; codex has no per-tool callback, and the openai backend has no shell.
 
