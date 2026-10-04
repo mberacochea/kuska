@@ -307,8 +307,8 @@ def filter_tasks(
               tasks (no task_tags rows).
         sort_by: One of "title", "assigned_to", "status", "created_at",
                  "updated_at". Defaults to updated_at desc, created_at desc.
-                 Rows are always grouped by feature first (ungrouped last),
-                 so this sorts within each feature group.
+                 An explicit sort orders all tasks globally; the default
+                 order groups by feature first (ungrouped last).
         sort_dir: "asc" or "desc" (only used with sort_by).
 
     Returns:
@@ -359,7 +359,8 @@ def filter_tasks(
     }
     field = sort_fields.get(sort_by)
     if field is not None:
-        query = query.order_by(group, field.desc() if sort_dir == "desc" else field.asc())
+        # an explicit column sort is global; feature grouping only shapes the default order
+        query = query.order_by(field.desc() if sort_dir == "desc" else field.asc(), Task.id)
     else:
         query = query.order_by(
             group, fn.COALESCE(Task.updated_at, 0).desc(), fn.COALESCE(Task.created_at, 0).desc()
