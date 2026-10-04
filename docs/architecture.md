@@ -78,7 +78,7 @@ flowchart LR
 
 | Command | What runs |
 | --- | --- |
-| `kuska serve` | The web UI (single-threaded Flask; the open project is process-wide state). |
+| `kuska serve` | The web UI (threaded Flask; the project is chosen per browser session and the DB connection is per request). |
 | `kuska daemon <agent>` | One agent's loop. One process per agent; run several for parallel work. |
 | `kuska mcp --agent <name>` / `kuska mcp --operator` | A stdio MCP server acting as `<name>` (a configured agent), or, with `--operator`, as the human with every tool. Spawned per client: by the codex and openai daemons for every run, and by Claude Code through `.mcp.json`. |
 | `kuska supervise` | The supervisor alone: every 15 s it abandons runs whose heartbeat is over 300 s old (blocking their `in_progress` task) and moves `ready_to_merge` tasks whose branch is merged to `done`. `kuska serve` and `kuska run-all` run it as a thread (`serve --no-supervisor` turns it off). |

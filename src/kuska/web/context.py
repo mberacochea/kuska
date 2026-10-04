@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 
-from flask import render_template, request
+from flask import g, render_template, request, session
 from markupsafe import escape
 from peewee import SqliteDatabase
 
@@ -43,31 +43,54 @@ from ..store import (
 from .helpers import _activity_qs, _ago, _clock, _group_runs
 
 
+_initialised: set[str] = set()
+_init_lock = threading.Lock()
+
+
+def _ensure_initialised(path: Path) -> None:
+    """Run init_db and the agent sync once per project path per process."""
+    with _init_lock:
+        if str(path) in _initialised:
+            return
+        conn = connect(db_path(path))
+        try:
+            init_db(conn)
+            sync_agents_from_config(conn, path)
+        finally:
+            conn.close()
+        _initialised.add(str(path))
+
+
 def make_context(app, project_dir: Path) -> SimpleNamespace:
     """The open project and the rendering helpers every page module shares.
 
-    Closures over `state`, exactly as they were inside create_app; the page
-    modules get them back as attributes of the returned namespace."""
-    state: dict[str, Any] = {}
+    The project is per browser session and the connection per request; the page
+    modules get the helpers back as attributes of the returned namespace."""
+    default_project = Path(project_dir).resolve()
+    _ensure_initialised(default_project)
 
-    # ========== State Management ==========
-
-    def open_project(path: Path) -> None:
-        """Open a project, closing any previously open project."""
-        path = Path(path).resolve()
-        database = connect(db_path(path))
-        init_db(database)
-        sync_agents_from_config(database, path)
-        previous = state.get("db")
-        state.update(project=path, db=database, name=path.name)
-        if previous is not None:
-            previous.close()
-
-    open_project(project_dir)
+    def project() -> Path:
+        """The session's project if it is registered, else the one we started with."""
+        chosen = session.get("project")
+        if chosen:
+            path = Path(chosen).resolve()
+            known = {Path(v).resolve() for v in registry_load().values()}
+            if path in known and (path / ".agents").is_dir():
+                return path
+        return default_project
 
     def db() -> SqliteDatabase:
-        """Get the current database handle."""
-        return state["db"]
+        """This request's database handle, opened lazily and closed at teardown."""
+        if "kuska_db" not in g:
+            _ensure_initialised(project())
+            g.kuska_db = connect(db_path(project()))
+        return g.kuska_db
+
+    @app.teardown_appcontext
+    def _close_db(exc: BaseException | None) -> None:
+        conn = g.pop("kuska_db", None)
+        if conn is not None:
+            conn.close()
 
     # ========== Helper: Toast Messages ==========
 
@@ -244,13 +267,13 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
         worktree_info = None
         worktree_commands = []
         if task.get("worktree_path"):
-            project = state["project"]
+            root = project()
             path = Path(task["worktree_path"])
-            wt_list = worktree.list_worktrees(project)
+            wt_list = worktree.list_worktrees(root)
             wt = next((w for w in wt_list if Path(w["path"]).resolve() == path.resolve()), None)
             if wt:
                 branch = wt.get("branch", "")
-                base = worktree.base_branch(project)
+                base = worktree.base_branch(root)
                 worktree_info = {
                     "path": task["worktree_path"],
                     "branch": branch,
@@ -290,18 +313,18 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
         Shared by the merge-queue page and its polled rows fragment so the
         merge-detection and sorting logic lives in exactly one place.
         """
-        project = state["project"]
-        base = worktree.base_branch(project)
+        root = project()
+        base = worktree.base_branch(root)
 
         # Get all worktrees
-        wt_list = worktree.list_worktrees(project)
+        wt_list = worktree.list_worktrees(root)
         worktrees_map = {
             Path(wt["path"]).name.replace("task-", ""): wt
             for wt in wt_list if wt.get("branch")
         }
 
         # Get merged branches
-        merged = worktree.merged_branches(project, base)
+        merged = worktree.merged_branches(root, base)
 
         # Get diff stats for each task
         diffs = {}
@@ -311,7 +334,7 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
                 path = Path(task["worktree_path"])
                 wt = next((w for w in wt_list if Path(w["path"]).resolve() == path.resolve()), None)
                 if wt and wt.get("branch"):
-                    diffs[task["id"]] = worktree.diff_stat(project, wt["branch"], base)
+                    diffs[task["id"]] = worktree.diff_stat(root, wt["branch"], base)
                     ahead[task["id"]] = worktree.ahead_count(path, wt["branch"], base)
                     worktrees_map[str(task["id"])] = wt
 
@@ -334,9 +357,9 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
                 return True
             if not task.get("worktree_path"):
                 return False
-            branch = worktree.branch_for_path(project, task["worktree_path"])
+            branch = worktree.branch_for_path(root, task["worktree_path"])
             return bool(branch) and worktree.is_branch_merged(
-                project, branch, base, task.get("worktree_base_sha")
+                root, branch, base, task.get("worktree_base_sha")
             )
 
         reviews_map = {}
@@ -381,7 +404,7 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
         """Build a map of agent names to their configured models."""
         return {
             name: cfg.get("model", "")
-            for name, cfg in load_config(state["project"]).get("agents", {}).items()
+            for name, cfg in load_config(project()).get("agents", {}).items()
         }
 
     def agent_rows() -> str:
@@ -451,7 +474,7 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
 
     def editor(name: str) -> str:
         """Render the agent configuration and prompt editor."""
-        cfg = load_config(state["project"]).get("agents", {}).get(name, {})
+        cfg = load_config(project()).get("agents", {}).get(name, {})
 
         def value(field: dict) -> str:
             raw = cfg.get(field["key"], "")
@@ -462,7 +485,7 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
             name=name,
             fields=AGENT_FIELDS,
             value=value,
-            content=read_prompt(state["project"], name),
+            content=read_prompt(project(), name),
         )
 
     # ========== Helper: Docs Rendering ==========
@@ -509,8 +532,8 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
         """Provide project context for all templates."""
         registry = registry_load()
         return {
-            "project_name": state["name"],
-            "projects": sorted(registry) if registry else [state["name"]],
+            "project_name": project().name,
+            "projects": sorted(registry) if registry else [project().name],
         }
 
     return SimpleNamespace(
@@ -528,10 +551,9 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
         docs_table=docs_table,
         editor=editor,
         merge_queue_rows=merge_queue_rows,
-        open_project=open_project,
         render_row=render_row,
         rows_with_toast=rows_with_toast,
-        state=state,
+        project=project,
         task_activity=task_activity,
         task_panel=task_panel,
         tasks_container=tasks_container,

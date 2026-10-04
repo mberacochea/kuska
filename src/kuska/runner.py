@@ -112,11 +112,7 @@ def run_all(
             print(f"[web] Starting on http://{host}:{port}")
             app = create_app(project)
             # Run without debug/reload to avoid subprocess issues
-            # Single-threaded by design: the app holds one process-wide open project
-            # in state["db"], and closing that handle while another thread queries it
-            # causes an unhandled exception. Kuska is single-user, so serial request
-            # handling is the correct fix, not a global lock.
-            app.run(host=host, port=port, debug=False, use_reloader=False, threaded=False)
+            app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
         except Exception as e:
             exceptions.append(e)
             stop_event.set()

@@ -33,7 +33,7 @@ def register(app, ctx) -> None:
     db = ctx.db
     editor = ctx.editor
     rows_with_toast = ctx.rows_with_toast
-    state = ctx.state
+    project = ctx.project
 
     # ========== ROUTES: Agents ==========
 
@@ -108,8 +108,8 @@ def register(app, ctx) -> None:
             return _bad_request(agent_rows(), "prices", price_error)
 
         try:
-            set_agent_config(state["project"], name, request.form.to_dict())
-            sync_agents_from_config(db(), state["project"])
+            set_agent_config(project(), name, request.form.to_dict())
+            sync_agents_from_config(db(), project())
         except (ValueError, OSError) as exc:
             return _bad_request(agent_rows(), "form", f"Failed to create agent: {exc}")
 
@@ -144,18 +144,18 @@ def register(app, ctx) -> None:
             return _bad_request(editor(name), "prices", price_error)
 
         try:
-            set_agent_config(state["project"], name, request.form.to_dict())
+            set_agent_config(project(), name, request.form.to_dict())
         except (ValueError, OSError) as exc:
             return _bad_request(editor(name), "form", f"Failed to save agent settings: {exc}")
 
-        sync_agents_from_config(db(), state["project"])
+        sync_agents_from_config(db(), project())
         return editor(name) + _toast(f"{name} settings saved - restart its daemon to pick them up"), 200
 
     @app.post("/agents/<name>/delete")
     def remove_agent(name: str):
         """POST /agents/<name>/delete - Delete an agent, unassign its tasks, and
         redirect back to the agents list (its own page no longer exists)."""
-        remove_agent_config(state["project"], name)
+        remove_agent_config(project(), name)
         delete_agent(db(), name)
         resp = make_response("")
         resp.headers["HX-Redirect"] = "/agents"
@@ -164,7 +164,7 @@ def register(app, ctx) -> None:
     @app.post("/agents/<name>/context")
     def set_context(name: str) -> str:
         """POST /agents/<name>/context - Save an agent's prompt content."""
-        write_prompt(state["project"], name, request.form.get("content", ""))
+        write_prompt(project(), name, request.form.get("content", ""))
         return f"{name} prompt saved"
 
     # ========== ROUTES: Events ==========
