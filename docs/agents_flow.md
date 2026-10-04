@@ -129,8 +129,30 @@ author's handover doc. After `max_review_rounds` reviews (default 2) of one
 task, the human gets a note and the task is left for them. The review runs in
 the author's worktree (never one of its own, whatever the reviewer's
 `worktree` setting) and never commits there. If that worktree is gone, the
-review task is blocked with "cannot review". Acting on the outcome is
-described in the following task.
+review task is blocked with "cannot review".
+
+When the review run finishes, kuska acts on the status the reviewer replied with:
+
+- **`done` (passed):** the review task is `done`, `review_outcome = "passed"`, and
+  you get a note on the task. You merge.
+- **`needs_approval` (changes requested):** `review_outcome = "changes_requested"`.
+  The findings go to the author as a note, the task is requeued to `ready`, and
+  the review task is closed. The author's next run sees the findings; when it
+  reaches `ready_to_merge` again a new review follows, up to `max_review_rounds`.
+- **`blocked` (inconclusive):** `review_outcome = "inconclusive"`, you get a note
+  ("Review could not be completed") and the task stays `ready_to_merge`.
+
+```mermaid
+flowchart TD
+    A[ready_to_merge] --> B[review task]
+    B -->|passed| C[you merge]
+    B -->|changes requested| D[ready for the author]
+    D --> A
+    B -->|inconclusive| E[note to you]
+```
+
+The merge queue has a Review column linking to the latest review. Merging stays
+a human step.
 
 ## Messages
 

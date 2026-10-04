@@ -1710,3 +1710,64 @@ def test_serve_interrupt_blocks_task(tmp_path):
     runs = core.task_runs(conn, tid)
     assert runs[0]["status"] == "failed" and runs[0]["exit_reason"] == "interrupted"
     conn.close()
+
+
+def test_review_changes_requested_loop(tmp_path):
+    """needs_approval sends the task back to its author; max_review_rounds ends the loop."""
+    project = tmp_path / "review-loop-project"
+    (project / ".agents" / "prompts").mkdir(parents=True)
+    for cmd in (["git", "init", "-b", "main"], ["git", "config", "user.email", "t@example.com"],
+                ["git", "config", "user.name", "T"]):
+        subprocess.run(cmd, cwd=project, check=True, capture_output=True)
+    (project / "README.md").write_text("# Test")
+    (project / ".gitignore").write_text(".agents/\n")
+    subprocess.run(["git", "add", "."], cwd=project, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=project, check=True, capture_output=True)
+    core.config_path(project).write_text(
+        '[agents.dev-agent]\nbackend = "openai"\nrole = "builder"\nworktree = true\n'
+        'reviewer = "review-agent"\nmax_review_rounds = 2\n'
+        '[agents.review-agent]\nbackend = "openai"\nrole = "reviewer"\n'
+    )
+    conn = core.connect(core.db_path(project))
+    core.init_db(conn)
+    core.sync_agents_from_config(conn, project)
+    dev_id = add_ready(conn, "Write notes", "", "dev-agent")
+    runs = {"dev": 0}
+
+    def dev_runner(db, project_, agent_name, cfg):
+        async def run(prompt, workdir, mono):
+            runs["dev"] += 1
+            (workdir / f"n{runs['dev']}.md").write_text("x\n")
+            return "Wrote notes.", {"input_tokens": 1, "output_tokens": 1}
+        return run
+
+    def review_runner(db, project_, agent_name, cfg):
+        async def run(prompt, workdir, mono):
+            review = next(t for t in core.list_tasks(db, status="in_progress") if t["kind"] == "review")
+            core.call_tool(db, agent_name, "reply",
+                           {"task_id": review["id"], "payload": "Needs tests", "status": "needs_approval"})
+            return "Needs tests", {"input_tokens": 1, "output_tokens": 1}
+        return run
+
+    def serve(agent, make):
+        loop.run_daemon(project, agent, "fake", make, poll_interval=0.02, max_tasks=1, quiet=True)
+
+    reviews = []
+    for round_no in (1, 2):
+        serve("dev-agent", dev_runner)
+        assert core.get_task(conn, dev_id)["status"] == "ready_to_merge", "held for review"
+        reviews = core.task_reviews(conn, dev_id)
+        assert len(reviews) == round_no, "a review is requested"
+        serve("review-agent", review_runner)
+        assert core.get_task(conn, dev_id)["status"] == "ready", "sent back to the author"
+        done = core.get_task(conn, reviews[-1]["id"])
+        assert done["status"] == "done" and done["review_outcome"] == "changes_requested", "review closed"
+    assert runs["dev"] == 2, "dev ran again"
+
+    serve("dev-agent", dev_runner)
+    assert runs["dev"] == 3, "dev ran a third time"
+    assert core.get_task(conn, dev_id)["status"] == "ready_to_merge", "ready to merge again"
+    assert len(core.task_reviews(conn, dev_id)) == 2, "no third review"
+    notes = [m for m in core.task_messages(conn, dev_id) if m["msg_type"] == "note"]
+    assert any("over to you" in m["payload"] for m in notes), "human told it is theirs"
+    conn.close()

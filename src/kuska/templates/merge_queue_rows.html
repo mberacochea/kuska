@@ -14,6 +14,10 @@
     {% set block_count = blocks.get(t.id, 0) %}
     {% if block_count > 0 %}<strong>{{ block_count }}</strong>{% else %}-{% endif %}
   </td>
+  <td>
+    {% set rv = reviews.get(t.id) %}
+    {% if rv %}<a href="/tasks/{{ rv.id }}">{{ rv.label }}</a>{% else %}-{% endif %}
+  </td>
   <td>{{ '✓' if merged.get(t.id, False) or prunable.get(t.id, False) else '-' }}</td>
   <td style="display:flex; gap:.5rem">
     {% if unconfirmed == t.id %}
