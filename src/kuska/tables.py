@@ -22,7 +22,6 @@ from peewee import (
 
 from .db import now
 from .models import (
-    MODELS,
     Agent,
     Doc,
     Event,
@@ -34,6 +33,7 @@ from .models import (
     TaskTag,
     row,
     rows,
+    using,
 )
 
 # per-table presentation and policy; the columns themselves come from the model
@@ -179,19 +179,19 @@ def _values(table: str, values: dict, allowed: list[str]) -> dict:
 
 
 def count_rows(db: SqliteDatabase, table: str) -> int:
-    with db.bind_ctx(MODELS):
+    with using(db):
         return int(model_of(table).select().count())
 
 
 def list_rows(db: SqliteDatabase, table: str, limit: int = 50, offset: int = 0) -> list[dict]:
     model = model_of(table)
-    with db.bind_ctx(MODELS):
+    with using(db):
         query = model.select().order_by(spec(table)["order"](model)).limit(limit).offset(offset)
         return rows(query)
 
 
 def get_row(db: SqliteDatabase, table: str, pk_value: Any) -> dict | None:
-    with db.bind_ctx(MODELS):
+    with using(db):
         return row(model_of(table).select().where(_pk_expression(table, pk_value)))
 
 
@@ -204,7 +204,7 @@ def insert_row(db: SqliteDatabase, table: str, values: dict) -> Any:
     for stamp in ("created_at", "updated_at", "ts"):
         if stamp in types:
             columns.setdefault(stamp, now())
-    with db.bind_ctx(MODELS):
+    with using(db):
         inserted = model.insert(**columns).execute()
     name = pk_name(table)
     return columns.get(name, inserted)
@@ -217,11 +217,11 @@ def update_row(db: SqliteDatabase, table: str, pk_value: Any, values: dict) -> b
         return False
     if "updated_at" in field_types(table):
         columns["updated_at"] = now()
-    with db.bind_ctx(MODELS):
+    with using(db):
         return bool(model.update(**columns).where(_pk_expression(table, pk_value)).execute())
 
 
 def delete_row(db: SqliteDatabase, table: str, pk_value: Any) -> bool:
     model = model_of(table)
-    with db.bind_ctx(MODELS):
+    with using(db):
         return bool(model.delete().where(_pk_expression(table, pk_value)).execute())

@@ -43,13 +43,10 @@ def add_ready(conn, *args, **kw):
 # --------------------------------------------------------------------------
 # Concurrency workers.
 #
-# These run in separate processes on purpose. store.py binds its models to a
-# database per call (store.bound -> db.bind_ctx(MODELS)), and peewee's model
-# binding is process-global: two threads calling any bound function rebind the
-# same Model classes under each other and end up issuing queries on the wrong
-# connection. A daemon is its own process (`kuska daemon <name>`), so process
-# isolation is what concurrency actually looks like here - and the only way to
-# test the database's guarantees rather than peewee's global state.
+# These run in separate processes on purpose: `kuska daemon <name>` is its own
+# process, and racing processes is what tests the database's guarantees (WAL,
+# busy_timeout, atomic claims). Threads sharing one process - run-all - are
+# covered by test_threads.py.
 # --------------------------------------------------------------------------
 
 

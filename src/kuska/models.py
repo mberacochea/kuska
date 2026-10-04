@@ -1,8 +1,10 @@
 """Peewee models - the schema, and the only place SQL is described.
 
-Models are bound to a database per call (`with database.bind_ctx(MODELS)`),
-not at import time, because one process can serve several projects: the web
-app switches between them and each has its own file.
+Models are bound to a database per call (`with using(database)`), not at
+import time, because one process can serve several projects: the web app
+switches between them and each has its own file. The binding is per thread,
+since run-all keeps the web app, the supervisor and every agent daemon in one
+process.
 
 Every store function still returns plain dicts. The ORM is an implementation
 detail of this package, not something the daemons, the web app or the MCP
@@ -12,7 +14,9 @@ server have to know about.
 from __future__ import annotations
 
 import os
+import threading
 import time
+from contextlib import contextmanager
 
 try:
     import fcntl
@@ -22,6 +26,7 @@ except ImportError:  # pragma: no cover - POSIX only
 from peewee import (
     AutoField,
     CharField,
+    DatabaseProxy,
     FloatField,
     ForeignKeyField,
     IntegerField,
@@ -31,9 +36,50 @@ from peewee import (
 )
 
 
+class _ThreadDatabase(DatabaseProxy):
+    """A DatabaseProxy whose target is set per thread.
+
+    peewee's own binding (Model.bind, bind_ctx) sets the database on the model
+    classes, which every thread shares: one thread leaving its bind_ctx put the
+    models back to unbound while another was mid-query, and a thread could run
+    its queries on another thread's database."""
+
+    __slots__ = ("_local",)
+
+    def __init__(self):
+        object.__setattr__(self, "_local", threading.local())
+        super().__init__()
+
+    def __setattr__(self, attr, value):
+        # Proxy only allows its own slots; `obj` here is the property below
+        object.__setattr__(self, attr, value)
+
+    @property
+    def obj(self):
+        return getattr(self._local, "obj", None)
+
+    @obj.setter
+    def obj(self, value):
+        self._local.obj = value
+
+
+_database = _ThreadDatabase()
+
+
+@contextmanager
+def using(database: SqliteDatabase):
+    """Bind the models to `database` in this thread for the block; nests."""
+    previous = _database.obj
+    _database.obj = database
+    try:
+        yield database
+    finally:
+        _database.obj = previous
+
+
 class Base(Model):
     class Meta:
-        database = None  # bound per call; see connect()/bind_ctx below
+        database = _database  # bound per call and per thread; see using()
 
 
 class Agent(Base):
@@ -274,7 +320,7 @@ def connect(db_path: str | os.PathLike) -> SqliteDatabase:
 
 
 def init_db(database: SqliteDatabase) -> None:
-    with database.bind_ctx(MODELS):
+    with using(database):
         database.create_tables(MODELS, safe=True)
 
 

@@ -9,19 +9,20 @@ from typing import Any
 
 from peewee import SqliteDatabase
 
-from ..models import MODELS
+from ..models import using
 
 
 def bound(fn_):
     """Bind the models to the database this call is for.
 
     Several projects can be open in one process (the web app switches between
-    them), so binding happens per call rather than once at import.
+    them), so binding happens per call rather than once at import - and per
+    thread, see models.using.
     """
 
     @functools.wraps(fn_)
     def wrapper(db: SqliteDatabase, *args: Any, **kwargs: Any):
-        with db.bind_ctx(MODELS):
+        with using(db):
             return fn_(db, *args, **kwargs)
 
     return wrapper
