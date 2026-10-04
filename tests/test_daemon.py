@@ -1572,3 +1572,73 @@ def test_review_requested_on_ready_to_merge(tmp_path, reviewer):
     else:
         assert reviews == [], "no reviewer, no review"
     conn.close()
+
+
+def _stop_project(tmp_path):
+    project = tmp_path / "stop-project"
+    (project / ".agents" / "prompts").mkdir(parents=True)
+    core.config_path(project).write_text('[agents.dev-agent]\nbackend = "openai"\nrole = "builder"\n')
+    conn = core.connect(core.db_path(project))
+    core.init_db(conn)
+    core.sync_agents_from_config(conn, project)
+    return project, conn
+
+
+def _serve(project, run, stop):
+    loop.run_daemon(project, "dev-agent", "fake", lambda db, project_, agent_name, cfg: run,
+                    poll_interval=0.02, quiet=True, stop=stop)
+
+
+def test_serve_stop_already_set(tmp_path):
+    """A set stop event ends an idle daemon at once, and it ends offline."""
+    project, conn = _stop_project(tmp_path)
+    stop = threading.Event()
+    stop.set()
+
+    async def never(prompt, workdir, mono):
+        raise AssertionError("no task should run")
+
+    started = time.time()
+    _serve(project, never, stop)
+    assert time.time() - started < 1, "returned promptly"
+    assert core.get_agent(conn, "dev-agent")["status"] == "offline"
+    conn.close()
+
+
+def test_serve_stop_after_first_task(tmp_path):
+    """Setting stop during a run lets that run finish, and no further task starts."""
+    project, conn = _stop_project(tmp_path)
+    stop = threading.Event()
+    first = add_ready(conn, "First", "", "dev-agent")
+    second = add_ready(conn, "Second", "", "dev-agent")
+
+    async def run(prompt, workdir, mono):
+        stop.set()
+        return "Done.", {}
+
+    _serve(project, run, stop)
+    assert core.get_task(conn, first)["status"] != "ready"
+    assert core.get_task(conn, second)["status"] == "ready"
+    conn.close()
+
+
+def test_serve_interrupt_blocks_task(tmp_path):
+    """KeyboardInterrupt mid-run blocks the task, fails the run, and propagates."""
+    project, conn = _stop_project(tmp_path)
+    tid = add_ready(conn, "Interrupted", "", "dev-agent")
+
+    async def run(prompt, workdir, mono):
+        raise KeyboardInterrupt
+
+    raised = False
+    try:
+        _serve(project, run, None)
+    except KeyboardInterrupt:
+        raised = True
+    assert raised, "serve re-raises the interrupt"
+    assert core.get_task(conn, tid)["status"] == "blocked"
+    blockers = [m for m in core.task_messages(conn, tid) if m["msg_type"] == "blocker"]
+    assert blockers and "interrupted" in blockers[0]["payload"]
+    runs = core.task_runs(conn, tid)
+    assert runs[0]["status"] == "failed" and runs[0]["exit_reason"] == "interrupted"
+    conn.close()
