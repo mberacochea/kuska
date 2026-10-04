@@ -77,6 +77,8 @@ from .store import (
     bulk_update_status,
     is_answer_task,
     is_work_task,
+    request_review,
+    task_reviews,
     waiting_on_answer,
     blocking_dependencies,
     blocking_map,

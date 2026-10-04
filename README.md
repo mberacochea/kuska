@@ -248,6 +248,7 @@ backend = "claude"          # 'claude' | 'codex'
 model = "claude-opus-5"
 role = "Implements features and fixes bugs"
 worktree = true             # run tasks in per-task git worktrees; requires git repo
+reviewer = "review-agent"    # reviews each branch when it is ready to merge; blank means no review
 max_turns = 80              # per-run limits - hitting one blocks the task
 max_budget_usd = 5.0        #   (blank = none; timeout defaults to 60)
 timeout_minutes = 45

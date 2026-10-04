@@ -175,6 +175,18 @@ AGENT_FIELDS = [
         "type": "bool",
         "help": "run this agent's tasks in a per-task git worktree on their own branch",
     },
+    {
+        "key": "reviewer",
+        "label": "Reviewer",
+        "type": "text",
+        "help": "agent that reviews this agent's branches before you merge them; blank means no review",
+    },
+    {
+        "key": "max_review_rounds",
+        "label": "Max review rounds",
+        "type": "integer",
+        "help": "after this many reviews of one task, it is left for you (blank means 2)",
+    },
 ]
 
 AGENT_FIELD_KEYS = [f["key"] for f in AGENT_FIELDS]

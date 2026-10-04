@@ -180,6 +180,14 @@ async def serve(
                     final = (core.get_task(db, task["id"]) or task)["status"]
                     if final == "ready_to_merge" and branch is not None:
                         mono.record("system", branch, label="ready to merge")
+                        if cfg.get("reviewer") and core.is_work_task(task):
+                            review_id = core.request_review(
+                                db, task["id"], cfg["reviewer"], worktree.base_branch(project),
+                                int(cfg.get("max_review_rounds") or 2),
+                            )
+                            if review_id:
+                                mono.record("system", f"task {review_id} for {cfg['reviewer']}",
+                                            label="review requested")
                     # cost and round count are the honest summary; token volume is
                     # dominated by cache reads at a tenth the price
                     summary = (
