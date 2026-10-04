@@ -1771,3 +1771,63 @@ def test_review_changes_requested_loop(tmp_path):
     notes = [m for m in core.task_messages(conn, dev_id) if m["msg_type"] == "note"]
     assert any("over to you" in m["payload"] for m in notes), "human told it is theirs"
     conn.close()
+
+
+def test_leftovers_committed_before_ready_to_merge(tmp_path, monkeypatch):
+    """When the task shows up in the merge queue, its branch already holds the run's changes."""
+    project = tmp_path / "leftovers-project"
+    (project / ".agents" / "prompts").mkdir(parents=True)
+    for cmd in (["git", "init", "-b", "main"], ["git", "config", "user.email", "t@example.com"],
+                ["git", "config", "user.name", "T"]):
+        subprocess.run(cmd, cwd=project, check=True, capture_output=True)
+    (project / "README.md").write_text("# Test")
+    (project / ".gitignore").write_text(".agents/\n")
+    subprocess.run(["git", "add", "."], cwd=project, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=project, check=True, capture_output=True)
+    core.config_path(project).write_text(
+        '[agents.dev-agent]\nbackend = "openai"\nrole = "builder"\nworktree = true\n'
+    )
+    conn = core.connect(core.db_path(project))
+    core.init_db(conn)
+    core.sync_agents_from_config(conn, project)
+    ok_id = add_ready(conn, "Write notes", "", "dev-agent")
+    bad_id = add_ready(conn, "Crash midway", "", "dev-agent")
+    snapshots = {}
+
+    def snapshot(task_id):
+        path = core.get_task(conn, task_id)["worktree_path"]
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=path, capture_output=True, text=True).stdout
+        files = subprocess.run(["git", "show", "--name-only", "--format=", "HEAD"], cwd=path,
+                               capture_output=True, text=True).stdout.split()
+        snapshots[task_id] = (status, files)
+
+    real_finish, real_fail = core.finish_task, core.fail_task
+
+    def finish_task(db, agent, task_id, *a, **kw):
+        snapshot(task_id)
+        return real_finish(db, agent, task_id, *a, **kw)
+
+    def fail_task(db, agent, task_id, *a, **kw):
+        snapshot(task_id)
+        return real_fail(db, agent, task_id, *a, **kw)
+
+    monkeypatch.setattr(loop.core, "finish_task", finish_task)
+    monkeypatch.setattr(loop.core, "fail_task", fail_task)
+
+    def make_runner(db, project_, agent_name, cfg):
+        async def run(prompt, workdir, mono):
+            (workdir / f"out-{workdir.name}.md").write_text("changes\n")
+            if "Crash" in prompt:
+                raise RuntimeError("boom")
+            return "done", {}
+        return run
+
+    loop.run_daemon(project, "dev-agent", "fake", make_runner, poll_interval=0.02, max_tasks=2)
+
+    for task_id in (ok_id, bad_id):
+        status, files = snapshots[task_id]
+        assert status == "", f"task {task_id}: worktree clean when the status changes"
+        assert files == [f"out-task-{task_id}.md"], f"task {task_id}: branch tip holds the run's changes"
+    assert core.get_task(conn, ok_id)["status"] == "ready_to_merge"
+    assert core.get_task(conn, bad_id)["status"] == "blocked"
+    conn.close()

@@ -168,7 +168,20 @@ async def serve(
             mono = core.Monologue(db, agent_name, task["id"], quiet=quiet)
             core.start_run(db, mono.run_id, task["id"], agent_name)
 
-            workdir, branch, finished = project, None, False
+            workdir, branch = project, None
+
+            def commit_leftovers(finished: bool) -> None:
+                # before finish_task/fail_task, so the branch is complete the moment
+                # the task shows up in the merge queue. An uncommitted tree would
+                # also fail the next run's rebase; a failed run's are labelled as
+                # such so a reviewer never mistakes them for finished work. The
+                # wip: messages never reach the base branch: merges are squashed.
+                if branch is not None:
+                    worktree.commit_all(workdir, (
+                        f"wip: task {task['id']} uncommitted changes" if finished
+                        else f"wip: task {task['id']} partial work from a failed run"
+                    ))
+
             with RunHeartbeat(core.db_path(project), mono.run_id, heartbeat_interval):
                 try:
                     if task.get("kind") == "review":
@@ -195,17 +208,19 @@ async def serve(
                             f"timed out after {limits['timeout_s'] / 60:g} minutes", dict(mono.spent)
                         ) from None
                 except (KeyboardInterrupt, asyncio.CancelledError):
+                    commit_leftovers(False)
                     # stopped mid-run: say so on the task rather than leave it in_progress
                     core.fail_task(db, agent_name, task["id"], "interrupted: the daemon was stopped mid-run", **mono.spent)
                     core.end_run(db, mono.run_id, "failed", exit_reason="interrupted", **mono.spent)
                     raise
                 except Exception as exc:
+                    commit_leftovers(False)
                     mono.record("error", f"run failed: {exc}")
                     core.fail_task(db, agent_name, task["id"], str(exc), **getattr(exc, "usage", {}))
                     core.end_run(db, mono.run_id, "failed", exit_reason=str(exc), **getattr(exc, "usage", {}))
                     log(f"[{agent_name}] task {task['id']} failed: {exc}", error=True)
                 else:
-                    finished = True
+                    commit_leftovers(True)
                     text = text.strip() or "(no output)"
                     msg_id = core.finish_task(db, agent_name, task["id"], text, started, run_id=mono.run_id, **usage)
                     core.end_run(db, mono.run_id, "finished", result_message_id=msg_id, **usage)
@@ -234,15 +249,6 @@ async def serve(
                     )
                     mono.record("result", text, label=f"{final} - {summary}")
                     log(f"[{agent_name}] task {task['id']} {final} ({summary})")
-                finally:
-                    # leftovers are committed either way - an uncommitted tree would
-                    # fail the next run's rebase - but a failed run's are labelled
-                    # as such so a reviewer never mistakes them for finished work
-                    if branch is not None:
-                        worktree.commit_all(workdir, (
-                            f"wip: task {task['id']} uncommitted changes" if finished
-                            else f"wip: task {task['id']} partial work from a failed run"
-                        ))
 
             core.heartbeat(db, agent_name, "idle")
             if stop is not None and stop.is_set():

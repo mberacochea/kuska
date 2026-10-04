@@ -169,10 +169,12 @@ by feature, and `list_features` reports each one's done/total count.
    doubles as the audit log and the cost ledger. The agents page reads its
    status and spend straight out of it.
 6. If the task ran in a worktree, the agent commits there and the task
-   enters `ready_to_merge`. A human reviews the branch, then merges it in a
-   terminal; the supervisor notices the merge and marks the task done (the web
-   UI's "Mark merged" does it by hand), which releases anything that depended
-   on it.
+   enters `ready_to_merge`; leftovers are committed first, so the branch is
+   complete when it reaches the merge queue. A human reviews the branch, then
+   runs `kuska merge <id>`, which squashes it into the current branch as one
+   commit, marks the task done and removes the worktree. That releases
+   anything that depended on it. A merge done by hand is noticed by the
+   supervisor (the web UI's "Mark merged" does it manually).
 7. A run that fails, times out or hits a limit (`max_turns`,
    `max_budget_usd`, `timeout_minutes`) blocks its task, with a note saying
    why and whatever it spent. A daemon stopped mid-run (Ctrl+C) blocks its
@@ -192,8 +194,12 @@ else its final result. See [docs/MCP_TOOLS.md](docs/MCP_TOOLS.md).
 Agents configured with `worktree = true` run each task in an isolated git
 worktree on its own branch, created at `.agents/worktrees/task-<id>` on branch
 `kuska/<id>-<slug>`. The agent makes commits there; when done, the task enters
-`ready_to_merge`. A human reviews the branch in a terminal, merges it, and
-marks it merged in the web UI.
+`ready_to_merge`. A human reviews the branch in a terminal (`git diff <base>...<branch>`) and
+runs `kuska merge <id>`: one squash commit on the current branch, carrying a
+`Kuska-Task: <id>` trailer, with the task marked done and the worktree and
+branch removed. On a conflict it leaves the message in `.git/SQUASH_MSG`;
+resolve, then `git commit`, and the supervisor picks the merge up through the
+trailer. The branch's `wip:` commits never reach the base branch.
 
 This design trades conflict prevention for isolation and explicitness:
 conflicts are resolved at merge time, and every change arrives as a branch a

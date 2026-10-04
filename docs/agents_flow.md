@@ -68,6 +68,9 @@ A daemon that dies mid-run stops heartbeating its `runs` row. The supervisor
 run silent for 300 s as `abandoned`, sends the human a `blocker` message and
 blocks the task if it is still `in_progress`. It also sets the agent offline.
 The same sweep moves `ready_to_merge` tasks whose branch is merged to `done`.
+A branch counts as merged when its commits are in the base branch, or when a
+commit on base since the task started carries the `Kuska-Task: <id>` trailer
+that `kuska merge` writes (a squash).
 
 ## Task statuses
 
@@ -84,7 +87,7 @@ stateDiagram-v2
   in_progress --> ready: reply while waiting on an answer task
   needs_approval --> done: human approves
   needs_approval --> ready: human sends back
-  ready_to_merge --> done: branch merged, or marked merged
+  ready_to_merge --> done: kuska merge, branch merged, or marked merged
   blocked --> ready: human requeues or replies
   done --> ready: human replies on the task
   done --> [*]
@@ -105,8 +108,8 @@ todo when unassigned). Outside the diagram: `park` (back to todo), `close`
 sets any status; leaves a note).
 
 - A `ready_to_merge` task reaches `done` only through a detected merge or
-  "Mark merged" in the merge queue. If git cannot see the merge (a squash
-  merge), "Mark merged" asks again with "Mark merged anyway".
+  "Mark merged" in the merge queue. `kuska merge <id>` squashes and marks it in one step. If git cannot see
+  the merge (a squash without the trailer), "Mark merged" asks again with "Mark merged anyway".
 - A task is claimable only when it is `ready`, assigned to the claiming agent,
   and every task it depends on is `done`. Anything held (`needs_approval`,
   `ready_to_merge`, `blocked`) holds back its dependents too.

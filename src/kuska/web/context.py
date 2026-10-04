@@ -277,14 +277,8 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
                     "branch": branch,
                     "base": base,
                 }
-                # Generate the four merge commands
                 if branch:
-                    worktree_commands = [
-                        f"git diff {base}...{branch}",
-                        f"git merge --no-ff {branch}",
-                        f"git checkout -b pr/{task['id']}-{branch[len('kuska/'):]} {base} && git merge --squash {branch} && git commit",
-                        f"git worktree remove {task['worktree_path']} && git branch -d {branch}",
-                    ]
+                    worktree_commands = [f"git diff {base}...{branch}", f"kuska merge {task['id']}"]
 
         return render_template(
             "task_detail.html",
@@ -316,9 +310,6 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
             Path(wt["path"]).name.replace("task-", ""): wt
             for wt in wt_list if wt.get("branch")
         }
-
-        # Get merged branches
-        merged = worktree.merged_branches(root, base)
 
         # Get diff stats for each task
         diffs = {}
@@ -353,8 +344,12 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
                 return False
             branch = worktree.branch_for_path(root, task["worktree_path"])
             return bool(branch) and worktree.is_branch_merged(
-                root, branch, base, task.get("worktree_base_sha")
+                root, branch, base, task.get("worktree_base_sha"), task["id"]
             )
+
+        merged = {task["id"]: is_merged(task) for task in tasks_sorted}
+        # plain ancestry needs no recorded base_sha: nothing is lost by pruning
+        ancestors = worktree.merged_branches(root, base)
 
         reviews_map = {}
         for task in tasks_sorted:
@@ -375,11 +370,13 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
             "diffs": diffs,
             "ahead": ahead,
             "blocks": blocks_map,
-            "merged": {task["id"]: is_merged(task) for task in tasks_sorted},
+            "merged": merged,
+            "base": base,
             # Git-level: the task's branch is reachable from base, so its
             # worktree can be pruned without losing commits.
             "prunable": {
-                task["id"]: worktrees_map.get(str(task["id"]), {}).get("branch") in merged
+                task["id"]: merged[task["id"]]
+                or worktrees_map.get(str(task["id"]), {}).get("branch") in ancestors
                 for task in tasks_sorted
             },
         }

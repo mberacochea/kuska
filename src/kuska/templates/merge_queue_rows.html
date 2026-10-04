@@ -4,7 +4,16 @@
   <td class="num muted"><a href="/tasks/{{ t.id }}">{{ t.id }}</a></td>
   <td><a href="/tasks/{{ t.id }}">{{ t.title }}</a></td>
   <td class="muted">{{ t.assigned_to or '-' }}</td>
-  <td class="code">{{ worktrees.get(t.id, {}).get('branch', '-') }}</td>
+  <td class="code">
+    {{ worktrees.get(t.id, {}).get('branch', '-') }}
+    {% set b = worktrees.get(t.id, {}).get('branch') %}
+    {% if b %}
+    {% for cmd in ['git diff ' ~ base ~ '...' ~ b, 'kuska merge ' ~ t.id] %}
+    <div class="code-block"><code>{{ cmd }}</code>
+      <button class="link small" onclick="navigator.clipboard.writeText(`{{ cmd }}`)">copy</button></div>
+    {% endfor %}
+    {% endif %}
+  </td>
   <td class="num">{{ ahead.get(t.id, 0) }}</td>
   <td class="small">
     {% set diff = diffs.get(t.id, {}) %}
