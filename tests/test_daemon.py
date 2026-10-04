@@ -8,6 +8,7 @@ spending a token.
 import asyncio
 import json
 import multiprocessing
+import shutil
 import subprocess
 import sys
 import threading
@@ -1188,6 +1189,76 @@ def test_shared_loop_worktree(tmp_path):
     assert blocker and "disk full" in blocker[0]["payload"], "blocker explains it"
     stuck_runs = core.task_runs(conn, stuck)
     assert len(stuck_runs) == 1 and stuck_runs[0]["status"] == "failed" and "disk full" in stuck_runs[0]["exit_reason"], "failed worktree setup leaves a failed run"
+    conn.close()
+
+
+def test_review_runs_in_author_worktree(tmp_path):
+    """A review task runs in the source task's worktree and never commits there."""
+    project = tmp_path / "review-worktree-project"
+    (project / ".agents" / "prompts").mkdir(parents=True)
+    for cmd in (["git", "init", "-b", "main"], ["git", "config", "user.email", "t@example.com"],
+                ["git", "config", "user.name", "T"]):
+        subprocess.run(cmd, cwd=project, check=True, capture_output=True)
+    (project / "README.md").write_text("# Test")
+    (project / ".gitignore").write_text(".agents/\n")
+    subprocess.run(["git", "add", "."], cwd=project, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=project, check=True, capture_output=True)
+    core.config_path(project).write_text(
+        '[agents.dev-agent]\nbackend = "openai"\nrole = "builder"\nworktree = true\n'
+        '[agents.review-agent]\nbackend = "openai"\nrole = "reviewer"\nworktree = true\n'
+    )
+    conn = core.connect(core.db_path(project))
+    core.init_db(conn)
+    core.sync_agents_from_config(conn, project)
+    dev_id = add_ready(conn, "Write notes", "", "dev-agent")
+
+    def dev_runner(db, project_, agent_name, cfg):
+        async def run(prompt, workdir, mono):
+            (workdir / "notes.md").write_text("done\n")
+            subprocess.run(["git", "add", "."], cwd=workdir, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "notes"], cwd=workdir, check=True, capture_output=True)
+            return "Wrote notes.", {"input_tokens": 1, "output_tokens": 1}
+        return run
+
+    loop.run_daemon(project, "dev-agent", "fake", dev_runner, poll_interval=0.02, max_tasks=1)
+    dev = core.get_task(conn, dev_id)
+    assert dev["status"] == "ready_to_merge", "dev task held for review"
+    wt = Path(dev["worktree_path"])
+
+    def commits() -> str:
+        return subprocess.run(["git", "rev-list", "--count", "--all"], cwd=project, check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    before = commits()
+    review_id = core.request_review(conn, dev_id, "review-agent", "main")
+    assert review_id, "review task created"
+    seen = {}
+
+    def review_runner(db, project_, agent_name, cfg):
+        async def run(prompt, workdir, mono):
+            seen["workdir"] = workdir
+            (workdir / "stray.txt").write_text("untracked\n")
+            return "Looks fine.", {"input_tokens": 1, "output_tokens": 1}
+        return run
+
+    try:
+        loop.run_daemon(project, "review-agent", "fake", review_runner, poll_interval=0.02, max_tasks=1)
+    finally:
+        (wt / "stray.txt").unlink(missing_ok=True)
+    assert seen["workdir"] == wt, "review ran in the author's worktree"
+    assert commits() == before, "review made no commit"
+    assert not core.get_task(conn, review_id).get("worktree_path"), "review has no worktree of its own"
+
+    # source worktree gone: the review is blocked, the reviewer never runs
+    shutil.rmtree(wt)
+    gone = core.request_review(conn, dev_id, "review-agent", "main", 5)
+    assert gone, "second review task created"
+    seen.clear()
+    loop.run_daemon(project, "review-agent", "fake", review_runner, poll_interval=0.02, max_tasks=1)
+    assert "workdir" not in seen, "reviewer not run"
+    assert core.get_task(conn, gone)["status"] == "blocked", "review blocked"
+    blocker = [m for m in core.task_messages(conn, gone) if m["msg_type"] == "blocker"]
+    assert blocker and "cannot review" in blocker[0]["payload"], "blocker explains it"
     conn.close()
 
 
