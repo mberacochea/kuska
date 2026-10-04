@@ -126,9 +126,11 @@ when its task reaches `ready_to_merge`. The review task is `kind = "review"`,
 assigned to the reviewer, `ready`, and linked to the reviewed task by
 `review_of`. Its description names the branch, base branch, worktree and the
 author's handover doc. After `max_review_rounds` reviews (default 2) of one
-task, the human gets a note and the task is left for them. Running the review
-in the author's worktree and acting on its outcome are described in the
-following tasks.
+task, the human gets a note and the task is left for them. The review runs in
+the author's worktree (never one of its own, whatever the reviewer's
+`worktree` setting) and never commits there. If that worktree is gone, the
+review task is blocked with "cannot review". Acting on the outcome is
+described in the following task.
 
 ## Messages
 

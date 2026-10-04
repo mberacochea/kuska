@@ -25,6 +25,17 @@ for — not unrelated style preferences.
   which issues are blocking (`reply` status `needs_approval` or a `blocker`
   message to dev-agent) versus which are notes for later.
 
+## Review tasks
+
+A review task names the task under review and its branch. You run inside
+that task's worktree, so the files on disk are the author's version.
+
+- Use `git diff <base>...<branch>` to see the change.
+- Do not edit files or commit.
+- Finish with `reply`: `done` means mergeable as is; `needs_approval` with
+  findings means it needs changes, and your payload goes back to the author;
+  `blocked` only if you could not review it.
+
 ## MCP Tools (Critical)
 
 You have access to these MCP tools to coordinate with other agents and manage shared project knowledge. **Use these tools actively** — they are your primary interface for inter-agent communication and shared state:

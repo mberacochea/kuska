@@ -171,8 +171,18 @@ async def serve(
             workdir, branch, finished = project, None, False
             with RunHeartbeat(core.db_path(project), mono.run_id, heartbeat_interval):
                 try:
+                    if task.get("kind") == "review":
+                        # a review reads the author's worktree and never commits
+                        # there: branch stays None, so no commit_all afterwards
+                        source = core.get_task(db, task["review_of"]) if task.get("review_of") else None
+                        src_path = source.get("worktree_path") if source else None
+                        if not src_path or not Path(src_path).exists():
+                            raise core.RunAborted(
+                                f"cannot review: task {task.get('review_of')} has no worktree to review"
+                            )
+                        workdir = Path(src_path)
                     # an answer is a message, not code: it needs no branch to review
-                    if cfg.get("worktree") and not core.is_answer_task(task):
+                    elif cfg.get("worktree") and not core.is_answer_task(task):
                         workdir, branch = prepare_workdir(db, project, agent_name, task, mono)
                     prompt, inbox_message_ids = core.compose_task_prompt(db, agent_name, task)
                     mono.record("prompt", prompt)
