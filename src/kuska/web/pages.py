@@ -321,6 +321,17 @@ def register(app, ctx) -> None:
 
         return task_panel(get_task(db(), task_id)), 200
 
+    @app.get("/tasks/<int:task_id>/deps/candidates")
+    def dependency_options(task_id: int) -> tuple[str, int] | str:
+        """GET /tasks/<id>/deps/candidates?q= - the <select> of matching dependency candidates,
+        loaded on demand so the page never renders every task."""
+        task = get_task(db(), task_id)
+        if not task:
+            return "", 404
+        return render_template(
+            "dep_options.html", candidates=ctx.dependency_candidates(task, request.args.get("q", ""))
+        )
+
     @app.post("/tasks/<int:task_id>/deps/<int:dep_id>/delete")
     def drop_task_dependency(task_id: int, dep_id: int) -> str:
         """POST /tasks/<id>/deps/<dep_id>/delete - Remove a task dependency."""
@@ -370,7 +381,8 @@ def register(app, ctx) -> None:
         task = get_task(db(), task_id)
         if not task:
             return "", 404
-        panel = task_panel(task, edit=request.args.get("edit") == "1")
+        edit = {"1": True, "0": False}.get(request.args.get("edit", ""))
+        panel = task_panel(task, edit=edit)
         if wants_fragment():
             return panel
         return render_template("task.html", page="tasks", t=task, task_panel=panel)

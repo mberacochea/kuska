@@ -49,17 +49,17 @@
     </div>
     <div style="display:flex; gap:.5rem; margin-top:.6rem">
       <button class="primary" type="submit">Save</button>
-      <a href="/tasks/{{ t.id }}" class="link" hx-get="/tasks/{{ t.id }}" hx-target="#task-detail" hx-swap="outerHTML" hx-push-url="/tasks/{{ t.id }}">cancel</a>
+      <a href="/tasks/{{ t.id }}?edit=0" class="link" hx-get="/tasks/{{ t.id }}?edit=0" hx-target="#task-detail" hx-swap="outerHTML" hx-push-url="/tasks/{{ t.id }}?edit=0">cancel</a>
     </div>
   </form>
   {% else %}
   <div class="md" style="margin:.6rem 0">{{ description_html|safe }}</div>
   <a href="/tasks/{{ t.id }}?edit=1" class="link" hx-get="/tasks/{{ t.id }}?edit=1" hx-target="#task-detail"
      hx-swap="outerHTML" hx-push-url="/tasks/{{ t.id }}?edit=1">edit</a>
+  {% endif %}
   {% if t.status in ('needs_approval', 'ready_to_merge', 'blocked', 'done') %}
   <button class="link" hx-post="/tasks/{{ t.id }}/requeue" hx-target="#task-detail" hx-swap="outerHTML">
     Re-queue</button>
-  {% endif %}
   {% endif %}
 
   {% if worktree_info %}
@@ -84,14 +84,14 @@
             hx-target="#task-detail" hx-swap="outerHTML">remove</button>
   </div>
   {% else %}<div class="muted small">Nothing - this task can run on its own.</div>{% endfor %}
-  {% if candidates %}
   <form class="row-form" hx-post="/tasks/{{ t.id }}/deps" hx-target="#task-detail" hx-swap="outerHTML">
-    <select name="depends_on">
-      {% for c in candidates %}<option value="{{ c.id }}">#{{ c.id }} {{ c.title }}</option>{% endfor %}
-    </select>
+    <input type="search" name="q" placeholder="Search tasks to add (title, description or #id)" autocomplete="off"
+           aria-label="Search dependency candidates"
+           hx-get="/tasks/{{ t.id }}/deps/candidates" hx-trigger="focus once, input changed delay:250ms, search"
+           hx-target="#dep-options-{{ t.id }}" hx-swap="innerHTML" hx-include="this">
+    <span id="dep-options-{{ t.id }}"><select name="depends_on" disabled><option>Focus the search box to load tasks</option></select></span>
     <button type="submit">Add dependency</button>
   </form>
-  {% endif %}
   {% if dependents %}
   <div class="small muted">Waiting on this one:
     {% for d in dependents %}#{{ d.id }} {{ d.title }}{{ ", " if not loop.last }}{% endfor %}</div>
