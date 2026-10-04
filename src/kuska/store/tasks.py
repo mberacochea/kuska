@@ -305,7 +305,7 @@ def filter_tasks(
         tags: Optional list of tags to include. Tasks matching any of the tags
               are included. An empty string in the list also matches untagged
               tasks (no task_tags rows).
-        sort_by: One of "title", "assigned_to", "status", "created_at",
+        sort_by: One of "id", "title", "assigned_to", "status", "created_at",
                  "updated_at". Defaults to updated_at desc, created_at desc.
                  Rows are always grouped by feature first (ungrouped last),
                  so this sorts within each feature group.
@@ -351,6 +351,7 @@ def filter_tasks(
     group = fn.COALESCE(Feature.name, "~~~")
 
     sort_fields = {
+        "id": Task.id,
         "title": fn.LOWER(fn.COALESCE(Task.title, "")),
         "assigned_to": fn.COALESCE(Task.assigned_to, ""),
         "status": fn.COALESCE(Task.status, ""),

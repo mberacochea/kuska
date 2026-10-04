@@ -9,7 +9,7 @@
 <table id="tasks">
 <thead><tr>
   <th class="sel"><input type="checkbox" id="bulk-all" aria-label="Select all tasks shown"></th>
-  <th class="num">#</th>
+  <th class="num">{{ sort_link('id', '#', sort_by, sort_dir) }}</th>
   <th>{{ sort_link('title', 'Title', sort_by, sort_dir) }}</th>
   <th>{{ sort_link('assigned_to', 'Assigned', sort_by, sort_dir) }}</th>
   <th>{{ sort_link('status', 'Status', sort_by, sort_dir) }}</th>
