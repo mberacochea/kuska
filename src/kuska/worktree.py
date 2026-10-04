@@ -64,10 +64,20 @@ def worktree_path(project: Path, task_id: int) -> Path:
     return Path(project) / ".agents" / WORKTREES_DIR / f"task-{task_id}"
 
 
+def _repo(path) -> "git.Repo":
+    """Open a repo whose git calls all run with hooks off. kuska's own git
+    runs outside the sandbox, so a hook an agent managed to plant must never
+    fire from it.
+    """
+    repo = git.Repo(path)
+    repo.git.set_persistent_git_options(c="core.hooksPath=/dev/null")
+    return repo
+
+
 def is_git_repo(project: Path) -> bool:
     """Check if project is a git repository."""
     try:
-        git.Repo(project)
+        _repo(project)
         return True
     except (git.InvalidGitRepositoryError, git.NoSuchPathError):
         return False
@@ -76,7 +86,7 @@ def is_git_repo(project: Path) -> bool:
 def has_commits(project: Path) -> bool:
     """Check if the repository has at least one commit."""
     try:
-        repo = git.Repo(project)
+        repo = _repo(project)
         repo.head.commit
         return True
     except Exception:
@@ -89,7 +99,7 @@ def base_branch(project: Path) -> str:
     Uses `rev-parse --abbrev-ref HEAD`. Falls back to "main" if detached.
     """
     try:
-        repo = git.Repo(project)
+        repo = _repo(project)
         # Get the current branch name
         if repo.head.is_detached:
             return "main"
@@ -117,7 +127,7 @@ def ensure_worktree(project: Path, task_id: int, title: str, base: str) -> tuple
     branch = branch_name(task_id, title)
 
     try:
-        repo = git.Repo(project)
+        repo = _repo(project)
     except (git.InvalidGitRepositoryError, git.NoSuchPathError):
         return path, branch, False
 
@@ -175,7 +185,7 @@ def rebase_onto(path: Path, base: str) -> tuple[bool, str]:
     Returns (True, "") on success.
     """
     try:
-        repo = git.Repo(path)
+        repo = _repo(path)
         try:
             repo.git.rebase(base)
             return True, ""
@@ -214,7 +224,7 @@ def is_dirty(path: Path) -> bool:
     `status --porcelain` non-empty, including untracked files.
     """
     try:
-        repo = git.Repo(path)
+        repo = _repo(path)
         # status() returns dict with index and working tree changes
         # untracked_files returns list of untracked files
         status = repo.git.status("--porcelain")
@@ -231,7 +241,7 @@ def commit_all(path: Path, message: str) -> str | None:
     not this system's business and a failing hook must not strand the work.
     """
     try:
-        repo = git.Repo(path)
+        repo = _repo(path)
 
         # Check if there are changes to commit
         if not is_dirty(path):
@@ -261,7 +271,7 @@ def ahead_count(path: Path, branch: str, base: str) -> int:
     `rev-list --count <base>..<branch>` 0 on any failure.
     """
     try:
-        repo = git.Repo(path)
+        repo = _repo(path)
         count = repo.git.rev_list("--count", f"{base}..{branch}")
         return int(count)
     except Exception:
@@ -276,7 +286,7 @@ def diff_stat(project: Path, branch: str, base: str) -> dict:
     Binary files report "-" in numstat; count the file, add 0 lines.
     """
     try:
-        repo = git.Repo(project)
+        repo = _repo(project)
         output = repo.git.diff("--numstat", f"{base}...{branch}")
 
         files = 0
@@ -311,7 +321,7 @@ def merged_branches(project: Path, base: str) -> set[str]:
     starting with BRANCH_PREFIX. Excludes base itself.
     """
     try:
-        repo = git.Repo(project)
+        repo = _repo(project)
         output = repo.git.branch("--merged", base, "--format=%(refname:short)")
 
         merged = set()
@@ -328,7 +338,7 @@ def merged_branches(project: Path, base: str) -> set[str]:
 def merge_base(project: Path, branch: str, base: str) -> str | None:
     """The commit `branch` and `base` diverge from (`git merge-base`), or None on failure."""
     try:
-        repo = git.Repo(project)
+        repo = _repo(project)
         return repo.git.merge_base(branch, base).strip() or None
     except Exception:
         return None
@@ -366,7 +376,7 @@ def is_branch_merged(
     if not base_sha:
         return False
     try:
-        repo = git.Repo(project)
+        repo = _repo(project)
         tip = repo.git.rev_parse(branch).strip()
         if tip == base_sha:
             return False
@@ -445,7 +455,7 @@ def list_worktrees(project: Path) -> list[dict]:
     [{"path": str, "branch": str|None, "head": str}, ...].
     """
     try:
-        repo = git.Repo(project)
+        repo = _repo(project)
         output = repo.git.worktree("list", "--porcelain")
 
         worktrees = []
@@ -493,7 +503,7 @@ def remove_worktree(project: Path, path: Path, branch: str | None) -> tuple[bool
     is given. Then `worktree prune`. Returns (ok, detail).
     """
     try:
-        repo = git.Repo(project)
+        repo = _repo(project)
 
         # Remove the worktree
         try:
@@ -526,7 +536,7 @@ def prune(project: Path) -> None:
     `worktree prune` — clears metadata for directories deleted by hand.
     """
     try:
-        repo = git.Repo(project)
+        repo = _repo(project)
         repo.git.worktree("prune")
     except Exception:
         pass

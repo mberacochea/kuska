@@ -279,6 +279,8 @@ Destructive shell commands are refused by `src/kuska/guardrails.py` before they 
 
 This enforcement catches mistakes, not a determined agent — `sh -c "rm -rf build"`, `find -delete`, and `python -c "shutil.rmtree(...)"` all pass through. The guardrails are wired into the Claude daemon's `PreToolUse` hook only; codex has no per-tool callback, and the openai backend has no shell.
 
+One gap remains in the claude sandbox: `git` is in `excludedCommands`, so it runs outside the OS sandbox and only the guardrails cover it. They refuse `git -c`, `--config-env`, `--exec-path` and any `git config` that is not a read, and refuse Write/Edit outside the run's workdir (so no planting hooks in `.git/`); kuska's own git calls run with `core.hooksPath=/dev/null`. This is pattern matching, not a boundary — a git call the patterns miss is unsandboxed.
+
 The boundary is the sandbox. Unless an agent sets `sandbox = "full-access"`, its shell commands can only write inside the task's working directory (its worktree, or the project): bubblewrap on Linux (needs `bwrap` and `socat`), Seatbelt on macOS, and codex's own `workspace-write` mode. The model cannot ask its way out of it. `git` runs outside the claude sandbox, because a worktree commits into the main checkout's `.git`. Commands that need to write elsewhere - a package manager's cache, say - fail under the sandbox; set `full-access` for an agent that genuinely needs them.
 
 ## Building a binary

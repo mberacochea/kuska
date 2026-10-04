@@ -172,7 +172,9 @@ def test_check_tool():
     v = core.check_tool("Bash", {}, project)
     assert v == {"allowed": True}, "check_tool tolerates a missing command"
     v = core.check_tool("Edit", {"file_path": "/etc/passwd"}, project)
-    assert v == {"allowed": True}, "check_tool has nothing to say about non-Bash tools"
+    assert v["allowed"] is False, "check_tool refuses an Edit outside the project"
+    v = core.check_tool("Read", {"file_path": "/etc/passwd"}, project)
+    assert v == {"allowed": True}, "check_tool has nothing to say about Read"
     v = core.check_tool("Write", {"file_path": "anything"}, project)
     assert v == {"allowed": True}, (
         "check_tool has nothing to say about non-Bash tools (2)"
@@ -210,5 +212,47 @@ def test_rules():
         "git-checkout-branch",
         "git-switch",
         "git-worktree",
+        "git-config-exec",
     ):
         assert expected in ids, f"table covers {expected}"
+
+
+def test_git_config_exec():
+    for cmd in (
+        "git -c alias.x='!sh' x",
+        "git -c core.hooksPath=/tmp/h status",
+        "git --config-env=alias.x=EVIL x",
+        "git --exec-path=/tmp/evil status",
+        "git config alias.x '!sh'",
+        "git config core.hooksPath /tmp/h",
+        "git -C . config core.hooksPath /tmp/h",
+    ):
+        deny(cmd, project, rule="git-config-exec")
+    for cmd in (
+        "git config --get user.name",
+        "git config --get-all remote.origin.url",
+        "git config --get-regexp alias",
+        "git config --list",
+        "git config -l",
+        "git commit -m 'msg'",
+        "git commit -c HEAD",
+        "git status",
+        "git diff",
+        "git log --oneline",
+        "git -C sub status",
+    ):
+        assert core.check_command(cmd, project)["allowed"], cmd
+
+
+def test_write_outside_workdir():
+    hook = "/home/martin/Projects/ai/kuska/.git/hooks/post-commit"
+    for tool in ("Write", "Edit"):
+        v = core.check_tool(tool, {"file_path": hook}, project)
+        assert not v["allowed"] and v["rule"] == "outside-project", tool
+    v = core.check_tool("NotebookEdit", {"notebook_path": hook}, project)
+    assert not v["allowed"]
+    assert not core.check_tool("Write", {"file_path": "../x"}, project)["allowed"]
+    assert core.check_tool("Write", {"file_path": "src/a.py"}, project)["allowed"]
+    assert core.check_tool("Write", {"file_path": str(project / "src/a.py")}, project)["allowed"]
+    import tempfile
+    assert core.check_tool("Write", {"file_path": tempfile.gettempdir() + "/x"}, project)["allowed"]

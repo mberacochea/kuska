@@ -150,12 +150,9 @@ def as_pretooluse_hook(guard):
     async def hook(input_data, tool_use_id, context):
         result = await guard(input_data["tool_name"], input_data["tool_input"], context)
         if result.behavior == "allow":
-            return {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "allow",
-                }
-            }
+            # No decision: an explicit allow would skip the SDK's own
+            # permission checks and sandbox, so the guard may only narrow.
+            return {}
         return {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",

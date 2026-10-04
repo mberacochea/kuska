@@ -226,8 +226,36 @@ def _contains_ordered_subsequence(haystack: list[str], needle: list[str]) -> boo
 #   unless:       list of flags - if ANY is present, the rule does NOT match,
 #                 even if everything else matched
 #   operand_any:  list of literal operand strings - at least one must appear
+#   predicate:    name of a function in this module taking the stripped argv;
+#                 must return True for the rule to match (for shapes the
+#                 flag vocabulary can't express)
 #   reason:       shown to the agent, composed by refusal_text()
 # --------------------------------------------------------------------------
+
+_GIT_CONFIG_READ_FLAGS = {"--get", "--get-all", "--get-regexp", "--list", "-l"}
+# Global options that consume the next token when not written as --opt=value.
+_GIT_GLOBAL_WITH_VALUE = {"-C", "--git-dir", "--work-tree", "--namespace", "--super-prefix"}
+
+
+def _git_config_exec(argv: list[str]) -> bool:
+    """``git`` invoked with a config/exec-path override before the
+    subcommand, or ``git config`` doing anything but a read. Only global
+    options are scanned for ``-c`` so ``git commit -c HEAD`` is unaffected.
+    """
+    i = 1
+    while i < len(argv):
+        tok = argv[i]
+        if not tok.startswith("-") or tok == "--":
+            break
+        if tok.startswith("-c") or tok.startswith("--config-env") or tok.startswith("--exec-path"):
+            return True
+        if tok in _GIT_GLOBAL_WITH_VALUE:
+            i += 1
+        i += 1
+    if i < len(argv) and argv[i] == "config":
+        return not any(t in _GIT_CONFIG_READ_FLAGS for t in argv[i + 1:])
+    return False
+
 
 RULES: list[dict] = [
     {
@@ -306,6 +334,17 @@ RULES: list[dict] = [
         ),
     },
     {
+        "id": "git-config-exec",
+        "program": "git",
+        "predicate": "_git_config_exec",
+        "reason": (
+            "git runs outside the sandbox, and a `-c`/`--config-env`/`--exec-path` "
+            "override or a write to git config (alias, core.hooksPath, ...) turns it "
+            "into an arbitrary unsandboxed shell. Reading config (`git config --get`, "
+            "`--list`) is fine"
+        ),
+    },
+    {
         "id": "git-worktree",
         "program": "git",
         "argv": ["worktree"],
@@ -327,6 +366,9 @@ def matches(rule: dict, seg: dict) -> bool:
         wanted = wanted if isinstance(wanted, (list, tuple, set)) else (wanted,)
         if os.path.basename(argv[0]) not in wanted:
             return False
+
+    if "predicate" in rule and not globals()[rule["predicate"]](argv):
+        return False
 
     rest = argv[1:]
     if "argv" in rule and not _contains_ordered_subsequence(rest, rule["argv"]):
@@ -530,14 +572,24 @@ def check_command(command: str, project=None) -> dict:
 def check_tool(tool_name: str, tool_input: dict, project=None) -> dict:
     """Entry point for a PreToolUse-style hook: dispatch by tool name.
 
-    Only ``Bash`` carries a shell command for `check_command` to parse.
-    Every other tool kuska's daemons expose is either the in-process
-    `mcp__kuska__*` server (pre-approved - nothing to parse) or a structured
-    file edit, whose reach the sandbox and the claude daemon's tool_guard
-    already govern; there is nothing for this module to add there today.
+    ``Bash`` carries a shell command for `check_command` to parse. Write,
+    Edit and NotebookEdit are refused when their path resolves outside the
+    run's workdir (which covers the main checkout's ``.git/hooks``, run
+    unsandboxed by the daemon's own commits). Everything else is the
+    in-process `mcp__kuska__*` server or read-only, with nothing to add.
     """
+    tool_input = tool_input or {}
     if tool_name == "Bash":
-        return check_command((tool_input or {}).get("command", ""), project)
+        return check_command(tool_input.get("command", ""), project)
+    if tool_name in ("Write", "Edit", "NotebookEdit") and project is not None:
+        raw = tool_input.get("file_path") or tool_input.get("notebook_path") or ""
+        if raw and _outside(raw, project):
+            return {
+                "allowed": False,
+                "rule": "outside-project",
+                "reason": f"{raw} resolves outside the project root",
+                "command": f"{tool_name} {raw}",
+            }
     return {"allowed": True}
 
 
