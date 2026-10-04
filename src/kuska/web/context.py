@@ -28,6 +28,7 @@ from ..store import (
     blocking_map,
     docs_list,
     filter_tasks,
+    get_task,
     list_agents,
     list_features,
     list_tags,
@@ -202,10 +203,17 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
             sort_dir=sort_dir,
         )
 
-    def dependency_candidates(task: dict) -> list[dict]:
-        """Return tasks that this task could depend on (excluding itself and existing deps)."""
+    def dependency_candidates(task: dict, query: str = "", limit: int = 20) -> list[dict]:
+        """Return up to `limit` tasks this task could depend on (excluding itself and
+        existing deps) whose title/description match `query` or whose id equals it."""
         taken = {d["id"] for d in task_dependencies(db(), task["id"])} | {task["id"]}
-        return [t for t in list_tasks(db()) if t["id"] not in taken]
+        query = query.strip().lstrip("#")
+        found = filter_tasks(db(), search=query, sort_by="created_at", sort_dir="desc")
+        if query.isdigit():
+            by_id = get_task(db(), int(query))
+            if by_id and all(t["id"] != by_id["id"] for t in found):
+                found.insert(0, by_id)
+        return [t for t in found if t["id"] not in taken][:limit]
 
     def task_activity(task_id: int) -> str:
         """Render the activity feed for a task."""
@@ -223,8 +231,10 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
             _fmt_ts=_fmt_ts,
         )
 
-    def task_panel(task: dict, edit: bool = False) -> str:
+    def task_panel(task: dict, edit: bool | None = None) -> str:
         """Render the standalone task page's content (display or edit mode).
+
+        edit=None opens the editor unless the task is done (a final status).
 
         Used both as the body of the full /tasks/<id> page and as the htmx
         fragment every mutation on that page swaps back in.
@@ -254,6 +264,8 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
                         f"git worktree remove {task['worktree_path']} && git branch -d {branch}",
                     ]
 
+        if edit is None:
+            edit = task["status"] != "done"
         return render_template(
             "task_detail.html",
             t=task,
@@ -261,7 +273,6 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
             description_html=md(task["description"]) or "<p class='muted'>No description.</p>",
             dependencies=task_dependencies(db(), task["id"]),
             dependents=task_dependents(db(), task["id"]),
-            candidates=dependency_candidates(task),
             features=list_features(db()) if edit else [],
             messages=task_messages(db(), task["id"]),
             activity=task_activity(task["id"]),

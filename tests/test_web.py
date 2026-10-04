@@ -173,7 +173,7 @@ def test_requeue_send_back_and_reply_on_tasks(c, conn):
 
 def test_markdown_rendering(c, conn):
     c.post("/tasks/1", data={"title": "Ship it", "description": "## Plan\n\n- one\n- two\n\n`code`"})
-    detail = c.get("/tasks/1", headers=HX).get_data(as_text=True)
+    detail = c.get("/tasks/1?edit=0", headers=HX).get_data(as_text=True)
     assert "<h2>Plan</h2>" in detail, "headings rendered"
     assert "<li>one</li>" in detail, "lists rendered"
     assert "<code>code</code>" in detail, "inline code rendered"
@@ -824,3 +824,17 @@ def test_features(c, conn):
     # Test path traversal attempt on run_id - Flask's routing should reject this
     traversal_resp = c.get("/runs/../../etc/passwd")
     assert traversal_resp.status_code == 404, "path traversal refused"
+
+
+def test_task_page_edit_default_and_lazy_deps(c, conn):
+    a = ac.add_task(conn, "alpha task", "", "dev-agent")
+    b = ac.add_task(conn, "beta task", "", "dev-agent")
+    page = c.get(f"/tasks/{a}", headers=HX).get_data(as_text=True)
+    assert 'name="title"' in page, "open task opens in edit mode"
+    assert "beta task" not in page, "dependency candidates are not rendered up front"
+    assert 'name="title"' not in c.get(f"/tasks/{a}?edit=0", headers=HX).get_data(as_text=True)
+    opts = c.get(f"/tasks/{a}/deps/candidates?q=beta").get_data(as_text=True)
+    assert "beta task" in opts and "alpha task" not in opts, "search filters and excludes self"
+    assert f"#{b}" in c.get(f"/tasks/{a}/deps/candidates?q={b}").get_data(as_text=True)
+    ac.update_task_status(conn, a, "done")
+    assert 'name="title"' not in c.get(f"/tasks/{a}", headers=HX).get_data(as_text=True), "done shows read view"

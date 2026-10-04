@@ -1,0 +1,3 @@
+{% if candidates %}<select name="depends_on">
+  {% for c in candidates %}<option value="{{ c.id }}">#{{ c.id }} {{ c.title }}</option>{% endfor %}
+</select>{% else %}<select name="depends_on" disabled><option>No matching tasks</option></select>{% endif %}
