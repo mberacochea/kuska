@@ -1,3 +1,4 @@
+{% from "_markdown_field.html" import markdown_field %}
 <div id="task-detail">
   <div style="display:flex; gap:.7rem; align-items:baseline; flex-wrap:wrap">
     <h2 style="margin:0">#{{ t.id }} {{ t.title }}</h2>
@@ -26,15 +27,15 @@
   </div>
   {% endif %}
 
-  {% if edit %}
   <form hx-post="/tasks/{{ t.id }}" hx-target="#task-detail" hx-swap="outerHTML" style="margin:.6rem 0">
     <div class="form-group">
       <label for="task-title-{{ t.id }}">Title</label>
       <input type="text" id="task-title-{{ t.id }}" name="title" value="{{ t.title }}" style="width:100%;" aria-label="Task title">
     </div>
     <div class="form-group">
-      <label for="task-desc-{{ t.id }}">Description</label>
-      <textarea id="task-desc-{{ t.id }}" name="description" placeholder="Task description - this is what the agent is given. Markdown." aria-label="Task description">{{ t.description }}</textarea>
+      {{ markdown_field("description", t.description, "task-desc-" ~ t.id, "Description",
+                        "Task description - this is what the agent is given. Markdown.",
+                        view_first=(t.status == 'done')) }}
     </div>
     <div class="form-group">
       <label for="task-feature-{{ t.id }}">Feature</label>
@@ -49,14 +50,8 @@
     </div>
     <div style="display:flex; gap:.5rem; margin-top:.6rem">
       <button class="primary" type="submit">Save</button>
-      <a href="/tasks/{{ t.id }}?edit=0" class="link" hx-get="/tasks/{{ t.id }}?edit=0" hx-target="#task-detail" hx-swap="outerHTML" hx-push-url="/tasks/{{ t.id }}?edit=0">cancel</a>
     </div>
   </form>
-  {% else %}
-  <div class="md" style="margin:.6rem 0">{{ description_html|safe }}</div>
-  <a href="/tasks/{{ t.id }}?edit=1" class="link" hx-get="/tasks/{{ t.id }}?edit=1" hx-target="#task-detail"
-     hx-swap="outerHTML" hx-push-url="/tasks/{{ t.id }}?edit=1">edit</a>
-  {% endif %}
   {% if t.status in ('needs_approval', 'ready_to_merge', 'blocked', 'done') %}
   <button class="link" hx-post="/tasks/{{ t.id }}/requeue" hx-target="#task-detail" hx-swap="outerHTML">
     Re-queue</button>
@@ -109,8 +104,8 @@
   {% else %}
     <div class="muted small">No messages yet.</div>
   {% endfor %}
-  <form class="row-form" hx-post="/tasks/{{ t.id }}/message" hx-target="#task-detail" hx-swap="outerHTML">
-    <input type="text" name="payload" placeholder="Reply to the assigned agent" required>
+  <form class="row-form" hx-post="/tasks/{{ t.id }}/message" hx-target="#task-detail" hx-swap="outerHTML" style="display:block">
+    {{ markdown_field("payload", "", "task-reply-" ~ t.id, "Reply", "Reply to the assigned agent. Markdown.", attrs="required") }}
     <button type="submit">Send</button>
   </form>
   {% if t.assigned_to and t.status not in ('todo', 'ready', 'in_progress') %}

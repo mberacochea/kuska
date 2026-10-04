@@ -172,22 +172,27 @@ def test_requeue_send_back_and_reply_on_tasks(c, conn):
 
 
 def test_markdown_rendering(c, conn):
-    c.post("/tasks/1", data={"title": "Ship it", "description": "## Plan\n\n- one\n- two\n\n`code`"})
-    detail = c.get("/tasks/1?edit=0", headers=HX).get_data(as_text=True)
-    assert "<h2>Plan</h2>" in detail, "headings rendered"
+    tid = ac.add_task(conn, "md task", "", "dev-agent")
+    c.post(f"/tasks/{tid}", data={"title": "Ship md", "description": "## Plan\n\n- one\n- two\n\n`code`"})
+    open_task = c.get(f"/tasks/{tid}", headers=HX).get_data(as_text=True)
+    assert "## Plan" in open_task and f'class="mdf-radio mdf-write" id="task-desc-{tid}-tab-write"' in open_task, "open task opens on Write"
+    assert "<h2>Plan</h2>" not in open_task, "open task renders nothing server-side"
+    ac.update_task_status(conn, tid, "done")
+    detail = c.get(f"/tasks/{tid}?edit=0", headers=HX).get_data(as_text=True)
+    assert "<h2>Plan</h2>" in detail, "done task opens on View with headings rendered"
     assert "<li>one</li>" in detail, "lists rendered"
     assert "<code>code</code>" in detail, "inline code rendered"
-    assert "## Plan" not in detail, "source not shown raw"
-    assert "## Plan" in c.get("/tasks/1?edit=1", headers=HX).get_data(as_text=True), "edit view gives the source back"
-    ac.send_message(conn, "dev-agent", "human", 1, "result", "**done** &lt;ok&gt;")
-    thread = c.get("/tasks/1", headers=HX).get_data(as_text=True)
+    assert "## Plan" in detail and 'name="title"' in detail, "the form is always there; ?edit= is ignored"
+    ac.send_message(conn, "dev-agent", "human", tid, "result", "**done** &lt;ok&gt;")
+    thread = c.get(f"/tasks/{tid}", headers=HX).get_data(as_text=True)
     assert "<strong>done</strong>" in thread, "message markdown rendered"
-    ac.send_message(conn, "dev-agent", "human", 1, "note", "<script>alert(1)</script>")
-    assert "<script>alert(1)</script>" not in c.get("/tasks/1", headers=HX).get_data(as_text=True), "html from agents is escaped"
-    assert ("<strong>bold</strong>" in (
-        c.post("/docs", data={"key": "notes"}),
-        c.post("/docs/notes", data={"content": "**bold**"}),
-        c.get("/docs/notes").get_data(as_text=True))[-1]), "docs render too"
+    ac.send_message(conn, "dev-agent", "human", tid, "note", "<script>alert(1)</script>")
+    assert "<script>alert(1)</script>" not in c.get(f"/tasks/{tid}", headers=HX).get_data(as_text=True), "html from agents is escaped"
+    c.post("/docs", data={"key": "notes"})
+    c.post("/docs/notes", data={"content": "**bold**"})
+    doc = c.get("/docs/notes").get_data(as_text=True)
+    assert "**bold**" in doc and "<strong>bold</strong>" not in doc, "doc editor has no second rendered copy"
+    assert "<strong>bold</strong>" in c.post("/markdown", data={"field": "content", "content": "**bold**"}).get_data(as_text=True)
     c.post("/docs/notes/delete")
 
 
@@ -745,8 +750,8 @@ def test_htmx_swaps_get_fragments_not_whole_pages(c, conn):
     # On the task page itself, editing toggles in place via htmx targeting
     # #task-detail, not the list row.
     detail_html = c.get(f"/tasks/{t_id}", headers=HX).get_data(as_text=True)
-    assert f'hx-get="/tasks/{t_id}?edit=1"' in detail_html, "edit fetches the panel fragment in edit mode"
-    assert 'hx-target="#task-detail"' in detail_html, "edit targets the task-detail panel"
+    assert "?edit=" not in detail_html, "no edit/cancel links on the single-mode page"
+    assert 'hx-target="#task-detail"' in detail_html, "saving targets the task-detail panel"
     assert 'hx-select="#search-page"' in c.get("/search").get_data(as_text=True), "search form selects its own block"
 
 
@@ -814,7 +819,7 @@ def test_features(c, conn):
     loose = c.get("/tasks?feature=", headers=HX).get_data(as_text=True)
     assert "Loose one" in loose and "Grouped one" not in loose, "no-feature filter"
     gid = grouped[0]["id"]
-    editor = c.get(f"/tasks/{gid}?edit=1", headers=HX).get_data(as_text=True)
+    editor = c.get(f"/tasks/{gid}", headers=HX).get_data(as_text=True)
     assert 'name="feature"' in editor and 'value="run-ledger"' in editor, "task editor offers the feature"
     panel = c.post(f"/tasks/{gid}", data={"title": "Grouped one", "description": "", "feature": "supervisor"}).get_data(as_text=True)
     assert ac.get_task(conn, gid)["feature"] == "supervisor" and "supervisor" in panel, "task editor moves it to another feature"
@@ -839,14 +844,14 @@ def test_task_page_edit_default_and_lazy_deps(c, conn):
     a = ac.add_task(conn, "alpha task", "", "dev-agent")
     b = ac.add_task(conn, "beta task", "", "dev-agent")
     page = c.get(f"/tasks/{a}", headers=HX).get_data(as_text=True)
-    assert 'name="title"' in page, "open task opens in edit mode"
+    assert 'name="title"' in page, "task page always renders the form"
     assert "beta task" not in page, "dependency candidates are not rendered up front"
-    assert 'name="title"' not in c.get(f"/tasks/{a}?edit=0", headers=HX).get_data(as_text=True)
+    assert 'name="title"' in c.get(f"/tasks/{a}?edit=0", headers=HX).get_data(as_text=True), "?edit= is ignored"
     opts = c.get(f"/tasks/{a}/deps/candidates?q=beta").get_data(as_text=True)
     assert "beta task" in opts and "alpha task" not in opts, "search filters and excludes self"
     assert f"#{b}" in c.get(f"/tasks/{a}/deps/candidates?q={b}").get_data(as_text=True)
     ac.update_task_status(conn, a, "done")
-    assert 'name="title"' not in c.get(f"/tasks/{a}", headers=HX).get_data(as_text=True), "done shows read view"
+    assert 'name="title"' in c.get(f"/tasks/{a}", headers=HX).get_data(as_text=True), "done task still shows the form"
 
 
 # ---------- per-session project, per-request connection ----------
@@ -941,3 +946,30 @@ def test_connection_closed_at_teardown(two_projects, monkeypatch):
     before = len(closed)
     assert app.test_client().get("/tasks").status_code == 200
     assert len(closed) > before, "request connection closed"
+
+
+def test_markdown_route_renders_and_escapes(c):
+    from kuska.markdown import render
+    text = "## Hi\n\n<script>alert(1)</script> **bold**"
+    got = c.post("/markdown", data={"field": "description", "description": text}).get_data(as_text=True)
+    assert got == render(text) and "<script>" not in got and "<h2>Hi</h2>" in got
+    assert got == c.post("/markdown", data={"text": text}).get_data(as_text=True), "default field is text"
+    empty = c.post("/markdown", data={"field": "content", "content": ""}).get_data(as_text=True)
+    assert "Nothing to preview." in empty
+
+
+def test_markdown_fields_render_tabs(c, conn):
+    tid = ac.add_task(conn, "tabs", "body", "dev-agent")
+    ac.docs_set(conn, "tabdoc", "# D", "human")
+    pages = {
+        f"/tasks/{tid}": [f"task-desc-{tid}-tab-view", f"task-reply-{tid}-tab-view"],
+        "/docs/tabdoc": ["doc-content-tabdoc-tab-view"],
+        "/": ["project-description-tab-view"],
+        "/agents/dev-agent": ["agent-prompt-dev-agent-tab-view"],
+    }
+    for url, ids in pages.items():
+        body = c.get(url, headers=HX).get_data(as_text=True)
+        for i in ids:
+            assert i in body, f"{url} renders the {i} tab"
+        assert 'form="_none"' in body and "Write" in body and "View" in body
+

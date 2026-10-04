@@ -255,10 +255,8 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
             _fmt_ts=_fmt_ts,
         )
 
-    def task_panel(task: dict, edit: bool | None = None) -> str:
-        """Render the standalone task page's content (display or edit mode).
-
-        edit=None opens the editor unless the task is done (a final status).
+    def task_panel(task: dict) -> str:
+        """Render the standalone task page's content.
 
         Used both as the body of the full /tasks/<id> page and as the htmx
         fragment every mutation on that page swaps back in.
@@ -288,16 +286,12 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
                         f"git worktree remove {task['worktree_path']} && git branch -d {branch}",
                     ]
 
-        if edit is None:
-            edit = task["status"] != "done"
         return render_template(
             "task_detail.html",
             t=task,
-            edit=edit,
-            description_html=md(task["description"]) or "<p class='muted'>No description.</p>",
             dependencies=task_dependencies(db(), task["id"]),
             dependents=task_dependents(db(), task["id"]),
-            features=list_features(db()) if edit else [],
+            features=list_features(db()),
             messages=task_messages(db(), task["id"]),
             activity=task_activity(task["id"]),
             worktree_info=worktree_info,
@@ -502,7 +496,6 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
             "doc_editor.html",
             key=key,
             content=content,
-            content_html=md(content),
             updated_by=(doc or {}).get("updated_by"),
         )
 
@@ -524,6 +517,18 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
             md=md,
             markdown_fields={"description", "payload", "body", "content"},
         )
+
+    # ========== Template filters ==========
+
+    app.jinja_env.globals["md"] = md
+
+    @app.template_filter("textarea_rows")
+    def textarea_rows(text: str | None, per_line: int = 100, lo: int = 4, hi: int = 22) -> int:
+        """Rows for a textarea sized to its text, for browsers without
+        `field-sizing: content`. Long lines count as wrapped at ~per_line
+        chars; `hi` keeps it under the 500px CSS cap."""
+        lines = sum(max(1, -(-len(line) // per_line)) for line in (text or "").split("\n"))
+        return max(lo, min(hi, lines))
 
     # ========== Context Processor ==========
 

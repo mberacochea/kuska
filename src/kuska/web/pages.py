@@ -61,8 +61,14 @@ def register(app, ctx) -> None:
             "project.html",
             page="project",
             description=docs_get(db(), "description") or "",
-            description_html=md(docs_get(db(), "description")),
         )
+
+    @app.post("/markdown")
+    def markdown_view() -> str:
+        """POST /markdown - render a markdown field's current text for its
+        View tab. `field` names the form value holding the text."""
+        text = request.form.get(request.form.get("field", "text"), "")
+        return md(text) or "<p class='muted'>Nothing to preview.</p>"
 
     def filtered_container(args) -> str:
         """The tasks container for the filter/sort fields in `args`.
@@ -218,20 +224,20 @@ def register(app, ctx) -> None:
         if "title" in fields:
             title_error = validate_task_title(fields["title"], db(), task_id)
             if title_error:
-                return _bad_request(task_panel(task, edit=True), "title", title_error)
+                return _bad_request(task_panel(task), "title", title_error)
 
         # Validate description if provided
         if "description" in fields:
             desc_error = validate_task_description(fields["description"])
             if desc_error:
-                return _bad_request(task_panel(task, edit=True), "description", desc_error)
+                return _bad_request(task_panel(task), "description", desc_error)
 
         # Validate assigned_to if provided
         if "assigned_to" in fields:
             assigned_to = fields["assigned_to"] or None
             agent_error = validate_task_assigned_to(assigned_to, db())
             if agent_error:
-                return _bad_request(task_panel(task, edit=True), "assigned_to", agent_error)
+                return _bad_request(task_panel(task), "assigned_to", agent_error)
 
         # the status dropdown is an explicit human override, and leaves a note
         if "status" in fields:
@@ -239,12 +245,12 @@ def register(app, ctx) -> None:
             try:
                 transition(db(), task_id, "force", actor=HUMAN, to=status)
             except (ValueError, InvalidTransition) as exc:
-                return _bad_request(task_panel(task, edit=True), "status", str(exc))
+                return _bad_request(task_panel(task), "status", str(exc))
 
         try:
             update_task(db(), task_id, **fields)
         except (ValueError, PeeweeException) as exc:
-            return _bad_request(task_panel(task, edit=True), "form", f"Failed to update task: {exc}")
+            return _bad_request(task_panel(task), "form", f"Failed to update task: {exc}")
 
         task = get_task(db(), task_id)
         if not task:
@@ -372,16 +378,13 @@ def register(app, ctx) -> None:
         dependencies, message thread, and run activity).
 
         Same htmx-vs-browser split as /tasks: an htmx request (e.g. toggling
-        edit mode, or a mutation's response target) gets just the panel
-        fragment, a plain navigation gets the whole page.
-
-        ?edit=1 - opens the description editor
+        a mutation's response target) gets just the panel fragment, a plain
+        navigation gets the whole page.
         """
         task = get_task(db(), task_id)
         if not task:
             return "", 404
-        edit = {"1": True, "0": False}.get(request.args.get("edit", ""))
-        panel = task_panel(task, edit=edit)
+        panel = task_panel(task)
         if wants_fragment():
             return panel
         return render_template("task.html", page="tasks", t=task, task_panel=panel)
