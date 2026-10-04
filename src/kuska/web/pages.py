@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from flask import render_template, request
+from flask import render_template, request, session
 from peewee import PeeweeException
 
 from .. import worktree
@@ -47,9 +47,8 @@ def register(app, ctx) -> None:
     _toast = ctx._toast
     db = ctx.db
     merge_queue_rows = ctx.merge_queue_rows
-    open_project = ctx.open_project
     render_row = ctx.render_row
-    state = ctx.state
+    project = ctx.project
     task_panel = ctx.task_panel
     tasks_container = ctx.tasks_container
 
@@ -132,13 +131,13 @@ def register(app, ctx) -> None:
         """POST /switch - Switch to a different project."""
         target = registry_load().get(request.form.get("project", ""))
         if target:
-            open_project(Path(target))
+            session["project"] = str(Path(target).resolve())
         return index()
 
     @app.post("/export")
     def do_export() -> str:
         """POST /export - Export the project to markdown files."""
-        out = state["project"] / ".agents-export"
+        out = project() / ".agents-export"
         written = export_markdown(db(), out)
         return f"exported {len(written)} files to {out}"
 
@@ -522,17 +521,17 @@ def register(app, ctx) -> None:
             return html + _toast(message) if message else html
 
         if request.form.get("confirm") != "1":
-            project = state["project"]
-            base = worktree.base_branch(project)
+            root = project()
+            base = worktree.base_branch(root)
             branch = None
             if task.get("worktree_path"):
                 path = Path(task["worktree_path"])
                 branch = next(
-                    (wt.get("branch") for wt in worktree.list_worktrees(project)
+                    (wt.get("branch") for wt in worktree.list_worktrees(root)
                      if Path(wt["path"]).resolve() == path.resolve()),
                     None,
                 )
-            if not branch or not worktree.is_branch_merged(project, branch, base, task.get("worktree_base_sha")):
+            if not branch or not worktree.is_branch_merged(root, branch, base, task.get("worktree_base_sha")):
                 return rows(f"{branch or 'branch'} is not merged into {base} yet", unconfirmed=task_id)
         try:
             transition(db(), task_id, "merged")
@@ -567,21 +566,21 @@ def register(app, ctx) -> None:
         if not task.get("worktree_path"):
             return rows("No worktree for this task")
 
-        project = state["project"]
-        base = worktree.base_branch(project)
+        root = project()
+        base = worktree.base_branch(root)
         path = Path(task["worktree_path"])
 
         # Find the branch for this worktree
         task_branch = next(
-            (wt.get("branch") for wt in worktree.list_worktrees(project)
+            (wt.get("branch") for wt in worktree.list_worktrees(root)
              if Path(wt["path"]).resolve() == path.resolve()),
             None,
         )
 
-        if task_branch and task_branch not in worktree.merged_branches(project, base):
+        if task_branch and task_branch not in worktree.merged_branches(root, base):
             return rows("Branch is not merged - cannot prune")
 
-        success, msg = worktree.remove_worktree(project, path, task_branch)
+        success, msg = worktree.remove_worktree(root, path, task_branch)
         if not success:
             return rows(f"Failed to prune: {msg}")
         update_task(db(), task_id, worktree_path=None)

@@ -93,11 +93,7 @@ def cmd_serve(args: argparse.Namespace) -> None:
         threading.Thread(
             target=run_supervisor, args=(project, threading.Event()), name="supervisor", daemon=True
         ).start()
-    # Single-threaded by design: the app holds one process-wide open project
-    # in state["db"], and closing that handle while another thread queries it
-    # causes an unhandled exception. Kuska is single-user, so serial request
-    # handling is the correct fix, not a global lock.
-    app.run(host=args.host, port=args.port, debug=args.debug, threaded=False)
+    app.run(host=args.host, port=args.port, debug=args.debug, threaded=True)
 
 
 def cmd_supervise(args: argparse.Namespace) -> None:

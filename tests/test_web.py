@@ -847,3 +847,97 @@ def test_task_page_edit_default_and_lazy_deps(c, conn):
     assert f"#{b}" in c.get(f"/tasks/{a}/deps/candidates?q={b}").get_data(as_text=True)
     ac.update_task_status(conn, a, "done")
     assert 'name="title"' not in c.get(f"/tasks/{a}", headers=HX).get_data(as_text=True), "done shows read view"
+
+
+# ---------- per-session project, per-request connection ----------
+
+
+@pytest.fixture()
+def two_projects(tmp_path):
+    """Two registered projects, A and B, each with one task; REGISTRY restored after."""
+    import kuska.project as kproject
+
+    paths = {}
+    for name in ("alpha", "beta"):
+        p = tmp_path / name
+        (p / ".agents" / "prompts").mkdir(parents=True)
+        ac.config_path(p).write_text('[agents.dev-agent]\nbackend = "claude"\nmodel = "m"\nrole = "builder"\n')
+        paths[name] = p
+    saved = kproject.REGISTRY
+    kproject.REGISTRY = tmp_path / "projects.toml"
+    try:
+        for name, p in paths.items():
+            kproject.registry_add(name, p)
+        for name, p in paths.items():
+            app = ac.create_app(p)
+            with app.app_context():
+                ac.add_task(ac.connect(ac.db_path(p)), f"{name} task", "", "dev-agent")
+        yield paths
+    finally:
+        kproject.REGISTRY = saved
+
+
+def test_sessions_pick_their_own_project(two_projects):
+    app = ac.create_app(two_projects["alpha"])
+    app.config.update(TESTING=True)
+    c1, c2 = app.test_client(), app.test_client()
+    assert c1.post("/switch", data={"project": "beta"}).status_code == 200
+    assert "beta task" in c1.get("/tasks").get_data(as_text=True), "client 1 sees B"
+    html2 = c2.get("/tasks").get_data(as_text=True)
+    assert "alpha task" in html2 and "beta task" not in html2, "client 2 still sees A"
+
+
+def test_threaded_requests_with_switching(two_projects):
+    import threading
+
+    app = ac.create_app(two_projects["alpha"])
+    app.config.update(TESTING=True)
+    failures: list = []
+
+    def reader():
+        try:
+            cl = app.test_client()
+            for _ in range(20):
+                for url in ("/tasks", "/agents/rows"):
+                    r = cl.get(url)
+                    if r.status_code >= 500:
+                        failures.append((url, r.status_code))
+        except Exception as exc:  # noqa: BLE001
+            failures.append(exc)
+
+    def switcher():
+        try:
+            cl = app.test_client()
+            for i in range(20):
+                r = cl.post("/switch", data={"project": "beta" if i % 2 else "alpha"})
+                if r.status_code >= 500:
+                    failures.append(("/switch", r.status_code))
+        except Exception as exc:  # noqa: BLE001
+            failures.append(exc)
+
+    threads = [threading.Thread(target=reader) for _ in range(8)] + [threading.Thread(target=switcher)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not failures, failures
+
+
+def test_connection_closed_at_teardown(two_projects, monkeypatch):
+    from kuska.web import context
+
+    closed = []
+    real = context.connect
+
+    def tracking(path):
+        conn = real(path)
+        orig = conn.close
+        conn.close = lambda: (closed.append(1), orig())[1]
+        return conn
+
+    app = ac.create_app(two_projects["alpha"])
+    app.config.update(TESTING=True)
+    monkeypatch.setattr(context, "connect", tracking)
+    before = len(closed)
+    assert app.test_client().get("/tasks").status_code == 200
+    assert len(closed) > before, "request connection closed"
