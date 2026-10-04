@@ -5,7 +5,7 @@ from __future__ import annotations
 from peewee import SqliteDatabase
 
 from ..db import HUMAN, now
-from ..models import Doc, row, rows
+from ..models import Doc, DocTask, row, rows
 from .common import bound
 
 _UNSET = object()  # docs_set's task_id sentinel: "leave the link as it is"
@@ -35,10 +35,12 @@ def docs_get(db: SqliteDatabase, key: str, task_id: int | None = None) -> str | 
         ...     print("Architecture notes:", arch)
         >>> plan = docs_get(db, "task_42_planning-agent_context", task_id=42)
     """
-    doc = row(Doc.select(Doc.content, Doc.task_id).where(Doc.key == key))
+    doc = row(Doc.select(Doc.content).where(Doc.key == key))
     if not doc:
         return None
-    if task_id is not None and doc["task_id"] != task_id:
+    if task_id is not None and not DocTask.select().where(
+        DocTask.doc == key, DocTask.task == task_id
+    ).exists():
         return None
     return doc["content"]
 
@@ -50,6 +52,7 @@ def docs_set(
     content: str,
     updated_by: str = HUMAN,
     task_id: int | None = _UNSET,
+    task_ids: list[int] | None = None,
 ) -> None:
     """Write or update a shared project knowledge document.
 
@@ -64,7 +67,9 @@ def docs_set(
         task_id: Task this doc belongs to (e.g. a plan or handover report);
             the doc is deleted when that task is. Omit to leave an existing
             doc's link untouched, or pass None to explicitly clear it - a
-            bare positional call never touches the link.
+            bare positional call never touches the link. Links are
+            additive: linking a second task keeps the first.
+        task_ids: More tasks to link this doc to (many-to-many).
 
     Examples:
         >>> docs_set(db, "conventions", "# Code Conventions\\n\\n- Use snake_case...",
@@ -82,6 +87,23 @@ def docs_set(
         fields["task_id"] = task_id
         update[Doc.task_id] = task_id
     Doc.insert(**fields).on_conflict(conflict_target=[Doc.key], update=update).execute()
+    if task_id is None:
+        DocTask.delete().where(DocTask.doc == key).execute()
+    wanted = ([task_id] if task_id not in (None, _UNSET) else []) + list(task_ids or [])
+    for tid in wanted:
+        docs_link(db, key, tid)
+
+
+@bound
+def docs_link(db: SqliteDatabase, key: str, task_id: int) -> None:
+    """Link an existing doc to a task (idempotent)."""
+    DocTask.insert(doc=key, task=task_id).on_conflict_ignore().execute()
+
+
+@bound
+def docs_unlink(db: SqliteDatabase, key: str, task_id: int) -> None:
+    """Remove the link between a doc and a task, if any."""
+    DocTask.delete().where(DocTask.doc == key, DocTask.task == task_id).execute()
 
 
 @bound
@@ -94,9 +116,17 @@ def docs_list(db: SqliteDatabase, task_id: int | None = None) -> list[dict]:
 
     Returns:
         list[dict]: Document records with keys: key, content, updated_by,
-                    updated_at, task_id.
+                    updated_at, task_id, task_ids (every linked task).
     """
     query = Doc.select().order_by(Doc.key)
     if task_id is not None:
-        query = query.where(Doc.task_id == task_id)
-    return rows(query)
+        query = query.where(
+            Doc.key.in_(DocTask.select(DocTask.doc).where(DocTask.task == task_id))
+        )
+    result = rows(query)
+    links: dict[str, list[int]] = {}
+    for link in rows(DocTask.select(DocTask.doc, DocTask.task).order_by(DocTask.task)):
+        links.setdefault(link["doc"], []).append(link["task"])
+    for d in result:
+        d["task_ids"] = links.get(d["key"], [])
+    return result

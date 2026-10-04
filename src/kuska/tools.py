@@ -190,6 +190,8 @@ def _operator_docs_set_handler(db, agent, args):
     kwargs = {}
     if "task_id" in args:
         kwargs["task_id"] = args["task_id"]
+    if args.get("task_ids"):
+        kwargs["task_ids"] = args["task_ids"]
     docs_set(db, args["key"], as_markdown(args["content"]), agent, **kwargs)
     return {"ok": True}
 
@@ -309,6 +311,10 @@ TOOL_SPECS: list[dict] = [
                 "key": _STR,
                 "content": _STR,
                 "task_id": {**_INT, "description": "Optional: link this doc to a task"},
+                "task_ids": {
+                    "type": "array", "items": {"type": "integer"},
+                    "description": "Optional: link this doc to several tasks",
+                },
             },
             ["key", "content"],
         ),
