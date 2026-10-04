@@ -42,3 +42,44 @@ def test_concurrent_db_init(tmp_path):
         stdout, stderr = proc.communicate(timeout=10)
         assert proc.returncode == 0, f"process {i} failed:\nstdout: {stdout}\nstderr: {stderr}"
         assert "OK" in stdout, f"process {i} didn't return OK: {stdout}"
+
+
+def test_model_binding_is_per_thread(tmp_path):
+    """Two threads, each with its own database, must never see each other's
+    binding: every row lands in the file its thread connected to."""
+    import threading
+
+    sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+    from kuska import store
+    from kuska.db import connect, init_db
+
+    n = 300
+    dbs = {}
+    for name in ("a", "b"):
+        dbs[name] = connect(str(tmp_path / f"{name}.db"))
+        init_db(dbs[name])
+    errors = []
+
+    def work(name):
+        try:
+            for i in range(n):
+                store.add_task(dbs[name], f"{name}-{i}", "")
+        except Exception as e:  # noqa: BLE001 - the test reports any failure
+            errors.append((name, e))
+
+    old = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        threads = [threading.Thread(target=work, args=(k,)) for k in dbs]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    finally:
+        sys.setswitchinterval(old)
+
+    assert not errors, errors
+    for name, db in dbs.items():
+        titles = [r[0] for r in db.execute_sql("SELECT title FROM tasks").fetchall()]
+        assert len(titles) == n, (name, len(titles))
+        assert all(t.startswith(f"{name}-") for t in titles), name

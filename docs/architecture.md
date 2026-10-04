@@ -63,7 +63,7 @@ flowchart LR
 
 | Module | Owns |
 | --- | --- |
-| `models.py`, `migrations/` | The schema. Models are bound to a database per call, so one process can hold several projects open. |
+| `models.py`, `migrations/` | The schema. Models are bound to a database per call, so one process can hold several projects open; the binding is per thread. |
 | `store/` | Every read and write of project state, one module per kind of record. Returns plain dicts; nothing outside it touches the ORM (except `tables.py`, the raw Data page). |
 | `tools.py` | The agent tools, defined once. `toolset(cfg)` picks a caller's set by flavor; an operator (`kuska mcp --operator`) gets all of them, and an unconfigured name is refused. |
 | `runtime.py` | What goes into a run (`compose_task_prompt`) and what comes out of it (`finish_task`, `fail_task`, the `Monologue` event log). |
