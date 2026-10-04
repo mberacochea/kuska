@@ -322,14 +322,14 @@ def test_codex_wiring(project):
     assert mcp["args"][-3:] == ["mcp", "--agent", "codex-1"], "points at kuska mcp"
     assert str(project) in mcp["args"], "scoped to this project"
 
-    usage = SimpleNamespace(last=SimpleNamespace(input_tokens=2_000_000, output_tokens=100_000))
+    usage = SimpleNamespace(total=SimpleNamespace(input_tokens=2_000_000, output_tokens=100_000))
     tok_in, tok_out, cost = daemon_codex.usage_of(usage, cfg)
     assert (tok_in, tok_out) == (2_000_000, 100_000), "tokens read from turn"
     assert round(cost, 4) == round(2 * 1.25 + 0.1 * 10.0, 4), "cost priced from config"
     assert daemon_codex.usage_of(usage, {})[2] == 0.0, "no prices means no cost"
     assert daemon_codex.usage_of(None, cfg) == (0, 0, 0.0), "missing usage is harmless"
 
-    cached = SimpleNamespace(last=SimpleNamespace(cached_input_tokens=900, cache_write_input_tokens=120))
+    cached = SimpleNamespace(total=SimpleNamespace(cached_input_tokens=900, cache_write_input_tokens=120))
     assert daemon_codex.cache_of(cached) == (900, 120), "cache counts read from turn"
     assert daemon_codex.cache_of(None) == (0, 0), "missing cache counts are zero"
 
@@ -1396,9 +1396,11 @@ def test_codex_run():
         return SimpleNamespace(payload=ItemCompletedNotification.model_construct(item=SimpleNamespace(**kw)))
 
     def tokens(tok_in, tok_out):
-        last = SimpleNamespace(input_tokens=tok_in, output_tokens=tok_out, cached_input_tokens=0)
+        # `last` is one model call; only `total` is the run, so make them differ
+        last = SimpleNamespace(input_tokens=1, output_tokens=1, cached_input_tokens=0)
+        total = SimpleNamespace(input_tokens=tok_in, output_tokens=tok_out, cached_input_tokens=0)
         return SimpleNamespace(payload=ThreadTokenUsageUpdatedNotification.model_construct(
-            token_usage=SimpleNamespace(last=last)))
+            token_usage=SimpleNamespace(last=last, total=total)))
 
     def completed(status="completed"):
         turn = SimpleNamespace(status=SimpleNamespace(value=status), error=None)
@@ -1445,6 +1447,17 @@ def test_codex_run():
         assert text == "All green.", "final answer returned"
         assert (used["input_tokens"] == 1000 and used["tool_rounds"] == 1
               and used["cost_usd"] == (1000 * 1.0 + 100 * 10.0) / 1e6), "usage in ledger terms, rounds counted"
+
+        assert used["output_tokens"] == 100, "booked from total, not the last call"
+
+        pricey = Handle([item(type="command_execution", command="a"), tokens(500_000, 0),
+                         item(type="command_execution", command="b"), completed()])
+        try:
+            daemon_codex.run_agent(codex_for(pricey), project, project, "codex-1",
+                                   {**cfg, "max_budget_usd": 0.4}, "go", Mono())
+            assert False, "budget trips on the cumulative cost"
+        except core.RunAborted as exc:
+            assert pricey.interrupted.is_set() and "max_budget_usd" in str(exc), "budget trips on the cumulative cost"
 
         busy = Handle([item(type="command_execution", command=f"step {i}") for i in range(5)] + [completed()])
         try:

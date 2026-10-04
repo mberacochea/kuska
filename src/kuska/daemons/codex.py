@@ -180,10 +180,14 @@ def stream_turn(handle, cfg: dict, limits: dict, mono, state: dict):
 
 
 def usage_of(usage, cfg: dict) -> tuple[int, int, float]:
-    """Codex reports tokens but not dollars; price them from config.toml."""
-    last = getattr(usage, "last", None)
-    tok_in = int(getattr(last, "input_tokens", 0) or 0)
-    tok_out = int(getattr(last, "output_tokens", 0) or 0)
+    """Codex reports tokens but not dollars; price them from config.toml.
+
+    Reads `total` (the whole thread), not `last` (the latest model call):
+    each task gets a fresh thread, so `total` is the run.
+    """
+    total = getattr(usage, "total", None)
+    tok_in = int(getattr(total, "input_tokens", 0) or 0)
+    tok_out = int(getattr(total, "output_tokens", 0) or 0)
     return tok_in, tok_out, core.estimate_cost(cfg, tok_in, tok_out)
 
 
@@ -194,9 +198,9 @@ def cache_of(usage) -> tuple[int, int]:
     cached tokens inside `input_tokens`, so charging them again would
     double-count the turn.
     """
-    last = getattr(usage, "last", None)
-    read = int(getattr(last, "cached_input_tokens", 0) or 0)
-    written = int(getattr(last, "cache_write_input_tokens", 0) or 0)
+    total = getattr(usage, "total", None)
+    read = int(getattr(total, "cached_input_tokens", 0) or 0)
+    written = int(getattr(total, "cache_write_input_tokens", 0) or 0)
     return read, written
 
 
