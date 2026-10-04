@@ -392,6 +392,19 @@ def test_docs_are_markdown(conn):
     assert ac.docs_get(conn, doc_key, task_id=t7 + 1) is None, "workflow context not linked to another task"
 
 
+def test_docs_many_to_many(conn):
+    a = add_ready(conn, "doc link a")
+    b = add_ready(conn, "doc link b")
+    ac.docs_set(conn, "shared_notes", "# Notes", "dev-agent", task_id=a, task_ids=[b])
+    assert ac.docs_get(conn, "shared_notes", task_id=a) and ac.docs_get(conn, "shared_notes", task_id=b)
+    assert [d["key"] for d in ac.docs_list(conn, b)] == ["shared_notes"]
+    assert ac.docs_list(conn, b)[0]["task_ids"] == sorted([a, b])
+    ac.docs_unlink(conn, "shared_notes", a)
+    assert ac.docs_get(conn, "shared_notes", task_id=a) is None
+    ac.docs_set(conn, "shared_notes", "# Notes 2", "dev-agent")
+    assert ac.docs_get(conn, "shared_notes", task_id=b), "bare rewrite keeps links"
+
+
 def test_tools(conn):
     t4 = task_id(conn, "Late arrival")
     t7 = task_id(conn, "context handover test")

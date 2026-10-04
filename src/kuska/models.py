@@ -210,6 +210,23 @@ class Doc(Base):
         table_name = "docs"
 
 
+class DocTask(Base):
+    """One link between one doc and one task (many-to-many)."""
+
+    id = AutoField()
+    doc = ForeignKeyField(
+        Doc, field="key", column_name="doc_id", on_delete="CASCADE",
+        backref="task_links", lazy_load=False,
+    )
+    task = ForeignKeyField(
+        Task, column_name="task_id", on_delete="CASCADE", backref="doc_links", lazy_load=False
+    )
+
+    class Meta:
+        table_name = "doc_tasks"
+        indexes = ((("doc", "task"), True),)
+
+
 class Event(Base):
     """One agent invocation's monologue, kept for audit."""
 
@@ -254,7 +271,7 @@ class Run(Base):
         table_name = "runs"
 
 
-MODELS = [Agent, Feature, Task, TaskDep, TaskTag, Message, Doc, Event, Run]
+MODELS = [Agent, Feature, Task, TaskDep, TaskTag, Message, Doc, DocTask, Event, Run]
 
 # per connection. WAL is not among them: it is a property of the file, set
 # once by connect() - see _ensure_wal

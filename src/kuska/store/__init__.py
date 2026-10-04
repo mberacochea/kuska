@@ -32,8 +32,10 @@ from .deps import (
 )
 from .docs import (
     docs_get,
+    docs_link,
     docs_list,
     docs_set,
+    docs_unlink,
 )
 from .events import (
     get_event,
@@ -137,8 +139,10 @@ __all__ = [
     "delete_feature",
     "delete_task",
     "docs_get",
+    "docs_link",
     "docs_list",
     "docs_set",
+    "docs_unlink",
     "end_run",
     "ensure_feature",
     "filter_tasks",
