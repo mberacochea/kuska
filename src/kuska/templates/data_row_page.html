@@ -1,0 +1,6 @@
+{% extends "layout.html" %}
+{% block body %}
+<p><a href="/data/{{ table }}" class="link">← {{ label }}</a></p>
+<h2>{{ label }} <span class="muted">{{ pk }}</span></h2>
+{{ row_html|safe }}
+{% endblock %}

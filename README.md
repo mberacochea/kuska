@@ -51,7 +51,7 @@ src/kuska/
   db.py          # statuses, roles, connections
   store/         # every read and write of project state, one module per kind of
                  # record (agents, tasks, deps, messages, events, docs, stats, search)
-  tables.py      # per-model presentation for the generic row editor
+  tables.py      # per-model presentation for the read-only Data browser
   project.py     # .agents/ layout, prompts, config.toml, project registry
   runtime.py     # prompt composition, turn accounting, the agent monologue
   markdown.py    # rendering agent prose, with embedded HTML escaped
@@ -80,7 +80,7 @@ docs/DEVELOPMENT.md        # development guide and troubleshooting
 State lives in SQLite through [peewee](https://github.com/coleifer/peewee):
 `models.py` owns the schema, `store/` wraps it in plain functions that
 return plain dicts, and nothing outside those knows an ORM is involved - except
-`tables.py`, the raw Data page's row editor, whose whole job is the tables. Models are bound to a database per call, so one process can hold
+`tables.py`, the read-only Data browser, whose whole job is the tables. Models are bound to a database per call, so one process can hold
 several projects open - which is what the web app's project switcher needs.
 
 A project is any directory with an `.agents/` subdirectory:
@@ -212,15 +212,16 @@ Four pages, in increasing order of bluntness:
 - **Project** - the description and the task list.
 - **Agents** - per-agent settings, prompts, live status and spend.
 - **Docs** - the shared knowledge agents read and write through `docs_get` /
-  `docs_set`: create a key, edit its content, delete it.
+  `docs_set`: create a key, edit its content, delete it. Each doc has its own page, `/docs/<key>`.
 - **Data** - every table in the DB (`tasks`, `features`, `task_deps`, `agents`,
-  `messages`, `docs`, `events`), row by row: list with paging, insert, edit the columns that are
-  safe to edit, delete. It is driven by one spec per table in `tables.py`, so
-  a new table means one entry there rather than a new page.
+  `messages`, `docs`, `events`), row by row and read-only: a paged list (`/data/<table>?page=N`) and a page
+  per row (`/data/<table>/<pk>`) that links ids to the task, agent or run
+  they name. It is driven by one spec per table in `tables.py`, so a new table
+  means one entry there rather than a new page.
 
-The Data page is deliberately raw - editing `messages` rewrites the audit log
-and the cost ledger, and editing `agents` does not write back to
-`config.toml`. Both say so on the page.
+The Data page only reads: `messages` is the audit log and the cost ledger,
+and `agents` mirrors but is not the source of `config.toml`. Changes go
+through the purpose-built pages, which keep those invariants.
 
 ## Agent tools
 

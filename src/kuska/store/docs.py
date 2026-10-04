@@ -95,6 +95,13 @@ def docs_set(
 
 
 @bound
+def docs_delete(db: SqliteDatabase, key: str) -> bool:
+    """Delete a doc and its task links. Returns False when there was no such doc."""
+    DocTask.delete().where(DocTask.doc == key).execute()
+    return bool(Doc.delete().where(Doc.key == key).execute())
+
+
+@bound
 def docs_link(db: SqliteDatabase, key: str, task_id: int) -> None:
     """Link an existing doc to a task (idempotent)."""
     DocTask.insert(doc=key, task=task_id).on_conflict_ignore().execute()

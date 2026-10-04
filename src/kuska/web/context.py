@@ -481,21 +481,35 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
 
     # ========== Helper: Data Table Rendering ==========
 
-    def data_rows(table: str, offset: int = 0, limit: int = 50) -> str:
-        """Render paginated rows for a generic data table."""
+    def data_rows(table: str, page: int = 1, limit: int = 50) -> str:
+        """Render one page (1-based) of rows for a data table."""
         return render_template(
             "data_rows.html",
             table=table,
             fields=tbl.fields(table),
             pk=tbl.pk_name(table),
-            rows=tbl.list_rows(db(), table, limit, offset),
+            rows=tbl.list_rows(db(), table, limit, (page - 1) * limit),
             total=tbl.count_rows(db(), table),
-            offset=offset,
+            page_no=page,
             limit=limit,
             ago=_ago,
             brief=lambda value: one_line("" if value is None else str(value), 60),
+        )
+
+    def data_row(table: str, row: dict) -> str:
+        """Render one row of a data table, every column, read-only."""
+        pk = tbl.pk_name(table)
+        return render_template(
+            "data_row.html",
+            table=table,
+            fields=tbl.fields(table),
+            pk=pk,
+            row=row,
+            own_page=tbl.own_page(table, row[pk]),
+            link_for=tbl.link_for,
+            ago=_ago,
             md=md,
-            markdown_fields={"description", "payload", "body", "content"},
+            markdown_columns=tbl.MARKDOWN_COLUMNS,
         )
 
     # ========== Template filters ==========
@@ -530,6 +544,7 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
         agent_models=agent_models,
         agent_rows=agent_rows,
         data_rows=data_rows,
+        data_row=data_row,
         db=db,
         dependency_candidates=dependency_candidates,
         doc_editor=doc_editor,

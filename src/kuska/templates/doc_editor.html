@@ -1,14 +1,15 @@
 {% from "_markdown_field.html" import markdown_field %}
 <div id="doc-editor">
-<h2>{{ key }}
-  <a href="#" class="link" onclick="closePanel('doc-editor'); return false;">close</a></h2>
-<form hx-post="/docs/{{ key }}" hx-target="#docs" hx-swap="outerHTML">
+<h2>{{ key }}</h2>
+<form hx-post="/docs/{{ key }}" hx-target="#doc-editor" hx-swap="outerHTML">
   <div class="form-group">
     {{ markdown_field("content", content, "doc-content-" ~ key, "Content", attrs='style="min-height:16rem"') }}
   </div>
   <div style="display:flex; gap:.5rem; margin-top:.9rem; align-items:center">
     <button class="primary" type="submit">Save</button>
     <span class="muted small">last saved by {{ updated_by or 'nobody' }}</span>
+    <button class="link" type="button" hx-delete="/docs/{{ key }}" hx-target="#doc-editor"
+            hx-confirm="Delete doc '{{ key }}'?" style="margin-left:auto">delete</button>
   </div>
 </form>
 </div>

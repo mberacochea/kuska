@@ -88,6 +88,7 @@ from .store import (
     claim_task,
     delete_feature,
     delete_task,
+    docs_delete,
     docs_get,
     docs_link,
     docs_list,

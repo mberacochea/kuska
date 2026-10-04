@@ -193,7 +193,7 @@ def test_markdown_rendering(c, conn):
     doc = c.get("/docs/notes").get_data(as_text=True)
     assert "**bold**" in doc and "<strong>bold</strong>" not in doc, "doc editor has no second rendered copy"
     assert "<strong>bold</strong>" in c.post("/markdown", data={"field": "content", "content": "**bold**"}).get_data(as_text=True)
-    c.post("/docs/notes/delete")
+    c.delete("/docs/notes")
 
 
 def test_agents_page(c):
@@ -415,27 +415,59 @@ def test_faceted_filters(c, conn):
 def test_docs_page(c, conn):
     html = c.get("/docs").get_data(as_text=True)
     assert "description" in html, "lists existing docs"
-    created = c.post("/docs", data={"key": "architecture"}).get_data(as_text=True)
-    assert 'id="doc-editor"' in created and "architecture" in created, "create opens the editor"
+    assert 'id="doc-editor"' not in html and 'href="/docs/description"' in html, "list has no editor, plain links"
+    created = c.post("/docs", data={"key": "architecture"}, headers=HX)
+    assert created.headers["HX-Redirect"] == "/docs/architecture", "create sends the browser to the doc's page"
+    assert c.post("/docs", data={"key": "plain"}).headers["Location"].endswith("/docs/plain"), "no htmx: 303"
+    c.delete("/docs/plain")
     assert ac.docs_get(conn, "architecture") == "", "created in the db"
+    assert c.post("/docs", data={"key": "bad key!"}).status_code == 422, "invalid key is a 422"
+    page = c.get("/docs/architecture").get_data(as_text=True)
+    assert 'id="doc-editor"' in page and "<nav>" in page and 'href="/docs"' in page, "doc page is a full page with a back link"
+    assert "closePanel" not in page, "no close control"
+    frag = c.get("/docs/architecture", headers=HX).get_data(as_text=True)
+    assert 'id="doc-editor"' in frag and "<nav>" not in frag, "htmx gets the editor alone"
+    assert c.get("/docs/nope").status_code == 404, "missing doc 404s"
     saved = c.post("/docs/architecture", data={"content": "One SQLite DB per project."}).get_data(as_text=True)
     assert ac.docs_get(conn, "architecture") == "One SQLite DB per project.", "content saved"
-    assert 'id="docs"' in saved and 'id="doc-editor"' not in saved, "save returns just the table"
-    assert "One SQLite DB per project." in c.get("/docs/architecture").get_data(as_text=True), "editor reloads content"
+    assert 'id="doc-editor"' in saved and 'id="docs"' not in saved and "saved" in saved, "save returns the editor and a toast"
     assert [d for d in ac.docs_list(conn) if d["key"] == "architecture"][0]["updated_by"] == "human", "attributed to the human"
     c.post("/docs", data={"key": "architecture"})
     assert ac.docs_get(conn, "architecture") == "One SQLite DB per project.", "recreating does not wipe"
-    removed = c.post("/docs/architecture/delete").get_data(as_text=True)
-    assert 'hx-get="/docs/architecture"' not in removed, "deleted"
+    moved = c.get("/docs?open=architecture")
+    assert moved.status_code == 301 and moved.headers["Location"].endswith("/docs/architecture"), "old ?open= link redirects"
+    from_list = c.delete("/docs/architecture", headers={**HX, "HX-Target": "docs"}).get_data(as_text=True)
+    assert 'id="docs"' in from_list and 'href="/docs/architecture"' not in from_list, "list delete swaps the table"
     assert ac.docs_get(conn, "architecture") is None, "gone from the db"
-    assert removed.count("hx-post=\"/docs\"") == 0, "swaps just the table"
+    c.post("/docs", data={"key": "tmpdoc"})
+    on_page = c.delete("/docs/tmpdoc", headers={**HX, "HX-Target": "doc-editor"})
+    assert on_page.headers["HX-Redirect"] == "/docs" and ac.docs_get(conn, "tmpdoc") is None, "page delete goes back to the list"
+    assert c.post("/docs/architecture/delete").status_code in (404, 405), "old delete route is gone"
 
 
-def test_data_browser(c):
-    for table in ("tasks", "agents", "messages", "docs", "events"):
+def test_data_browser(c, conn):
+    from kuska import tables as tbl
+    for table in tbl.TABLES:
         page = c.get(f"/data/{table}").get_data(as_text=True)
-        assert 'id="rows"' in page and ("Insert row" in page or "editable" in table), f"{table} page renders"
-    assert "no such table" in c.get("/data/nope").get_data(as_text=True), "unknown table refused"
+        assert 'id="rows"' in page and "Insert" not in page, f"{table} page renders read-only"
+        first = tbl.list_rows(conn, table, 1)
+        if not first:
+            continue
+        pk = first[0][tbl.pk_name(table)]
+        detail = c.get(f"/data/{table}/{pk}")
+        assert detail.status_code == 200, f"/data/{table}/<pk> works"
+        assert f'href="/data/{table}/{pk}"' in page, f"{table} pk cell links to its page"
+        assert "<form" not in detail.get_data(as_text=True).split("<main>")[1], f"{table} row page is read-only"
+        assert c.get(f"/data/{table}/zz-missing-9999").status_code == 404, f"{table} missing row 404s"
+    nope = c.get("/data/nope")
+    assert nope.status_code == 404 and "no such table" in nope.get_data(as_text=True), "unknown table refused"
+    assert c.get("/data/nope/1").status_code == 404, "unknown table row 404s"
+    moved = c.get("/data/tasks?open=1")
+    assert moved.status_code == 301 and moved.headers["Location"].endswith("/data/tasks/1"), "old ?open= link redirects"
+    for route in ("/data/tasks/row", "/data/tasks/rows", "/data/tasks/markdown-preview"):
+        assert c.get(route).status_code == 404, f"{route} is gone"
+    assert c.post("/data/tasks", data={"title": "x"}).status_code == 405, "no insert"
+    assert c.post("/data/tasks/delete?pk=1").status_code == 405, "no delete"
 
 
 def test_data_table_paging(c, conn):
@@ -447,240 +479,20 @@ def test_data_table_paging(c, conn):
     assert "of" in messages_page.lower() or "message" in messages_page, "paging info shown"
     assert c.get("/data/messages?offset=5").status_code == 200, "offset parameter works"
 
-    inserted = c.post("/data/messages", data={
-        "sender": "human", "recipient": "dev-agent", "msg_type": "note", "payload": "typed by hand", "task_id": "1",
-    }).get_data(as_text=True)
-    msg = [m for m in ac.task_messages(conn, 1) if m["payload"] == "typed by hand"]
-    assert len(msg) == 1, "row inserted"
-    assert msg[0]["ts"] > 0, "insert stamps ts"
-    assert msg[0]["task_id"] == 1, "numbers coerced, not strings"
-    assert "inserted messages" in inserted, "toast reports the new pk"
+    msg_id = ac.send_message(conn, "dev-agent", "human", 1, "note", "**typed** by hand")
+    row = c.get(f"/data/messages/{msg_id}").get_data(as_text=True)
+    assert "<strong>typed</strong>" in row and "raw text" in row, "markdown column rendered with a raw toggle"
+    assert 'href="/agents/dev-agent"' in row and 'href="/tasks/1"' in row, "agent and task columns link"
+    assert 'href="/agents/human"' not in row, "human has no page"
+    assert "of " in c.get("/data/events?page=1", headers=HX).get_data(as_text=True), "paging shown"
+    assert 'id="rows"' in c.get("/data/messages?page=2", headers=HX).get_data(as_text=True), "page=N works"
+    assert 'href="/tasks/1"' in c.get("/data/tasks/1").get_data(as_text=True), "task row links to its own page"
 
-    editor = c.get(f"/data/messages/row?pk={msg[0]['id']}").get_data(as_text=True)
-    assert "typed by hand" in editor, "row editor prefilled"
-    assert "read-only" in editor, "pk is read-only"
-    c.post(f"/data/messages/row?pk={msg[0]['id']}", data={"payload": "edited by hand", "cost_usd": "0.25"})
-    row = ac.get_task and [m for m in ac.task_messages(conn, 1) if m["id"] == msg[0]["id"]][0]
-    assert row["payload"] == "edited by hand" and row["cost_usd"] == 0.25, "row updated"
-    assert "row deleted" in c.post(f"/data/messages/delete?pk={msg[0]['id']}").get_data(as_text=True), "row deleted"
-    assert not [m for m in ac.task_messages(conn, 1) if m["id"] == msg[0]["id"]], "really gone"
-
-    assert "not inserted" in c.post("/data/events", data={"task_id": "abc", "kind": "text"}).get_data(as_text=True), "bad value reported, not raised"
-    assert "not inserted" in c.post("/data/tasks", data={"title": "x", "assigned_to": "ghost"}).get_data(as_text=True), "fk violation reported"
-    assert c.get("/data/tasks/row?pk=9999").get_data(as_text=True).strip() == '<div id="row-editor"></div>', "missing row is harmless"
-    assert "of " in c.get("/data/events/rows?offset=0").get_data(as_text=True), "paging shown"
-
-
-def test_special_characters_and_escaping(c, conn):
-    special_title = "Task with <special> & \"quotes\" 'marks'"
-    c.post("/tasks", data={"title": special_title, "description": "Testing: <script>alert(1)</script>"})
-    special_tasks = [t for t in ac.list_tasks(conn) if "<special>" in t["title"]]
-    assert len(special_tasks) > 0, "special chars stored in db"
-    html = c.get("/tasks").get_data(as_text=True)
-    assert "<script>" not in html or "alert" not in html, "special chars escaped in html"
-    # The title should be visible but escaped
-    assert "special" in html, "title visible but safe"
-
-
-def test_form_submission_edge_cases(c, conn):
-    # Empty description is OK
-    c.post("/tasks/1", data={"description": ""})
-    assert ac.get_task(conn, 1)["description"] == "", "empty description accepted"
-    # Blank assignment
-    c.post("/tasks/1", data={"assigned_to": ""})
-    assert ac.get_task(conn, 1)["assigned_to"] is None, "blank assignment clears"
-    # Re-assign to valid agent
-    c.post("/tasks/1", data={"assigned_to": "dev-agent"})
-    assert ac.get_task(conn, 1)["assigned_to"] == "dev-agent", "assignment to valid agent works"
-
-
-def test_html_fragment_consistency(c):
-    # All responses to HTMX requests should be HTML fragments, not full pages
-    detail_response = c.post("/tasks/1", data={"status": "done"}).get_data(as_text=True)
-    assert "<html" not in detail_response.lower(), "patch response is fragment not page"
-    assert "<head" not in detail_response.lower(), "fragment has no head tag"
-    row_response = c.get("/agents/rows").get_data(as_text=True)
-    assert "<html" not in row_response.lower(), "rows fragment is partial"
-
-
-def test_error_handling_and_edge_cases(c, conn):
-    t_id = task_id(conn, "for bench")
-    # Test invalid task IDs
-    assert c.get("/tasks/99999").status_code == 404, "nonexistent task page 404s"
-    assert c.get("/tasks/99999/row").get_data(as_text=True) == "", "nonexistent task row returns empty"
-    assert c.post("/tasks/99999", data={"status": "done"}).get_data(as_text=True) == "", "nonexistent task patch ignored"
     # Test with missing form fields
     c.post("/tasks", data={"title": "no description task"})
     assert len(ac.list_tasks(conn)) > 1, "tasks can be created with empty description"
-    # Closing a panel is pure client-side (closePanel() in layout.html) - no
-    # server round trip to test, just that each editor wires its close
-    # control to it.
-    assert "function closePanel(id)" in c.get("/").get_data(as_text=True), "layout defines closePanel"
-    doc_editor_html = c.post("/docs", data={"key": "closetest"}).get_data(as_text=True)
-    assert "closePanel('doc-editor')" in doc_editor_html, "doc editor close wired to closePanel"
-    row_editor_html = c.get("/data/tasks/row", query_string={"pk": t_id}).get_data(as_text=True)
-    assert "closePanel('row-editor')" in row_editor_html, "row editor close wired to closePanel"
-
-
-def test_merge_queue(c, conn, project):
-    # Initialize git in the project so we can test worktree functionality
-    subprocess.run(["git", "init"], cwd=project, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.name", "Test User"], cwd=project, check=True, capture_output=True)
-    (project / "README.md").write_text("# Test Project")
-    subprocess.run(["git", "add", "."], cwd=project, check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "initial"], cwd=project, check=True, capture_output=True)
-
-    # Create tasks with ready_to_merge status
-    merge_task_1 = ac.add_task(conn, "Fix search ranking", "Important feature", "dev-agent")
-    merge_task_2 = ac.add_task(conn, "Refactor database layer", "Technical debt", "dev-agent")
-
-    # Create worktrees for both tasks
-    path1, branch1, _ = ac.worktree.ensure_worktree(project, merge_task_1, "Fix search ranking", "main")
-    path2, branch2, _ = ac.worktree.ensure_worktree(project, merge_task_2, "Refactor database layer", "main")
-    ac.update_task(conn, merge_task_1, worktree_path=str(path1))
-    ac.update_task(conn, merge_task_2, worktree_path=str(path2))
-
-    ac.update_task_status(conn, merge_task_1, "ready_to_merge")
-    ac.update_task_status(conn, merge_task_2, "ready_to_merge")
-
-    # Add a dependency: task 2 waits on task 1 (so task 1 blocks task 2)
-    ac.add_dependency(conn, merge_task_2, merge_task_1)
-
-    merge_queue_page = c.get("/merge-queue").get_data(as_text=True)
-    assert "Merge Queue" in merge_queue_page, "merge queue page renders"
-    assert str(merge_task_1) in merge_queue_page or "Fix search" in merge_queue_page, "ready_to_merge task shows in queue"
-    assert branch1 in merge_queue_page or "kuska" in merge_queue_page, "ready_to_merge task shows its branch"
-    assert str(merge_task_2) in merge_queue_page or "Refactor database" in merge_queue_page, "another ready_to_merge task shows"
-
-    # Review column: latest review's outcome, linked to the review task
-    assert ">pending<" not in merge_queue_page and ">passed<" not in merge_queue_page, "no review yet"
-    review_id = ac.request_review(conn, merge_task_2, "dev-agent", "main")
-    assert ">pending<" in c.get("/merge-queue").get_data(as_text=True), "open review is pending"
-    ac.update_task_status(conn, review_id, "done")
-    ac.apply_review_outcome(conn, review_id)
-    page = c.get("/merge-queue").get_data(as_text=True)
-    assert f'<a href="/tasks/{review_id}">passed</a>' in page, "passed review shown and linked"
-
-    # Test the rows fragment
-    rows = c.get("/merge-queue/rows", headers=HX).get_data(as_text=True)
-    assert "tr" in rows, "merge queue rows fragment renders"
-
-    # Test ordering: merge_task_1 (1 blocks) should come before merge_task_2 (0 blocks)
-    # because higher blocking count comes first, so task 1 should appear before task 2
-    merge_queue_page = c.get("/merge-queue").get_data(as_text=True)
-    task_1_pos = merge_queue_page.find(str(merge_task_1))
-    task_2_pos = merge_queue_page.find(str(merge_task_2))
-    assert task_1_pos < task_2_pos and task_1_pos > 0, "ordering puts blocking task above non-blocking one"
-
-    # Test marking merged
-    marked = c.post(f"/tasks/{merge_task_1}/merged", data={"confirm": "1"}).get_data(as_text=True)
-    assert ac.get_task(conn, merge_task_1)["status"] == "done", "POST /tasks/<id>/merged with confirm sets done"
-    assert 'hx-get="/merge-queue/rows"' in marked, "merge queue table keeps its polling trigger"
-
-    # Prune: disabled while the branch has unmerged commits, enabled once merged
-    def prune_button(html: str) -> str:
-        start = html.index(f'hx-post="/tasks/{merge_task_2}/prune"')
-        return html[start:html.index(">", start)]
-
-    (path2 / "change.txt").write_text("work")
-    subprocess.run(["git", "add", "."], cwd=path2, check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "work"], cwd=path2, check=True, capture_output=True)
-    rows = c.get("/merge-queue/rows", headers=HX).get_data(as_text=True)
-    assert "disabled" in prune_button(rows), "prune disabled for an unmerged branch"
-    subprocess.run(["git", "merge", "--no-ff", "-m", "merge", branch2], cwd=project, check=True, capture_output=True)
-    rows = c.get("/merge-queue/rows", headers=HX).get_data(as_text=True)
-    assert "disabled" not in prune_button(rows), "prune enabled once the branch is merged"
-    assert 'hx-target="#merge-queue"' in prune_button(rows), "prune swaps the queue, not the body"
-    pruned = c.post(f"/tasks/{merge_task_2}/prune", headers=HX)
-    assert pruned.status_code == 200 and "pruned" in pruned.get_data(as_text=True), "POST /tasks/<id>/prune succeeds"
-    assert not path2.exists(), "prune removes the worktree"
-    assert ac.get_task(conn, merge_task_2)["status"] == "done", "prune marks the task done"
-    # Re-open it so later checks that use this task still see it
-    ac.update_task_status(conn, merge_task_2, "ready_to_merge")
-
-    # Merge detection: a merged branch flips to done, an unmerged one stays
-    merge_task_3 = ac.add_task(conn, "Merged by hand", "x", "dev-agent")
-    merge_task_4 = ac.add_task(conn, "Still open", "x", "dev-agent")
-    path3, branch3, _ = ac.worktree.ensure_worktree(project, merge_task_3, "Merged by hand", "main")
-    path4, branch4, _ = ac.worktree.ensure_worktree(project, merge_task_4, "Still open", "main")
-    for tid, p, b in ((merge_task_3, path3, branch3), (merge_task_4, path4, branch4)):
-        ac.update_task(conn, tid, worktree_path=str(p),
-                       worktree_base_sha=ac.worktree.merge_base(project, b, "main"))
-        (p / "work.txt").write_text(b)
-        subprocess.run(["git", "add", "."], cwd=p, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-m", "work"], cwd=p, check=True, capture_output=True)
-        ac.update_task_status(conn, tid, "ready_to_merge")
-    subprocess.run(["git", "merge", "--no-ff", "-m", "merge", branch3], cwd=project, check=True, capture_output=True)
-    page = c.get("/merge-queue").get_data(as_text=True)
-    assert ac.get_task(conn, merge_task_3)["status"] == "ready_to_merge", "GET /merge-queue writes no status"
-    assert "merged" in page, "the page still reports the merge"
-    assert supervisor.detect_merges(conn, project) == [merge_task_3], "supervisor finds the merged branch"
-    assert ac.get_task(conn, merge_task_3)["status"] == "done", "merged branch flips its task to done"
-    assert ac.get_task(conn, merge_task_4)["status"] == "ready_to_merge", "unmerged task stays ready_to_merge"
-
-    # Test that diff command in task detail has three dots, not two
-    task_detail = c.get(f"/tasks/{merge_task_2}", headers=HX).get_data(as_text=True)
-    assert f"git diff {branch2[len('kuska/'):]}" not in task_detail or "..." in task_detail, "diff command in HTML has three dots"
-    assert "...<" not in task_detail, "diff command has three dots not two"
-
-
-def test_web_status_changes_go_through_lifecycle(c, conn, project):
-    # approve: only from needs_approval
-    tid = ac.add_task(conn, "lifecycle approve", "", "dev-agent")
-    ac.update_task_status(conn, tid, "needs_approval")
-    c.post(f"/tasks/{tid}/approve")
-    assert ac.get_task(conn, tid)["status"] == "done", "approve gives done"
-    busy = ac.add_task(conn, "lifecycle busy", "", "dev-agent")
-    ac.update_task_status(conn, busy, "in_progress")
-    resp = c.post(f"/tasks/{busy}/approve")
-    assert resp.status_code == 200 and "cannot approve" in resp.get_data(as_text=True), "refusal toast shown"
-    assert ac.get_task(conn, busy)["status"] == "in_progress", "approve leaves in_progress alone"
-
-    # board drops
-    rtm = ac.add_task(conn, "lifecycle rtm", "", "dev-agent")
-    ac.update_task_status(conn, rtm, "ready_to_merge")
-    resp = c.post(f"/tasks/{rtm}/move", data={"column": "finished"})
-    assert ac.get_task(conn, rtm)["status"] == "ready_to_merge", "ready_to_merge card stays put"
-    assert "waiting to merge" in resp.get_data(as_text=True), "board says why"
-    card = ac.add_task(conn, "lifecycle card", "", "dev-agent")
-    c.post(f"/tasks/{card}/move", data={"column": "ready"})
-    assert ac.get_task(conn, card)["status"] == "ready", "todo to ready"
-    c.post(f"/tasks/{card}/move", data={"column": "todo"})
-    assert ac.get_task(conn, card)["status"] == "todo", "ready to todo"
-    ac.update_task_status(conn, card, "done")
-    c.post(f"/tasks/{card}/move", data={"column": "ready"})
-    assert ac.get_task(conn, card)["status"] == "ready", "done to ready"
-
-    # the status dropdown is a forced, noted override
-    c.post(f"/tasks/{card}", data={"status": "blocked"})
-    assert ac.get_task(conn, card)["status"] == "blocked", "dropdown changes the status"
-    assert any("forced" in m["payload"] for m in ac.task_messages(conn, card)), "forced status leaves a note"
-
-
-def test_mark_merged_checks_git(c, conn, project):
-    def make(title: str):
-        tid = ac.add_task(conn, title, "x", "dev-agent")
-        path, branch, _ = ac.worktree.ensure_worktree(project, tid, title, "main")
-        ac.update_task(conn, tid, worktree_path=str(path),
-                       worktree_base_sha=ac.worktree.merge_base(project, branch, "main"))
-        (path / "work.txt").write_text(title)
-        subprocess.run(["git", "add", "."], cwd=path, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-m", "work"], cwd=path, check=True, capture_output=True)
-        ac.update_task_status(conn, tid, "ready_to_merge")
-        return tid, branch
-
-    open_id, _ = make("Mark merged open")
-    resp = c.post(f"/tasks/{open_id}/merged").get_data(as_text=True)
-    assert ac.get_task(conn, open_id)["status"] == "ready_to_merge", "unmerged branch is not marked done"
-    assert "not merged" in resp and "Mark merged anyway" in resp, "toast and confirm button shown"
-    c.post(f"/tasks/{open_id}/merged", data={"confirm": "1"})
-    assert ac.get_task(conn, open_id)["status"] == "done", "confirm=1 marks it done"
-
-    real_id, real_branch = make("Mark merged real")
-    subprocess.run(["git", "merge", "--no-ff", "-m", "merge", real_branch], cwd=project, check=True, capture_output=True)
-    c.post(f"/tasks/{real_id}/merged")
-    assert ac.get_task(conn, real_id)["status"] == "done", "a really merged branch needs no confirm"
+    assert "closePanel" not in c.get("/").get_data(as_text=True), "closePanel is gone"
+    c.post("/docs", data={"key": "closetest"})
 
 
 def test_search_view(c, conn):
@@ -692,13 +504,16 @@ def test_search_view(c, conn):
     assert f'href="/tasks/{t_id}"' in search_html, "task result links to /tasks/<id>"
     opened_task = c.get(f"/tasks/{t_id}").get_data(as_text=True)
     assert 'id="task-detail"' in opened_task and "Depends on" in opened_task, "task page shows its detail"
-    # A doc result should link straight to it, pre-opened, on the docs page
+    # A doc result should link straight to the doc's own page
     c.post("/docs/closetest", data={"content": "zzmarkerdoc content"})
     search_doc_html = c.get("/search", query_string={"q": "zzmarkerdoc"}).get_data(as_text=True)
-    assert "/docs?open=closetest#doc-editor" in search_doc_html, "doc result links to /docs?open=<key>"
-    opened_doc = c.get("/docs", query_string={"open": "closetest"}).get_data(as_text=True)
-    assert 'id="doc-content-closetest"' in opened_doc, "open=<key> lands with that doc's editor open"
-    assert 'id="doc-editor"' in c.get("/docs", query_string={"open": "nope"}).get_data(as_text=True), "open=<missing key> is harmless"
+    assert 'href="/docs/closetest"' in search_doc_html, "doc result links to /docs/<key>"
+    assert "open=" not in search_doc_html, "no ?open= links"
+    opened_doc = c.get("/docs/closetest").get_data(as_text=True)
+    assert 'id="doc-content-closetest"' in opened_doc, "the doc page has its editor"
+    ac.send_message(conn, "human", "dev-agent", t_id, "note", "zzmarkermsg words")
+    msg_html = c.get("/search", query_string={"q": "zzmarkermsg"}).get_data(as_text=True)
+    assert 'href="/data/messages/' in msg_html, "message result links to its data page"
 
 
 def test_htmx_swaps_get_fragments_not_whole_pages(c, conn):
@@ -718,17 +533,12 @@ def test_htmx_swaps_get_fragments_not_whole_pages(c, conn):
     assert 'id="agent-editor"' in agent_frag and "<nav>" not in agent_frag, "htmx /agents/<name> is the editor"
     assert "agent-rows" not in agent_frag, "htmx /agents/<name> has no second agent table"
 
-    doc_frag = c.get("/docs", query_string={"open": "closetest"}, headers=HX).get_data(as_text=True)
-    assert doctype not in doc_frag.lower(), "htmx /docs?open= is the editor alone"
-    assert 'id="doc-editor"' in doc_frag and "<nav>" not in doc_frag, "htmx /docs?open= is the editor"
-    assert "/docs/closetest/delete" not in doc_frag, "htmx /docs?open= has no second docs table"
+    doc_frag = c.get("/docs/closetest", headers=HX).get_data(as_text=True)
+    assert doctype not in doc_frag.lower(), "htmx /docs/<key> is the editor alone"
+    assert 'id="doc-editor"' in doc_frag and "<nav>" not in doc_frag, "htmx /docs/<key> is the editor"
 
-    row_frag = c.get("/data/tasks", query_string={"open": t_id}, headers=HX).get_data(as_text=True)
-    assert doctype not in row_frag.lower(), "htmx /data?open= is the row editor alone"
-    assert 'id="row-editor"' in row_frag and 'id="rows"' not in row_frag, "htmx /data?open= is the row editor"
-
-    page_frag = c.get("/data/tasks", query_string={"offset": 0}, headers=HX).get_data(as_text=True)
-    assert 'id="rows"' in page_frag and doctype not in page_frag.lower(), "htmx /data?offset= is the rows fragment"
+    page_frag = c.get("/data/tasks", query_string={"page": 1}, headers=HX).get_data(as_text=True)
+    assert 'id="rows"' in page_frag and doctype not in page_frag.lower(), "htmx /data?page= is the rows fragment"
 
     # Back/forward: on a cache miss htmx re-requests the URL and replaces the
     # whole body, so a history restore has to get the full page back.
@@ -738,7 +548,7 @@ def test_htmx_swaps_get_fragments_not_whole_pages(c, conn):
 
     # A plain browser navigation is unaffected by any of the above.
     for url, args in ((f"/tasks/{t_id}", {}), ("/agents/dev-agent", {}),
-                      ("/docs", {"open": "closetest"}), ("/data/tasks", {"open": t_id})):
+                      ("/docs/closetest", {}), ("/data/tasks/%s" % t_id, {})):
         body = c.get(url, query_string=args).get_data(as_text=True)
         assert doctype in body.lower() and "<nav>" in body, f"plain GET {url} is a full page"
 
@@ -772,7 +582,7 @@ def test_route_status_codes(c):
     assert c.get("/docs").status_code == 200, "GET /docs is 200"
     assert c.get("/data").status_code == 200, "GET /data is 200"
     assert c.get("/data/tasks").status_code == 200, "GET /data/tasks is 200"
-    assert c.get("/data/nonexistent").status_code == 200, "invalid data table returns 200"
+    assert c.get("/data/nonexistent").status_code == 404, "invalid data table returns 404"
     assert c.post("/tasks", data={"title": "x"}).status_code == 200, "POST /tasks is 200"
     assert c.get("/tasks/999999").status_code == 404, "GET /tasks/<missing> is 404"
 

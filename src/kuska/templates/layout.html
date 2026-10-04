@@ -34,12 +34,6 @@
 <div id="toast"></div>
 
 <script>
-// Closing a side panel is pure client-side UI state, not a server round trip:
-// collapse it back to the same empty shell the panel started as.
-function closePanel(id) {
-  document.getElementById(id).outerHTML = '<div id="' + id + '"></div>';
-}
-
 // Handle form validation errors
 document.body.addEventListener('htmx:afterSwap', function(event) {
   // Find any error messages in the swapped content

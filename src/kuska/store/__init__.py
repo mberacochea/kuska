@@ -31,6 +31,7 @@ from .deps import (
     task_dependents,
 )
 from .docs import (
+    docs_delete,
     docs_get,
     docs_link,
     docs_list,
@@ -138,6 +139,7 @@ __all__ = [
     "delete_agent",
     "delete_feature",
     "delete_task",
+    "docs_delete",
     "docs_get",
     "docs_link",
     "docs_list",

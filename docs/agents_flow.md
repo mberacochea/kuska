@@ -115,7 +115,7 @@ sets any status; leaves a note).
   `ready_to_merge`, `blocked`) holds back its dependents too.
 - `todo` is a waiting list. Tasks agents create land there, and a human
   decides when they run.
-- The status dropdown on the tasks page and the Data page can set any status
+- The status dropdown on the tasks page can set any status
   directly; the arrows above are the transitions the code makes on its own.
 - The tasks page can also move several tasks at once: tick rows, pick a
   status, Move. It follows the board's rules, so `in_progress` is never a

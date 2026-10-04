@@ -1,42 +1,30 @@
 <div id="rows">
 <table>
-<thead><tr>{% for column, _ in fields %}<th>{{ column }}</th>{% endfor %}<th></th></tr></thead>
+<thead><tr>{% for column, _ in fields %}<th>{{ column }}</th>{% endfor %}</tr></thead>
 <tbody>
 {% for row in rows %}
 <tr>
   {% for column, kind in fields %}
   <td class="{{ 'small' if kind == 'longtext' }}">
-    {% if column == pk %}
-      <a href="/data/{{ table }}?open={{ row[pk] }}" hx-get="/data/{{ table }}?open={{ row[pk] }}" hx-target="#row-editor" hx-swap="outerHTML" hx-push-url="true">{{ row[column] }}</a>
+    {% if column == pk %}<a href="/data/{{ table }}/{{ row[pk] }}">{{ row[column] }}</a>
     {% elif kind == 'ts' %}<span class="muted small">{{ ago(row[column]) }}</span>
-    {% elif kind == 'longtext' and column in markdown_fields %}
-      {% if row[column] %}
-      <details style="cursor:pointer">
-        <summary class="link" style="color:var(--muted); text-decoration:underline">View markdown content</summary>
-        <div class="md" style="margin:.6rem 0; padding:.6rem; background:var(--shade); border-radius:6px; border:1px solid var(--line); font-size:.9rem; max-height:200px; overflow-y:auto">{{ md(row[column])|safe }}</div>
-        <a href="/data/{{ table }}?open={{ row[pk] }}" class="link small" hx-get="/data/{{ table }}?open={{ row[pk] }}" hx-target="#row-editor" hx-swap="outerHTML" hx-push-url="true" style="display:block; margin-top:.4rem">edit</a>
-      </details>
-      {% else %}
-      <span class="muted">-</span>
-      {% endif %}
     {% else %}{{ brief(row[column]) }}{% endif %}
   </td>
   {% endfor %}
-  <td><button class="link" hx-post="/data/{{ table }}/delete?pk={{ row[pk] }}" hx-target="#rows"
-              hx-swap="outerHTML" hx-confirm="Delete {{ table }} row {{ row[pk] }}?">delete</button></td>
 </tr>
 {% else %}
-<tr><td colspan="{{ fields|length + 1 }}" class="muted">No rows.</td></tr>
+<tr><td colspan="{{ fields|length }}" class="muted">No rows.</td></tr>
 {% endfor %}
 </tbody>
 </table>
+{% set offset = (page_no - 1) * limit %}
 <div class="muted small" style="margin:.5rem 0">
   {{ offset + 1 if total else 0 }}-{{ [offset + limit, total]|min }} of {{ total }}
-  {% if offset %}
-  <a href="/data/{{ table }}?offset={{ [offset - limit, 0]|max }}" hx-get="/data/{{ table }}?offset={{ [offset - limit, 0]|max }}" hx-target="#rows" hx-swap="outerHTML" hx-push-url="true">newer</a>
+  {% if page_no > 1 %}
+  <a href="/data/{{ table }}?page={{ page_no - 1 }}" hx-get="/data/{{ table }}?page={{ page_no - 1 }}" hx-target="#rows" hx-swap="outerHTML" hx-push-url="true">newer</a>
   {% endif %}
   {% if offset + limit < total %}
-  <a href="/data/{{ table }}?offset={{ offset + limit }}" hx-get="/data/{{ table }}?offset={{ offset + limit }}" hx-target="#rows" hx-swap="outerHTML" hx-push-url="true">older</a>
+  <a href="/data/{{ table }}?page={{ page_no + 1 }}" hx-get="/data/{{ table }}?page={{ page_no + 1 }}" hx-target="#rows" hx-swap="outerHTML" hx-push-url="true">older</a>
   {% endif %}
 </div>
 </div>

@@ -1,0 +1,25 @@
+<div id="data-row">
+{% if own_page %}<p><a href="{{ own_page }}" class="link">Open its own page →</a></p>{% endif %}
+<table>
+<tbody>
+{% for column, kind in fields %}
+{% set value = row[column] %}
+<tr>
+  <th>{{ column }}</th>
+  <td>
+    {% if kind == 'ts' %}
+      {% if value is not none %}{{ ago(value) }} <span class="muted small">({{ value }})</span>{% else %}<span class="muted">-</span>{% endif %}
+    {% elif kind == 'longtext' and column in markdown_columns %}
+      {% if value %}
+      <div class="md" style="max-height:500px; overflow-y:auto">{{ md(value)|safe }}</div>
+      <details><summary class="muted small">raw text</summary><pre style="max-height:500px; overflow:auto; white-space:pre-wrap">{{ value }}</pre></details>
+      {% else %}<span class="muted">-</span>{% endif %}
+    {% elif link_for(column, value) %}<a href="{{ link_for(column, value) }}">{{ value }}</a>
+    {% elif value is none %}<span class="muted">-</span>
+    {% else %}{{ value }}{% endif %}
+  </td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
