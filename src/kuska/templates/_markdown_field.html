@@ -1,0 +1,27 @@
+{# A markdown textarea with CSS-only Write/View tabs.
+
+   The radios sit outside every form (form="_none") so they never reach
+   request.form. Choosing View posts the textarea's current text to
+   /markdown; `field` tells the route which form value holds it. With
+   view_first the preview is rendered on the server and opens first.
+   `attrs` is trusted extra attributes for the textarea. #}
+{% macro markdown_field(name, value, id, label, placeholder="", view_first=False, attrs="") %}
+<div class="mdfield">
+  <input type="radio" class="mdf-radio mdf-write" id="{{ id }}-tab-write" name="{{ id }}-tab" form="_none"
+         aria-label="Write" {% if not view_first %}checked{% endif %}>
+  <input type="radio" class="mdf-radio mdf-view" id="{{ id }}-tab-view" name="{{ id }}-tab" form="_none"
+         aria-label="View" {% if view_first %}checked{% endif %}
+         hx-post="/markdown" hx-trigger="change" hx-include="#{{ id }}"
+         hx-vals='{{ {"field": name}|tojson }}' hx-target="#{{ id }}-preview" hx-swap="innerHTML">
+  <div class="mdf-head">
+    <span class="mdf-label">{{ label }}</span>
+    <label class="mdf-tab mdf-tab-write" for="{{ id }}-tab-write">Write</label>
+    <label class="mdf-tab mdf-tab-view" for="{{ id }}-tab-view">View</label>
+  </div>
+  <textarea id="{{ id }}" name="{{ name }}" rows="{{ value|textarea_rows }}" placeholder="{{ placeholder }}"
+            aria-label="{{ label }}" {{ attrs|safe }}>{{ value or '' }}</textarea>
+  <div class="md mdf-preview" id="{{ id }}-preview">
+    {%- if view_first %}{{ (md(value) or "<p class='muted'>Nothing to preview.</p>")|safe }}{% endif -%}
+  </div>
+</div>
+{% endmacro %}

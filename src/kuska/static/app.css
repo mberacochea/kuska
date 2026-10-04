@@ -529,3 +529,16 @@ input.has-error:focus, textarea.has-error:focus, select.has-error:focus {
 .kcard-title { display:block; margin:.15rem 0; font-weight:600; word-break:break-word; }
 .kcard-pick { display:flex; gap:.4rem; align-items:center; margin-top:.4rem; }
 .kcard-pick select { flex:1; min-width:0; }
+
+/* Markdown fields: CSS-only Write/View tabs (see _markdown_field.html) */
+textarea { field-sizing:content; max-height:500px; overflow-y:auto; }
+.mdfield { position:relative; }
+.mdfield .mdf-radio { position:absolute; opacity:0; pointer-events:none; }
+.mdf-head { display:flex; gap:.3rem; align-items:flex-end; border-bottom:1px solid var(--line); margin-bottom:.4rem; }
+.mdf-label { margin-right:auto; font-size:.82rem; color:var(--muted); }
+.mdf-tab { padding:.25rem .7rem; font-size:.85rem; cursor:pointer; color:var(--muted); border:1px solid transparent; border-bottom:none; border-radius:6px 6px 0 0; }
+.mdfield:has(.mdf-write:checked) .mdf-tab-write,
+.mdfield:has(.mdf-view:checked) .mdf-tab-view { color:var(--fg); background:var(--card); border-color:var(--line); font-weight:600; }
+.mdfield:has(.mdf-radio:focus-visible) .mdf-head { outline:2px solid var(--accent); }
+.mdf-preview { max-height:500px; overflow-y:auto; min-height:7rem; padding:.4rem .55rem; border:1px solid var(--line); border-radius:6px; background:var(--card); }
+.mdfield:has(.mdf-write:checked) .mdf-preview, .mdfield:has(.mdf-view:checked) textarea { display:none; }
