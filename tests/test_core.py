@@ -212,8 +212,12 @@ def test_messages(conn):
     assert ac.get_task(conn, t2)["status"] == "blocked", "reply can block"
     assert "needs_approval" in ac.TASK_STATUSES, "needs_approval is a status"
 
+    ac.start_run(conn, "ua1", t1, "dev-agent")
+    ac.end_run(conn, "ua1", "finished", input_tokens=1200, output_tokens=340, cost_usd=0.0182)
+    ac.start_run(conn, "ua2", t2, "dev-agent")
+    ac.end_run(conn, "ua2", "finished", cost_usd=0.004)
     usage = {u["agent"]: u for u in ac.token_usage_by_agent(conn)}
-    assert round(usage["dev-agent"]["cost_usd"], 4) == 0.0182, "usage aggregates"
+    assert round(usage["dev-agent"]["cost_usd"], 4) == 0.0222, "usage aggregates the runs"
     assert "human" not in usage, "usage excludes human"
     assert usage["dev-agent"]["turns"] == 2, "usage counts turns"
 
@@ -795,10 +799,10 @@ def test_reply_tool_links_the_run_s_result_message(conn):
     out = ac.call_tool(conn, "dev-agent", "reply", {"task_id": lt, "payload": "ok"},
                        ac.toolset({"flavor": "dev"}))
     assert ac.get_run(conn, "r1")["result_message_id"] == out["id"], "reply tool stores its message id on the run"
-    mid = ac.finish_task(conn, "dev-agent", lt, "text", since=time.time() + 1000, run_id="r1", cost_usd=0.2)
+    mid = ac.finish_task(conn, "dev-agent", lt, "text", run_id="r1")
     results = [m for m in ac.task_messages(conn, lt) if m["msg_type"] == "result"]
     assert (mid == out["id"] and len(results) == 1 and results[0]["id"] == out["id"]
-          and results[0]["cost_usd"] == 0.2), "finish_task with a run id books usage on the linked reply, whatever `since` says"
+          and not results[0]["cost_usd"]), "finish_task with a run id returns the linked reply and books no usage on it"
 
 
 @pytest.fixture(scope="module")
@@ -891,16 +895,15 @@ def test_lifecycle_routing(conn, tmp_path, task_in, status_of):
 
     from kuska import runtime
     moved = task_in("todo")
-    runtime.fail_task(conn, "dev-agent", moved, "boom", cost_usd=0.5)
+    runtime.fail_task(conn, "dev-agent", moved, "boom")
     blockers = [m for m in ac.task_messages(conn, moved) if m["msg_type"] == "blocker"]
-    assert status_of(moved) == "todo" and len(blockers) == 1 and blockers[0]["cost_usd"] == 0.5, "fail_task on a task a human moved keeps its status but logs the blocker"
+    assert status_of(moved) == "todo" and len(blockers) == 1 and not blockers[0]["cost_usd"], "fail_task on a task a human moved keeps its status but logs the blocker"
 
     held = task_in("needs_approval")
-    runtime.finish_task(conn, "dev-agent", held, "all done", since=time.time() + 1000, cost_usd=0.25,
-                        input_tokens=7)
+    runtime.finish_task(conn, "dev-agent", held, "all done")
     results = [m for m in ac.task_messages(conn, held) if m["msg_type"] == "result"]
     assert (status_of(held) == "needs_approval" and len(results) == 1
-          and results[0]["cost_usd"] == 0.25 and results[0]["input_tokens"] == 7), "finish_task with no reply keeps a human-moved status, records one result with usage"
+          and not results[0]["cost_usd"]), "finish_task with no reply keeps a human-moved status, records one result without usage"
 
     conn.close()
 

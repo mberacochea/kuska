@@ -185,15 +185,17 @@ erDiagram
   }
 ```
 
-- **`messages`** is what agents and humans say to each other, and also the
-  cost ledger: a run's tokens and dollars are booked on its result message.
+- **`messages`** is what agents and humans say to each other. Its usage columns are
+  legacy: older rows carry a run's cost, newer ones are zero, and only the
+  task page and export show them (migration 020 copied them into `runs`).
 - **`events`** is each run's monologue (thinking, tool calls, results), keyed
-  by `run_id`. A "run" exists only as that id.
-- **`runs`** is one row per agent invocation: a status (`running`, `finished`,
+  by `run_id`, the id of the run's `runs` row.
+- **`runs`** is one row per agent invocation and the only cost ledger (stats and the
+  agents page sum it): a status (`running`, `finished`,
   `failed`, `abandoned`), a heartbeat (a `running` run whose heartbeat goes
   stale has crashed) and its own usage numbers. `task_id` has no FK, so a
   task's runs outlive it. Store functions are in `store/runs.py`; the daemon
-  does not write them yet.
+  starts a run, heartbeats it and ends it with the backend's usage.
 - **`docs`** is shared knowledge. Handover reports are docs keyed
   `task_<id>_<agent>_context` and linked to their task.
 - **`features`** groups related tasks; a task has at most one.

@@ -27,9 +27,7 @@ from .store import (
     get_inbox,
     get_run,
     get_task,
-    latest_result_since,
     log_event,
-    record_usage,
     reply,
     send_message,
     task_dependencies,
@@ -293,14 +291,14 @@ def run_limits(cfg: dict) -> dict:
     }
 
 
-def fail_task(db: SqliteDatabase, agent_name: str, task_id: int, reason: str, **usage) -> int:
-    """Close out a run that did not finish: block the task, say why on its
-    thread, and book whatever the run cost against that message.
+def fail_task(db: SqliteDatabase, agent_name: str, task_id: int, reason: str) -> int:
+    """Close out a run that did not finish: block the task and say why on its
+    thread. The run's cost is booked on its `runs` row (`end_run`), not here.
 
     Blocked rather than retried: a run that hit its turn or budget limit will
     hit it again, so a human decides whether to raise the limit, split the
     task or send it back."""
-    msg_id = send_message(db, agent_name, HUMAN, task_id, "blocker", f"run failed: {reason}", **usage)
+    msg_id = send_message(db, agent_name, HUMAN, task_id, "blocker", f"run failed: {reason}")
     try:
         transition(db, task_id, "block", actor=agent_name)
     except InvalidTransition:
@@ -313,65 +311,39 @@ def finish_task(
     agent_name: str,
     task_id: int,
     payload: str,
-    since: float,
-    input_tokens: int = 0,
-    output_tokens: int = 0,
-    cache_read_tokens: int = 0,
-    cache_write_tokens: int = 0,
-    tool_rounds: int = 0,
-    cost_usd: float = 0.0,
     run_id: str | None = None,
+    cost_usd: float = 0.0,
 ) -> int:
-    """Close out one invocation, recording its cost without double-counting.
+    """Close out one invocation and return its result message.
 
-    If the agent already called the `reply` tool during this run, we update
-    that message's token/cost fields instead of creating a duplicate result.
-    This ensures token counts are accurate even when the agent logs its own
-    completion. The normal way to find that message is the run's
-    `result_message_id`, set by the `reply` tool; `since` (a timestamp
-    comparison) is only the fallback when no `run_id` is given.
+    If the agent already called the `reply` tool during this run, that message
+    (the run's `result_message_id`) is the result and no duplicate is created.
+    Otherwise the daemon logs `payload` as the result. Usage is not booked
+    here: it goes on the run's row via `end_run`.
 
-    Also checks for token usage anomalies and logs warnings if a task used
-    significantly more tokens than the rolling average.
+    Also checks for cost anomalies and logs a warning if a task cost
+    significantly more than the rolling average.
 
     Args:
         db: SqliteDatabase instance for this project.
         agent_name: Name of the agent that ran.
         task_id: Task being worked on.
         payload: Result summary or daemon message (used if no prior reply).
-        since: Timestamp of invocation start; used to find the agent's own
-            result only when `run_id` is None.
-        input_tokens: Fresh input tokens, charged at full price.
-        output_tokens: Total tokens generated.
-        cache_read_tokens: Input served from cache, at roughly a tenth the price.
-        cache_write_tokens: Input written to cache, at roughly 1.25x the price.
-        tool_rounds: API round-trips in this turn - the real cost driver.
-        cost_usd: Total cost in USD, as reported by the backend.
-        run_id: The run this invocation belongs to; its linked reply is the
-            result to update.
+        run_id: The run this invocation belongs to; its linked reply is the result.
+        cost_usd: What the run cost, only to judge whether it was anomalous.
 
     Returns:
-        int: Message ID of the result (newly created or updated).
+        int: Message ID of the result (existing or newly created).
     """
-    usage = {
-        "input_tokens": input_tokens, "output_tokens": output_tokens,
-        "cache_read_tokens": cache_read_tokens, "cache_write_tokens": cache_write_tokens,
-        "tool_rounds": tool_rounds, "cost_usd": cost_usd,
-    }
-    if run_id is not None:
-        msg_id = (get_run(db, run_id) or {}).get("result_message_id")
-    else:
-        msg_id = latest_result_since(db, agent_name, task_id, since)
-    if msg_id is not None:
-        record_usage(db, msg_id, **usage)
-    else:
+    msg_id = (get_run(db, run_id) or {}).get("result_message_id") if run_id is not None else None
+    if msg_id is None:
         task = get_task(db, task_id)
         if task and task["status"] == "in_progress":
             # reply() applies finish / await_answer itself
-            msg_id = reply(db, agent_name, task_id, payload, status="done", **usage)
+            msg_id = reply(db, agent_name, task_id, payload, status="done")
         else:
             # a human moved it, or the agent held it some other way: only record the result
-            msg_id = send_message(db, agent_name, HUMAN, task_id, "result", payload, **usage)
+            msg_id = send_message(db, agent_name, HUMAN, task_id, "result", payload)
 
     # cost is the only comparable figure: token volume is dominated by cache
     # reads, which are priced an order of magnitude below fresh input

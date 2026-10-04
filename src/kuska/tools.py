@@ -89,7 +89,7 @@ def _reply_handler(db, agent, args):
     """Handler for the reply tool: only on the caller's own in-progress task.
 
     Cost is not taken from the model - the daemon records the backend's real
-    figures on this message when the run ends (see runtime.finish_task)."""
+    figures on the run's row when it ends (see store.runs.end_run)."""
     task_id = args["task_id"]
     status = args.get("status", "done")
     if status not in REPLY_STATUSES:
@@ -100,7 +100,7 @@ def _reply_handler(db, agent, args):
     if task["status"] != "in_progress":
         raise ValueError(f"task {task_id} is already {task['status']}; you can reply on it only once per run")
     result = _reply(db, agent, task_id, args, status)
-    # link the reply to its run, so finish_task need not guess by timestamp
+    # link the reply to its run, so finish_task finds it without guessing
     set_run_result_message(db, agent, task_id, result["id"])
     return result
 

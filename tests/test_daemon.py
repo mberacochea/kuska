@@ -173,14 +173,16 @@ def test_loop(project):
     results = [m for m in core.task_messages(conn, t1) if m["msg_type"] == "result"]
     assert len(results) == 1, "one result logged"
     assert results[0]["payload"] == "Parser added.", "result text logged"
-    assert results[0]["cost_usd"] == 0.03 and results[0]["input_tokens"] == 1000, "cost logged"
-    assert results[0]["cache_read_tokens"] == 9000, "cache reads kept out of fresh input"
-    assert results[0]["tool_rounds"] == 4, "tool rounds recorded"
+    run1 = core.task_runs(conn, t1)[0]
+    assert run1["cost_usd"] == 0.03 and run1["input_tokens"] == 1000, "cost booked on the run"
+    assert run1["cache_read_tokens"] == 9000, "cache reads kept out of fresh input"
+    assert run1["tool_rounds"] == 4, "tool rounds recorded"
+    assert not results[0]["cost_usd"], "the result message carries no cost"
 
     assert core.get_task(conn, t2)["status"] == "blocked", "task 2 blocked by the agent"
     r2 = [m for m in core.task_messages(conn, t2) if m["msg_type"] == "result"]
     assert len(r2) == 1, "agent's own reply not duplicated"
-    assert r2[0]["cost_usd"] == 0.01, "usage attached to it"
+    assert core.task_runs(conn, t2)[0]["cost_usd"] == 0.01, "usage booked on the run, not the message"
     assert core.get_inbox(conn, "codex-1")[0]["payload"] == "which scope?", "question delivered"
     assert core.get_agent(conn, "dev-agent")["status"] == "offline", "agent left offline"
     spend = {u["agent"]: u["cost_usd"] for u in core.token_usage_by_agent(conn)}
@@ -985,7 +987,7 @@ def test_worktree_ready_to_merge(tmp_path):
     core.update_task_status(conn, task_id, "in_progress")
     core.update_task(conn, task_id, worktree_path=str(project / ".agents" / "worktrees" / f"task-{task_id}"))
     started = time.time()
-    runtime.finish_task(conn, "dev-agent", task_id, "Task completed", started)
+    runtime.finish_task(conn, "dev-agent", task_id, "Task completed")
 
     # Check that the task status is ready_to_merge
     task = core.get_task(conn, task_id)
@@ -1020,7 +1022,7 @@ def test_worktree_reply_tool_done(tmp_path):
     assert core.claim_task(conn, "dev-agent") is None, "dependent not claimable mid-run"
 
     # end of run: finish_task finds the agent's reply and must not undo the hold
-    runtime.finish_task(conn, "dev-agent", task_id, "done", started)
+    runtime.finish_task(conn, "dev-agent", task_id, "done")
     task = core.get_task(conn, task_id)
     assert task["status"] == "ready_to_merge", "still ready_to_merge after finish_task"
     assert core.claim_task(conn, "dev-agent") is None, "dependent still not claimable"
@@ -1079,7 +1081,9 @@ def test_run_limits(tmp_path):
     msgs = core.task_messages(conn, t1)
     blocker = [m for m in msgs if m["msg_type"] == "blocker"]
     assert blocker and "max_budget_usd" in blocker[0]["payload"], "blocker says which limit"
-    assert blocker and blocker[0]["cost_usd"] == 1.62 and blocker[0]["input_tokens"] == 900, "its spend is on the ledger"
+    assert blocker and not blocker[0]["cost_usd"], "the blocker carries no cost"
+    failed = core.task_runs(conn, t1)[0]
+    assert failed["cost_usd"] == 1.62 and failed["input_tokens"] == 900, "its spend is on the run"
     assert not [m for m in msgs if m["msg_type"] == "result"], "no result logged for a stopped run"
 
     async def hangs(prompt, options, mono):
@@ -1108,8 +1112,9 @@ def test_run_limits(tmp_path):
     finally:
         daemon_claude.query = real_query
     blocker = [m for m in core.task_messages(conn, t3) if m["msg_type"] == "blocker"]
-    assert (blocker and blocker[0]["input_tokens"] == 1500 and blocker[0]["output_tokens"] == 120
-          and blocker[0]["cache_read_tokens"] == 10000 and blocker[0]["tool_rounds"] == 2), "a timed-out run keeps the tokens it had used"
+    spent = core.task_runs(conn, t3)[0]
+    assert (blocker and spent["input_tokens"] == 1500 and spent["output_tokens"] == 120
+          and spent["cache_read_tokens"] == 10000 and spent["tool_rounds"] == 2), "a timed-out run keeps the tokens it had used"
     conn.close()
 
 
@@ -1147,7 +1152,7 @@ def test_shared_loop_worktree(tmp_path):
     assert seen["workdir"] == Path(task["worktree_path"]) and seen["workdir"] != project, "ran in the task's worktree"
     assert task["status"] == "ready_to_merge", "held for review"
     result = [m for m in core.task_messages(conn, task_id) if m["msg_type"] == "result"]
-    assert result and result[0]["payload"] == "Wrote notes." and result[0]["cost_usd"] == 0.02, "result trimmed and costed"
+    assert result and result[0]["payload"] == "Wrote notes." and core.task_runs(conn, task_id)[0]["cost_usd"] == 0.02, "result trimmed, run costed"
     log = subprocess.run(["git", "log", "--format=%s", "-1"], cwd=seen["workdir"], capture_output=True, text=True,
                          check=True).stdout
     assert log.startswith(f"wip: task {task_id}"), "leftover changes committed on the branch"
@@ -1297,7 +1302,7 @@ def test_run_ledger(tmp_path):
     results = [m for m in core.task_messages(conn, box["task"]) if m["msg_type"] == "result"]
     runs = core.task_runs(conn, box["task"])
     assert len(results) == 1, "a run that replied itself leaves exactly one result message"
-    assert results and results[0]["cost_usd"] == 0.75, "that message carries the run's cost"
+    assert results and runs[0]["cost_usd"] == 0.75 and not results[0]["cost_usd"], "the run carries the cost, its message none"
     assert results and runs[0]["status"] == "finished" and runs[0]["result_message_id"] == results[0]["id"], "the run points at that message"
 
     async def aborts(prompt, workdir, mono):
@@ -1574,7 +1579,7 @@ def test_non_worktree_done(tmp_path):
     # no worktree_path on the task: "done" stays "done"
     core.update_task_status(conn, task_id, "in_progress")
     started = time.time()
-    runtime.finish_task(conn, "dev-agent", task_id, "Task completed", started)
+    runtime.finish_task(conn, "dev-agent", task_id, "Task completed")
 
     # Check that the task status is done
     task = core.get_task(conn, task_id)
@@ -1606,7 +1611,7 @@ def test_worktree_blocked_stays_blocked(tmp_path):
     # a worktree task the agent already blocked: the hold is only for "done"
     core.update_task(conn, task_id, worktree_path=str(project / ".agents" / "worktrees" / f"task-{task_id}"))
     started = time.time()
-    runtime.finish_task(conn, "dev-agent", task_id, "Task blocked", started)
+    runtime.finish_task(conn, "dev-agent", task_id, "Task blocked")
 
     # Check that the task status is still blocked
     task = core.get_task(conn, task_id)

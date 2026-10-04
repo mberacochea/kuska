@@ -11,7 +11,7 @@ from __future__ import annotations
 from peewee import JOIN, SQL, SqliteDatabase, fn
 
 from ..db import HUMAN
-from ..models import Message, Task, rows
+from ..models import Run, Task, rows
 from .common import bound
 from .events import log_event
 from .tasks import get_task
@@ -21,9 +21,8 @@ from .tasks import get_task
 def token_usage_by_agent(db: SqliteDatabase) -> list[dict]:
     """Aggregate token usage and cost by agent, highest cost first.
 
-    Summarizes all messages sent by agents (excluding human messages) to
-    compute per-agent token consumption and total cost. Useful for billing
-    and performance analysis.
+    Sums the `runs` ledger (finished and failed runs, not ones still running)
+    per agent. `turns` counts runs. Useful for billing and performance analysis.
 
     Args:
         db: SqliteDatabase instance for this project.
@@ -42,18 +41,18 @@ def token_usage_by_agent(db: SqliteDatabase) -> list[dict]:
         ...           f"({stat['input_tokens']} in, {stat['output_tokens']} out)")
     """
     query = (
-        Message.select(
-            Message.sender.alias("agent"),
-            fn.COUNT(Message.id).alias("turns"),
-            fn.COALESCE(fn.SUM(Message.input_tokens), 0).alias("input_tokens"),
-            fn.COALESCE(fn.SUM(Message.output_tokens), 0).alias("output_tokens"),
-            fn.COALESCE(fn.SUM(Message.cache_read_tokens), 0).alias("cache_read_tokens"),
-            fn.COALESCE(fn.SUM(Message.cache_write_tokens), 0).alias("cache_write_tokens"),
-            fn.COALESCE(fn.SUM(Message.tool_rounds), 0).alias("tool_rounds"),
-            fn.COALESCE(fn.SUM(Message.cost_usd), 0.0).alias("cost_usd"),
+        Run.select(
+            Run.agent.alias("agent"),
+            fn.COUNT(Run.id).alias("turns"),
+            fn.COALESCE(fn.SUM(Run.input_tokens), 0).alias("input_tokens"),
+            fn.COALESCE(fn.SUM(Run.output_tokens), 0).alias("output_tokens"),
+            fn.COALESCE(fn.SUM(Run.cache_read_tokens), 0).alias("cache_read_tokens"),
+            fn.COALESCE(fn.SUM(Run.cache_write_tokens), 0).alias("cache_write_tokens"),
+            fn.COALESCE(fn.SUM(Run.tool_rounds), 0).alias("tool_rounds"),
+            fn.COALESCE(fn.SUM(Run.cost_usd), 0.0).alias("cost_usd"),
         )
-        .where(Message.sender != HUMAN)
-        .group_by(Message.sender)
+        .where(Run.agent.is_null(False), Run.agent != HUMAN, Run.status != "running")
+        .group_by(Run.agent)
         .order_by(SQL("cost_usd DESC"))
     )
     return rows(query)
@@ -106,18 +105,18 @@ def avg_task_duration(db: SqliteDatabase) -> float:
 def cost_by_task(db: SqliteDatabase, limit: int = 10) -> list[dict]:
     """Total cost per task, highest first, with the task title joined in.
 
-    A left join, because a message can outlive the task it belonged to -
+    A left join, because a run can outlive the task it belonged to -
     `title` comes back None for those and the caller decides how to label them.
     """
     query = (
-        Message.select(
-            Message.task_id,
+        Run.select(
+            Run.task_id,
             Task.title,
-            fn.COALESCE(fn.SUM(Message.cost_usd), 0.0).alias("cost"),
+            fn.COALESCE(fn.SUM(Run.cost_usd), 0.0).alias("cost"),
         )
-        .join(Task, JOIN.LEFT_OUTER, on=(Message.task_id == Task.id))
-        .where(Message.task_id.is_null(False))
-        .group_by(Message.task_id)
+        .join(Task, JOIN.LEFT_OUTER, on=(Run.task_id == Task.id))
+        .where(Run.task_id.is_null(False))
+        .group_by(Run.task_id)
         .order_by(SQL("cost DESC"))
         .limit(limit)
     )
@@ -130,8 +129,8 @@ def calculate_rolling_cost_average(
 ) -> float:
     """Calculate the rolling average cost per task, in USD.
 
-    Looks at recent result messages - the task completion records - and averages
-    what they actually cost.
+    Sums each task's ended runs, takes the tasks whose runs started most
+    recently, and averages what they actually cost.
 
     Args:
         db: SqliteDatabase instance for this project.
@@ -146,15 +145,15 @@ def calculate_rolling_cost_average(
         >>> avg = calculate_rolling_cost_average(db, window_size=20)
         >>> print(f"Average cost per task: ${avg:.4f}")
     """
-    query = Message.select(
-        Message.task_id,
-        fn.SUM(Message.cost_usd).alias("total_cost"),
-    ).where(
-        Message.msg_type == "result"
-    ).group_by(Message.task_id).order_by(Message.ts.desc()).limit(window_size)
-
+    query = (
+        Run.select(Run.task_id, fn.SUM(Run.cost_usd).alias("total_cost"))
+        .where(Run.task_id.is_null(False), Run.status != "running")
+        .group_by(Run.task_id)
+        .order_by(fn.MAX(Run.started_at).desc(), Run.task_id.desc())
+        .limit(window_size)
+    )
     if exclude_task_id is not None:
-        query = query.where(Message.task_id != exclude_task_id)
+        query = query.where(Run.task_id != exclude_task_id)
 
     results = rows(query)
     if not results:

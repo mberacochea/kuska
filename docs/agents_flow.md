@@ -46,11 +46,11 @@ sequenceDiagram
   Note over DB: done becomes ready_to_merge for worktree tasks
   A-->>D: text + usage
   alt success
-    D->>DB: finish_task — usage on result msg, mark inbox read
-    D->>DB: end_run (finished/failed + usage)
+    D->>DB: finish_task — result msg, mark inbox read
+    D->>DB: end_run (finished/failed + usage: the cost ledger)
   else error, timeout or limit
-    D->>DB: fail_task — blocker msg + usage, status blocked
-    D->>DB: end_run (finished/failed + usage)
+    D->>DB: fail_task — blocker msg, status blocked
+    D->>DB: end_run (finished/failed + usage: the cost ledger)
   end
   opt worktree
     D->>G: commit leftovers (wip)
@@ -161,7 +161,7 @@ a human step.
 
 | `msg_type` | Sent by | Meaning |
 | --- | --- | --- |
-| `result` | `reply()`, or the daemon when a run ends | The outcome of a run. Carries the run's tokens and cost. |
+| `result` | `reply()`, or the daemon when a run ends | The outcome of a run. Carries no cost: usage lives on the run's `runs` row. |
 | `question` | `send_message` | To another agent, it also creates an answer task for them (see below). |
 | `blocker` | `send_message`, or `fail_task` | Something stops the work; `fail_task` uses it to say why a run failed. |
 | `note` | `send_message`, or a human's reply on a task | Information, nothing to act on by itself. |

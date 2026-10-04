@@ -12,13 +12,10 @@ import kuska as ac
 def _complete_task(conn, title, *, cost_usd, input_tokens, output_tokens,
                    cache_read_tokens, tool_rounds):
     task_id = ac.add_task(conn, title, assigned_to="dev-agent")
-    ac.send_message(
-        conn,
-        sender="dev-agent",
-        recipient="human",
-        task_id=task_id,
-        msg_type="result",
-        payload=f"Completed {title}",
+    run_id = f"t{task_id:011d}"
+    ac.start_run(conn, run_id, task_id, "dev-agent")
+    ac.end_run(
+        conn, run_id, "finished",
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cache_read_tokens=cache_read_tokens,

@@ -164,7 +164,6 @@ async def serve(
             handled += 1
             log(f"[{agent_name}] task {task['id']}: {task['title']}")
             core.heartbeat(db, agent_name, "working", task["id"])
-            started = core.now()
             mono = core.Monologue(db, agent_name, task["id"], quiet=quiet)
             core.start_run(db, mono.run_id, task["id"], agent_name)
 
@@ -210,19 +209,20 @@ async def serve(
                 except (KeyboardInterrupt, asyncio.CancelledError):
                     commit_leftovers(False)
                     # stopped mid-run: say so on the task rather than leave it in_progress
-                    core.fail_task(db, agent_name, task["id"], "interrupted: the daemon was stopped mid-run", **mono.spent)
+                    core.fail_task(db, agent_name, task["id"], "interrupted: the daemon was stopped mid-run")
                     core.end_run(db, mono.run_id, "failed", exit_reason="interrupted", **mono.spent)
                     raise
                 except Exception as exc:
                     commit_leftovers(False)
                     mono.record("error", f"run failed: {exc}")
-                    core.fail_task(db, agent_name, task["id"], str(exc), **getattr(exc, "usage", {}))
+                    core.fail_task(db, agent_name, task["id"], str(exc))
                     core.end_run(db, mono.run_id, "failed", exit_reason=str(exc), **getattr(exc, "usage", {}))
                     log(f"[{agent_name}] task {task['id']} failed: {exc}", error=True)
                 else:
                     commit_leftovers(True)
                     text = text.strip() or "(no output)"
-                    msg_id = core.finish_task(db, agent_name, task["id"], text, started, run_id=mono.run_id, **usage)
+                    msg_id = core.finish_task(db, agent_name, task["id"], text, run_id=mono.run_id,
+                                         cost_usd=usage.get("cost_usd", 0.0))
                     core.end_run(db, mono.run_id, "finished", result_message_id=msg_id, **usage)
                     # read only once a run has actually used them
                     core.mark_messages_read(db, inbox_message_ids)

@@ -1,8 +1,6 @@
-"""Messages - the audit log and cost ledger - and the replies and questions built on them."""
+"""Messages - the audit log - and the replies and questions built on them."""
 
 from __future__ import annotations
-
-from typing import Any
 
 from peewee import SqliteDatabase
 
@@ -221,30 +219,6 @@ def ask_agent(db: SqliteDatabase, asker: str, recipient: str, task_id: int | Non
     transition(db, answer_id, "make_ready", actor=asker)
     add_dependency(db, task_id, answer_id)
     return answer_id
-
-
-@bound
-def latest_result_since(db: SqliteDatabase, agent_name: str, task_id: int, since: float) -> int | None:
-    """The newest result this agent logged on this task since `since` - the
-    reply it made during a run - or None."""
-    found = (
-        Message.select(Message.id)
-        .where(
-            (Message.sender == agent_name)
-            & (Message.task_id == task_id)
-            & (Message.msg_type == "result")
-            & (Message.ts >= since)
-        )
-        .order_by(Message.ts.desc())
-        .first()
-    )
-    return int(found.id) if found else None
-
-
-@bound
-def record_usage(db: SqliteDatabase, message_id: int, **usage: Any) -> None:
-    """Book a run's usage (the ledger's token, round and cost columns) on a message."""
-    Message.update(**usage).where(Message.id == message_id).execute()
 
 
 @bound

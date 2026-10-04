@@ -83,6 +83,8 @@ def test_tasks(c, conn):
 
     ac.update_task_status(conn, 1, "in_progress")
     ac.reply(conn, "dev-agent", 1, "Shipped.", input_tokens=10, output_tokens=5, cost_usd=0.01)
+    ac.start_run(conn, "webrun000001", 1, "dev-agent")
+    ac.end_run(conn, "webrun000001", "finished", input_tokens=10, output_tokens=5, cost_usd=0.01)
     detail = c.get("/tasks/1", headers=HX).get_data(as_text=True)
     assert "Shipped." in detail and "$0.0100" in detail, "result shows in thread"
     assert 'id="task-1"' in c.get("/tasks/1/row").get_data(as_text=True), "row still fetchable on its own"
