@@ -1,51 +1,5 @@
 <div id="tasks-container">
-  {# Triggers stay scoped to this form: `from:select` / `from:input` are
-     document-wide selectors, so they also fired on the new-task form and the
-     per-row selects, refreshing the table (and stealing focus) mid-edit. #}
-  <form id="task-filters-container" class="task-filters"
-        hx-get="/tasks" hx-target="#tasks-container" hx-swap="outerHTML" hx-push-url="true"
-        hx-trigger="change, input changed delay:400ms from:#task-search-input"
-        hx-include="#task-filters-container">
-    <input type="hidden" name="sort" value="{{ sort_by }}">
-    <input type="hidden" name="direction" value="{{ sort_dir }}">
-
-    {# hx-preserve keeps this exact input node (focus, cursor position) across
-       the outerHTML swap below - without it, every debounced search request
-       replaces the field out from under you, which is what actually reads as
-       "flicker" while typing, not the request rate itself. #}
-    <input type="text" id="task-search-input" name="search" placeholder="Search tasks..." class="task-search"
-           aria-label="Search tasks by title or description" value="{{ search }}" autofocus
-           hx-preserve="true">
-
-    {# Facets: one row of toggle chips per field. Chips in a row are OR, rows
-       are AND. The count on a chip is what ticking it would show given the
-       other rows (see task_facets), so a 0 means "nothing there". Plain
-       checkboxes with the filter's own query-string name, so old URLs and
-       the Feature chip links on each row keep working. #}
-    {% for facet in facets %}
-    <div class="facet" role="group" aria-labelledby="facet-label-{{ facet.param }}">
-      <span class="facet-label" id="facet-label-{{ facet.param }}">{{ facet.label }}</span>
-      <div class="facet-chips">
-        {% for o in facet.options %}
-        <label class="facet-chip{{ ' is-zero' if o.count == 0 and not o.selected }}"
-               {% if o.title %}title="{{ o.title }}"{% endif %}>
-          <input type="checkbox" id="facet-{{ facet.param }}-{{ loop.index }}" name="{{ facet.param }}"
-                 value="{{ o.value }}" {{ 'checked' if o.selected }}>
-          <span class="{{ 's-' ~ o.value if facet.param == 'status' }}">{{ o.label }}</span>
-          <span class="facet-count">{{ o.count }}</span>
-        </label>
-        {% endfor %}
-      </div>
-    </div>
-    {% endfor %}
-
-    <div class="facet-footer">
-      <span class="muted small" id="task-shown">Showing {{ shown }} of {{ total }} task{{ '' if total == 1 else 's' }}</span>
-      <button type="button" class="filter-reset" aria-label="Clear all filters"
-              hx-get="/tasks" hx-target="#tasks-container" hx-swap="outerHTML" hx-push-url="true"
-              hx-params="none">Reset</button>
-    </div>
-  </form>
+  {% with endpoint="/tasks", target="#tasks-container" %}{% include "_task_filters.html" %}{% endwith %}
 
   <div class="task-header-row">
     {# The ticked rows are the table's checkboxes (name=ids); they are not

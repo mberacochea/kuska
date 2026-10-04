@@ -70,9 +70,7 @@ def test_board(c, conn, status, move):
     assert "needs_approval" in page, "finished shows status label"
     assert page.index("Waiting card") < page.index("Done 21"), "waiting card sits above done cards"
     assert page.count("Done ") == 20 and "Done 0<" not in page and "Done 1<" not in page, "only 20 done cards"
-    assert page.count('style="--sub:') == 4, "columns carry a sub-column share"
-    assert 'style="--sub:3" data-column="finished"' in page, "a long column gets three sub-columns"
-    assert 'style="--sub:1" data-column="in_progress"' in page, "a short column gets one"
+    assert page.count('style="--sub:2"') == 4, "every column defaults to two sub-columns"
     assert c.get("/board", headers={"HX-Request": "true"}).get_data(as_text=True).lstrip().startswith('<div id="board"'), "fragment is bare board"
 
     # board moves
@@ -128,6 +126,27 @@ def test_board(c, conn, status, move):
     assert status(a1) == "ready" and "Alpha one" in html and "Beta one" not in html, "move keeps filter"
     html = c.get("/board").get_data(as_text=True)
     assert all(t in html for t in ("Alpha one", "Alpha two", "Beta one")), "no filter shows all"
-    assert 'id="board-feature"' in html and ">All features<" in html and 'value="beta"' in html, "select on page"
+    assert 'value="beta"' in html and 'name="status"' in html and "Reload board" in html, "facets on page"
     page = c.get("/board?feature=beta").get_data(as_text=True)
-    assert 'value="beta" selected' in page and "Alpha one" not in page, "current feature selected"
+    assert 'value="beta" checked' in page and "Alpha one" not in page, "current feature ticked"
+
+    # same filter parameters as the tasks page, full load and fragment
+    url = "/board?status=ready&agent=dev-agent&cols=3"
+    page = c.get(url).get_data(as_text=True)
+    assert page.count('style="--sub:3"') == 4 and "<h1>Board</h1>" in page, "cols=3 on a full load"
+    assert 'value="ready" checked' in page and 'value="dev-agent" checked' in page, "facets ticked"
+    assert "Alpha one" in page and "Beta one" not in page, "only matching cards"
+    frag = c.get(url, headers=hx).get_data(as_text=True)
+    assert frag.lstrip().startswith('<div id="board"') and "<h1>" not in frag and "Beta one" not in frag, "fragment is #board"
+    assert "Alpha one" not in c.get("/board?search=Beta", headers=hx).get_data(as_text=True), "search filters"
+
+    # cols: default 2, clamped to 1-4
+    for bad in ("0", "5", "x", ""):
+        assert c.get(f"/board?cols={bad}").get_data(as_text=True).count('style="--sub:2"') == 4, f"cols={bad!r} -> 2"
+    assert c.get("/board?cols=1").get_data(as_text=True).count('style="--sub:1"') == 4, "cols=1"
+    assert c.get("/board?cols=4").get_data(as_text=True).count('style="--sub:4"') == 4, "cols=4"
+
+    # a move keeps the filters and cols it was sent with
+    html = move(a1, "todo", status="todo", feature="alpha", cols="3")
+    assert status(a1) == "todo" and "Alpha one" in html and "Beta one" not in html, "move keeps filters"
+    assert html.count('style="--sub:3"') == 4 and 'value="todo" checked' in html, "move keeps cols and facets"

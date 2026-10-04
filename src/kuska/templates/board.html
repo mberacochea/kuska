@@ -5,12 +5,6 @@
   Drag a card to another column to move it. Todo to Ready hands the task to its agent;
   Finished marks it done. Only an agent starts work, so In progress is read-only.
 </p>
-<label class="small muted" for="board-feature">Feature</label>
-<select id="board-feature" name="feature" hx-get="/board" hx-target="#board" hx-swap="outerHTML"
-        hx-push-url="true" hx-trigger="change">
-  <option value="">All features</option>
-  {% for f in features %}<option value="{{ f.name }}"{{ ' selected' if f.name == feature }}>{{ f.name }}</option>{% endfor %}
-</select>
 {{ board|safe }}
 <script>
 // Native HTML5 drag and drop. The listeners sit on document because #board is
@@ -52,8 +46,8 @@
     if (dragged.closest('.kcol') === col &&
         !(col.dataset.column === 'finished' && dragged.dataset.status !== 'done')) return;
     htmx.ajax('POST', '/tasks/' + id + '/move',
-              {target: '#board', swap: 'outerHTML', values: {column: col.dataset.column,
-                       feature: document.getElementById('board-feature').value}});
+              {target: '#board', swap: 'outerHTML', source: '#task-filters-container',
+               values: {column: col.dataset.column}});
   });
 })();
 </script>
