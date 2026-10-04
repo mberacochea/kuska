@@ -50,4 +50,4 @@ flavor = "reviewer"
 
 [mcp_servers.kuska]
 command = "uv"
-args = ["run", "kuska", "mcp"]
+args = ["run", "kuska", "mcp", "--operator"]

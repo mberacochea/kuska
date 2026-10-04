@@ -21,7 +21,7 @@ tasks:
   mcp:
     desc: "Start the MCP server for external clients"
     cmds:
-      - uv run kuska mcp
+      - uv run kuska mcp --operator
 
   run-all:
     desc: "Run everything: web server + all agents (via single run-all command)"

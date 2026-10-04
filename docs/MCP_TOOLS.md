@@ -5,8 +5,8 @@ reporting results, asking questions, and sharing project knowledge. They are
 defined once, in `src/kuska/tools.py` (`TOOL_SPECS`), and served three ways:
 
 - **Claude daemon** (`daemons/claude.py`): in-process, via `create_sdk_mcp_server()`.
-- **`kuska mcp --agent <name>`**: a stdio MCP server, used by the codex and
-  openai daemons and by any MCP client.
+- **`kuska mcp --agent <name>`** (or **`--operator`** for a human): a stdio
+  MCP server, used by the codex and openai daemons and by any MCP client.
 - Handlers call `src/kuska/store/`, so every path writes the same records.
 
 Claiming tasks, heartbeats and cost accounting are not tools: the daemon
@@ -20,13 +20,14 @@ owns them (see `daemons/loop.py`).
 |---|---|
 | `dev` or `reviewer` flavor (or no flavor) | the base set: `get_inbox`, `send_message`, `reply`, `docs_get`, `docs_set`, `docs_list`, `create_task`, `list_tasks`, `list_features`, `search`, `list_tags` |
 | `planner` flavor | the base set, plus `add_tag`, `remove_tag` and `set_task_feature` |
-| not in config.toml (an **operator**) | every tool, with a human's authority - see below |
+| `kuska mcp --operator` (an **operator**) | every tool, with a human's authority - see below |
 
 Calling a tool outside your set fails exactly like calling one that does not
 exist.
 
 An **operator** is a person driving an MCP client, like the repo's
-`.mcp.json` (`kuska mcp --agent claude`). An operator can `reply` on any task
+`.mcp.json` (`kuska mcp --operator --agent claude`), started with
+`--operator`. A name that is not in config.toml and lacks `--operator` is refused. An operator can `reply` on any task
 in any state, and can overwrite a human's docs. Its `get_inbox` also marks
 messages read, because no daemon will do that for it.
 

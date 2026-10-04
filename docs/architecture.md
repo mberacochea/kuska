@@ -65,7 +65,7 @@ flowchart LR
 | --- | --- |
 | `models.py`, `migrations/` | The schema. Models are bound to a database per call, so one process can hold several projects open. |
 | `store/` | Every read and write of project state, one module per kind of record. Returns plain dicts; nothing outside it touches the ORM (except `tables.py`, the raw Data page). |
-| `tools.py` | The agent tools, defined once. `toolset(cfg)` picks a caller's set by flavor; a caller not in `config.toml` is an operator and gets all of them. |
+| `tools.py` | The agent tools, defined once. `toolset(cfg)` picks a caller's set by flavor; an operator (`kuska mcp --operator`) gets all of them, and an unconfigured name is refused. |
 | `runtime.py` | What goes into a run (`compose_task_prompt`) and what comes out of it (`finish_task`, `fail_task`, the `Monologue` event log). |
 | `daemons/loop.py` | The loop every backend shares: claim a task, set up its worktree, run it, book the result and cost. |
 | `daemons/<backend>.py` | Only the model call: `make_runner()` returns `async run(prompt, workdir, mono) -> (text, usage)`. |
@@ -80,7 +80,7 @@ flowchart LR
 | --- | --- |
 | `kuska serve` | The web UI (single-threaded Flask; the open project is process-wide state). |
 | `kuska daemon <agent>` | One agent's loop. One process per agent; run several for parallel work. |
-| `kuska mcp --agent <name>` | A stdio MCP server acting as `<name>`. Spawned per client: by the codex and openai daemons for every run, and by Claude Code through `.mcp.json`. |
+| `kuska mcp --agent <name>` / `kuska mcp --operator` | A stdio MCP server acting as `<name>` (a configured agent), or, with `--operator`, as the human with every tool. Spawned per client: by the codex and openai daemons for every run, and by Claude Code through `.mcp.json`. |
 | `kuska supervise` | The supervisor alone: every 15 s it abandons runs whose heartbeat is over 300 s old (blocking their `in_progress` task) and moves `ready_to_merge` tasks whose branch is merged to `done`. `kuska serve` and `kuska run-all` run it as a thread (`serve --no-supervisor` turns it off). |
 | `kuska run-all` | Web UI, the supervisor and one daemon per configured agent, as threads of one process. |
 
