@@ -69,7 +69,7 @@ flowchart LR
 | `runtime.py` | What goes into a run (`compose_task_prompt`) and what comes out of it (`finish_task`, `fail_task`, the `Monologue` event log). |
 | `daemons/loop.py` | The loop every backend shares: claim a task, set up its worktree, run it, book the result and cost. |
 | `daemons/<backend>.py` | Only the model call: `make_runner()` returns `async run(prompt, workdir, mono) -> (text, usage)`. |
-| `worktree.py` | Every git operation: worktree per task, rebase, commit, merge detection. |
+| `worktree.py` | Every git operation: worktree per task, rebase, commit, merge detection. Branch commits and rebases are unsigned; `squash_merge` keeps the user's signing. |
 | `guardrails.py` | Regex rules refusing destructive shell commands (Claude's PreToolUse hook). The OS sandbox is the real boundary. |
 | `project.py` | `.agents/` layout, `config.toml` (the agent registry), prompt files, the multi-project registry. |
 | `web/` | Flask + HTMX UI: `context.py` holds the open project and shared rendering; one module per page area. |

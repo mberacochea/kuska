@@ -17,6 +17,28 @@ import git
 BRANCH_PREFIX = "kuska/"
 WORKTREES_DIR = "worktrees"
 
+# Commits on task branches are never signed: `kuska merge` squashes them, so
+# signing buys nothing and needs a gpg-agent that may not be unlocked.
+UNSIGNED_GIT_CONFIG = (("commit.gpgsign", "false"), ("tag.gpgsign", "false"))
+
+
+def unsigned_git_env(environ=None) -> dict[str, str]:
+    """GIT_CONFIG_* entries that turn signing off, to merge over an environment.
+
+    Numbers the entries after any GIT_CONFIG_COUNT already in `environ`, so
+    the user's own entries survive. Pure: never writes to os.environ.
+    """
+    environ = os.environ if environ is None else environ
+    try:
+        start = int(environ.get("GIT_CONFIG_COUNT") or 0)
+    except ValueError:
+        start = 0
+    out = {"GIT_CONFIG_COUNT": str(start + len(UNSIGNED_GIT_CONFIG))}
+    for i, (key, value) in enumerate(UNSIGNED_GIT_CONFIG, start):
+        out[f"GIT_CONFIG_KEY_{i}"] = key
+        out[f"GIT_CONFIG_VALUE_{i}"] = value
+    return out
+
 
 def slug(title: str) -> str:
     """Convert title to a slug for use in branch names.
@@ -64,13 +86,20 @@ def worktree_path(project: Path, task_id: int) -> Path:
     return Path(project) / ".agents" / WORKTREES_DIR / f"task-{task_id}"
 
 
-def _repo(path) -> "git.Repo":
+def _repo(path, unsigned: bool = False) -> "git.Repo":
     """Open a repo whose git calls all run with hooks off. kuska's own git
     runs outside the sandbox, so a hook an agent managed to plant must never
     fire from it.
+
+    `unsigned` is opt-in: whatever writes to the base branch keeps the user's
+    signing by default. Only callers that create commits on task branches
+    pass it.
     """
     repo = git.Repo(path)
-    repo.git.set_persistent_git_options(c="core.hooksPath=/dev/null")
+    opts = ["core.hooksPath=/dev/null"]
+    if unsigned:
+        opts += [f"{k}={v}" for k, v in UNSIGNED_GIT_CONFIG]
+    repo.git.set_persistent_git_options(c=opts)
     return repo
 
 
@@ -185,7 +214,7 @@ def rebase_onto(path: Path, base: str) -> tuple[bool, str]:
     Returns (True, "") on success.
     """
     try:
-        repo = _repo(path)
+        repo = _repo(path, unsigned=True)
         try:
             repo.git.rebase(base)
             return True, ""
@@ -241,7 +270,7 @@ def commit_all(path: Path, message: str) -> str | None:
     not this system's business and a failing hook must not strand the work.
     """
     try:
-        repo = _repo(path)
+        repo = _repo(path, unsigned=True)
 
         # Check if there are changes to commit
         if not is_dirty(path):
