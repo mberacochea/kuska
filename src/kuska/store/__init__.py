@@ -72,6 +72,7 @@ from .features import (
     update_feature,
 )
 from .reviews import (
+    apply_review_outcome,
     request_review,
     task_reviews,
 )
@@ -170,6 +171,7 @@ __all__ = [
     "record_usage",
     "reply",
     "reply_to_task",
+    "apply_review_outcome",
     "request_review",
     "run_events",
     "running_runs",

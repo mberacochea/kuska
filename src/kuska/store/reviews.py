@@ -10,7 +10,7 @@ from ..models import Task, rows
 from .agents import get_agent
 from .common import bound
 from .lifecycle import transition
-from .messages import is_work_task, send_message
+from .messages import is_work_task, send_message, task_messages
 from .tasks import add_task, get_task
 
 TITLE_MAX = 120
@@ -95,3 +95,47 @@ def request_review(
     Task.update(review_of=task_id).where(Task.id == review_id).execute()
     transition(db, review_id, "make_ready", actor=reviewer)
     return review_id
+
+
+@bound
+def apply_review_outcome(db: SqliteDatabase, review_task_id: int) -> str | None:
+    """Act on a finished review task, going by the status the reviewer ended in.
+
+    done -> "passed": the human is told the branch can merge.
+    needs_approval -> "changes_requested": if the source is still ready_to_merge,
+    the findings go to its author and it is requeued; the review is then closed.
+    blocked (anything else) -> "inconclusive": the human is told, the source stays.
+
+    Returns the outcome recorded, or None if this is not a review task.
+    """
+    review = get_task(db, review_task_id)
+    if review is None or not review.get("review_of"):
+        return None
+    source = get_task(db, review["review_of"])
+    if source is None:
+        return None
+    reviewer = review["assigned_to"]
+    results = [m for m in task_messages(db, review_task_id) if m["msg_type"] == "result"]
+    findings = results[-1]["payload"] if results else "(no findings given)"
+
+    if review["status"] == "done":
+        outcome = "passed"
+        Task.update(review_outcome=outcome).where(Task.id == review_task_id).execute()
+        send_message(db, reviewer, HUMAN, source["id"], "note",
+                     f"Review passed (task {review_task_id}):\n\n{findings}")
+    elif review["status"] == "needs_approval":
+        outcome = "changes_requested"
+        Task.update(review_outcome=outcome).where(Task.id == review_task_id).execute()
+        if source["status"] == "ready_to_merge":
+            send_message(
+                db, reviewer, source["assigned_to"], source["id"], "note",
+                f"Review by {reviewer} (task {review_task_id}) asks for changes:\n\n{findings}",
+            )
+            transition(db, source["id"], "requeue", actor=reviewer)
+        transition(db, review_task_id, "approve", actor=HUMAN)
+    else:
+        outcome = "inconclusive"
+        Task.update(review_outcome=outcome).where(Task.id == review_task_id).execute()
+        send_message(db, reviewer, HUMAN, source["id"], "note",
+                     f"Review could not be completed (task {review_task_id}):\n\n{findings}")
+    return outcome

@@ -994,3 +994,45 @@ def test_request_review(conn):
     assert request_review(conn, ans, "bench-agent", "main") is None, "answer task"
     other = ready_to_merge("Other")
     assert request_review(conn, other, "nobody-agent", "main") is None, "unknown reviewer"
+
+
+def test_apply_review_outcome(conn):
+    from kuska.store import apply_review_outcome, request_review
+
+    def reviewed():
+        tid = ac.add_task(conn, "Add parser", "x", assigned_to="dev-agent")
+        ac.update_task_status(conn, tid, "ready_to_merge")
+        rid = request_review(conn, tid, "bench-agent", "main")
+        return tid, rid
+
+    def finish(rid, status, text):
+        ac.send_message(conn, "bench-agent", "human", rid, "result", text)
+        ac.update_task_status(conn, rid, status)
+
+    def notes(tid):
+        return [m for m in ac.task_messages(conn, tid) if m["msg_type"] == "note"]
+
+    tid, rid = reviewed()
+    finish(rid, "done", "All good")
+    assert apply_review_outcome(conn, rid) == "passed", "passed"
+    assert ac.get_task(conn, rid)["review_outcome"] == "passed", "outcome stored"
+    assert any("Review passed" in m["payload"] and "All good" in m["payload"] for m in notes(tid)), "note on source"
+    assert ac.get_task(conn, tid)["status"] == "ready_to_merge", "source stays ready_to_merge"
+
+    tid, rid = reviewed()
+    finish(rid, "needs_approval", "Fix the quoting")
+    assert apply_review_outcome(conn, rid) == "changes_requested", "changes requested"
+    assert ac.get_task(conn, tid)["status"] == "ready", "source requeued"
+    sent = [m for m in notes(tid) if m["recipient"] == "dev-agent"]
+    assert sent and "Fix the quoting" in sent[0]["payload"], "findings go to the author"
+    review = ac.get_task(conn, rid)
+    assert review["status"] == "done" and review["review_outcome"] == "changes_requested", "review closed"
+
+    tid, rid = reviewed()
+    finish(rid, "blocked", "no tests run")
+    assert apply_review_outcome(conn, rid) == "inconclusive", "inconclusive"
+    assert ac.get_task(conn, tid)["status"] == "ready_to_merge", "source unchanged"
+    assert any(m["recipient"] == "human" and "could not be completed" in m["payload"] for m in notes(tid)), "human told"
+
+    plain = ac.add_task(conn, "Plain", assigned_to="dev-agent")
+    assert apply_review_outcome(conn, plain) is None, "not a review"

@@ -548,6 +548,15 @@ def test_merge_queue(c, conn, project):
     assert branch1 in merge_queue_page or "kuska" in merge_queue_page, "ready_to_merge task shows its branch"
     assert str(merge_task_2) in merge_queue_page or "Refactor database" in merge_queue_page, "another ready_to_merge task shows"
 
+    # Review column: latest review's outcome, linked to the review task
+    assert ">pending<" not in merge_queue_page and ">passed<" not in merge_queue_page, "no review yet"
+    review_id = ac.request_review(conn, merge_task_2, "dev-agent", "main")
+    assert ">pending<" in c.get("/merge-queue").get_data(as_text=True), "open review is pending"
+    ac.update_task_status(conn, review_id, "done")
+    ac.apply_review_outcome(conn, review_id)
+    page = c.get("/merge-queue").get_data(as_text=True)
+    assert f'<a href="/tasks/{review_id}">passed</a>' in page, "passed review shown and linked"
+
     # Test the rows fragment
     rows = c.get("/merge-queue/rows", headers=HX).get_data(as_text=True)
     assert "tr" in rows, "merge queue rows fragment renders"

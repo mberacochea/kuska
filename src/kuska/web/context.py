@@ -38,6 +38,7 @@ from ..store import (
     task_dependents,
     task_events,
     task_messages,
+    task_reviews,
 )
 from .helpers import _activity_qs, _ago, _clock, _group_runs
 
@@ -338,8 +339,21 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
                 project, branch, base, task.get("worktree_base_sha")
             )
 
+        reviews_map = {}
+        for task in tasks_sorted:
+            reviews = task_reviews(db(), task["id"])
+            if not reviews:
+                continue
+            latest = reviews[-1]
+            if latest["status"] in ("todo", "ready", "in_progress"):
+                label = "pending"
+            else:
+                label = (latest.get("review_outcome") or "-").replace("_", " ")
+            reviews_map[task["id"]] = {"id": latest["id"], "label": label}
+
         return {
             "tasks": tasks_sorted,
+            "reviews": reviews_map,
             "worktrees": worktrees_map,
             "diffs": diffs,
             "ahead": ahead,

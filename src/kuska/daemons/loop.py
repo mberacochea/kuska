@@ -211,6 +211,9 @@ async def serve(
                     core.end_run(db, mono.run_id, "finished", result_message_id=msg_id, **usage)
                     # read only once a run has actually used them
                     core.mark_messages_read(db, inbox_message_ids)
+                    if task.get("kind") == "review":
+                        outcome = core.apply_review_outcome(db, task["id"])
+                        mono.record("system", outcome or "-", label="review outcome")
                     final = (core.get_task(db, task["id"]) or task)["status"]
                     if final == "ready_to_merge" and branch is not None:
                         mono.record("system", branch, label="ready to merge")
