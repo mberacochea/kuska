@@ -68,7 +68,7 @@ def detect_merges(db, project: Path) -> list[int]:
             continue
         branch = worktree.branch_for_path(project, task["worktree_path"])
         if not branch or not worktree.is_branch_merged(
-            project, branch, base, task.get("worktree_base_sha")
+            project, branch, base, task.get("worktree_base_sha"), task["id"]
         ):
             continue
         try:

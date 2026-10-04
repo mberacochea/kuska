@@ -444,3 +444,39 @@ def test_prune(tmp_path):
 
     # We just check it doesn't error
     assert True, "prune doesn't error"
+
+
+def _squash(tmp_path, task_id, message):
+    base = worktree.base_branch(tmp_path)
+    path, branch, _ = worktree.ensure_worktree(tmp_path, task_id, "Squash me", base)
+    sha = worktree.merge_base(tmp_path, branch, base)
+    (path / f"s{task_id}.txt").write_text("s")
+    worktree.commit_all(path, "work")
+    _git(tmp_path, "merge", "--squash", branch)
+    _git(tmp_path, "commit", "-m", message)
+    return base, branch, sha
+
+
+def test_squash_merge_with_trailer_is_merged(tmp_path):
+    init_git_repo(tmp_path)
+    base, branch, sha = _squash(tmp_path, 30, "Squash me\n\nKuska-Task: 30")
+    assert worktree.is_branch_merged(tmp_path, branch, base, sha, 30), "trailer marks a squash as merged"
+    assert not worktree.is_branch_merged(tmp_path, branch, base, sha, 3), "another task's id does not match"
+    assert not worktree.is_branch_merged(tmp_path, branch, base, sha), "without task_id only ancestry counts"
+
+
+def test_squash_merge_without_trailer_is_not_merged(tmp_path):
+    init_git_repo(tmp_path)
+    base, branch, sha = _squash(tmp_path, 31, "Squash me")
+    assert not worktree.is_branch_merged(tmp_path, branch, base, sha, 31)
+
+
+def test_plain_merge_still_merged_with_task_id(tmp_path):
+    init_git_repo(tmp_path)
+    base = worktree.base_branch(tmp_path)
+    path, branch, _ = worktree.ensure_worktree(tmp_path, 32, "Plain", base)
+    sha = worktree.merge_base(tmp_path, branch, base)
+    (path / "p.txt").write_text("p")
+    worktree.commit_all(path, "work")
+    _git(tmp_path, "merge", "--no-ff", "-m", "merge", branch)
+    assert worktree.is_branch_merged(tmp_path, branch, base, sha, 32)

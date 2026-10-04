@@ -49,7 +49,8 @@ from .project import (
 )
 from .runner import run_all
 from .supervisor import SWEEP_EVERY_S, run_supervisor
-from .store import docs_get, docs_set, list_tasks, update_task
+from .store import docs_get, docs_set, get_task, list_tasks, task_messages, transition, update_task
+from .store.lifecycle import InvalidTransition
 from .web import create_app
 
 
@@ -508,6 +509,69 @@ def cmd_worktree_prune(args: argparse.Namespace) -> None:
     db.close()
 
 
+def squash_message(db, task: dict) -> str:
+    """Commit message for a squash merge: title, then the handover (else the
+    last result, as runtime.get_workflow_context does), then the trailer
+    that merge detection looks for."""
+    subject = " ".join(task["title"].split())[:72]
+    agent = task.get("assigned_to")
+    body = docs_get(db, f"task_{task['id']}_{agent}_context") if agent else None
+    if not body:
+        results = [m for m in task_messages(db, task["id"]) if m["msg_type"] == "result" and m["payload"]]
+        body = results[-1]["payload"] if results else ""
+    parts = [subject]
+    if body and body.strip():
+        parts.append(body.strip())
+    parts.append(f"{worktree.TRAILER}: {task['id']}")
+    return "\n\n".join(parts) + "\n"
+
+
+def cmd_merge(args: argparse.Namespace) -> int:
+    """Squash a ready_to_merge task's branch into the current branch."""
+    project = find_project(args.project)
+    db = connect(db_path(project))
+    try:
+        init_db(db)
+        task = get_task(db, args.task_id)
+        if not task:
+            print(f"error: no task {args.task_id}")
+            return 1
+        if task["status"] != "ready_to_merge":
+            print(f"error: task {task['id']} is {task['status']}, not ready_to_merge")
+            return 1
+        branch = worktree.branch_for_path(project, task["worktree_path"]) if task.get("worktree_path") else None
+        if not branch:
+            print(f"error: task {task['id']} has no worktree branch to merge")
+            return 1
+        problem = worktree.merge_problem(project, task.get("worktree_base_sha"))
+        if problem:
+            print(f"error: {problem}")
+            return 1
+        message = squash_message(db, task)
+        outcome, detail = worktree.squash_merge(project, branch, message)
+        if outcome == "conflict":
+            print(f"conflict: {detail}")
+            print("Message saved to .git/SQUASH_MSG. Resolve, then `git commit`; "
+                  "the supervisor marks the task done once it sees the commit.")
+            return 1
+        if outcome != "merged":
+            print(f"error: {detail}")
+            return 1
+        try:
+            transition(db, task["id"], "merged")
+        except InvalidTransition as exc:
+            print(f"warning: merged, but could not mark the task done: {exc}")
+        ok, why = worktree.remove_worktree(project, Path(task["worktree_path"]), branch)
+        if ok:
+            update_task(db, task["id"], worktree_path=None)
+        else:
+            print(f"warning: could not remove the worktree: {why}")
+        print(f"merged task {task['id']} as {detail[:12]}")
+        return 0
+    finally:
+        db.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="kuska", description=__doc__.splitlines()[0])
     parser.add_argument("--version", action="version", version=f"kuska {__version__}")
@@ -596,6 +660,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_run_all.add_argument("--poll-interval", type=float, default=2.0)
     p_run_all.set_defaults(func=cmd_run_all)
 
+    p_merge = sub.add_parser(
+        "merge", help="squash a ready_to_merge task's branch into the current branch as one commit"
+    )
+    p_merge.add_argument("task_id", type=int)
+    p_merge.set_defaults(func=cmd_merge)
+
     p_worktree = sub.add_parser("worktree", help="manage worktrees")
     p_worktree_sub = p_worktree.add_subparsers(dest="worktree_command", required=True)
 
@@ -612,7 +682,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
-    args.func(args)
+    code = args.func(args)
+    if code:
+        raise SystemExit(code)
 
 
 if __name__ == "__main__":

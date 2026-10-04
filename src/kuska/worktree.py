@@ -6,8 +6,10 @@ beyond pathlib. Testable against a throwaway repo without database, daemon or ag
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 
 import git
@@ -332,12 +334,34 @@ def merge_base(project: Path, branch: str, base: str) -> str | None:
         return None
 
 
-def is_branch_merged(project: Path, branch: str, base: str, base_sha: str | None) -> bool:
+TRAILER = "Kuska-Task"
+
+
+def squash_merged(project: Path, base: str, base_sha: str | None, task_id: int) -> bool:
+    """True when a commit on `base` since `base_sha` carries the task's trailer.
+
+    `kuska merge` squashes, so the branch's own commits never reach base; the
+    `Kuska-Task: <id>` trailer is what says the squash happened. Any failure: False.
+    """
+    if not base_sha:
+        return False
+    try:
+        repo = git.Repo(project)
+        out = repo.git.log(f"{base_sha}..{base}", "--format=%H", "--grep", f"^{TRAILER}: {task_id}$")
+        return bool(out.strip())
+    except Exception:
+        return False
+
+
+def is_branch_merged(
+    project: Path, branch: str, base: str, base_sha: str | None, task_id: int | None = None
+) -> bool:
     """True when `branch` had commits of its own and all of them are in `base`.
 
     git lists a fresh branch with no commits as merged too, so the tip must
     differ from base_sha, the commit the branch started from. Without a
     recorded base_sha the branch cannot be judged: False. Any failure: False.
+    With `task_id`, a squash merge counts too (see squash_merged).
     """
     if not base_sha:
         return False
@@ -349,10 +373,69 @@ def is_branch_merged(project: Path, branch: str, base: str, base_sha: str | None
         try:
             repo.git.merge_base("--is-ancestor", tip, base)
         except git.GitCommandError:
-            return False
+            return squash_merged(project, base, base_sha, task_id) if task_id is not None else False
         return True
     except Exception:
-        return False
+        return squash_merged(project, base, base_sha, task_id) if task_id is not None else False
+
+
+def merge_problem(project: Path, base_sha: str | None) -> str | None:
+    """Why the main checkout cannot take a squash merge now, or None if it can.
+
+    It must be on a branch of its own (not detached, not a task branch), that
+    branch must contain the commit the task started from, and tracked files
+    must be clean (untracked files do not block a merge).
+    """
+    try:
+        repo = git.Repo(project)
+        if repo.head.is_detached:
+            return "the main checkout is on a detached HEAD; check out the base branch first"
+        current = repo.active_branch.name
+        if current.startswith(BRANCH_PREFIX):
+            return f"the main checkout is on task branch {current}; check out the base branch first"
+        if base_sha:
+            try:
+                repo.git.merge_base("--is-ancestor", base_sha, "HEAD")
+            except git.GitCommandError:
+                return f"{current} does not contain the commit the task started from; check out the base branch"
+        if repo.git.status("--porcelain", "--untracked-files=no").strip():
+            return "the main checkout has uncommitted changes to tracked files; commit or stash them first"
+        return None
+    except Exception as e:
+        return f"cannot inspect the main checkout: {str(e).splitlines()[0] if str(e) else e!r}"
+
+
+def squash_merge(project: Path, branch: str, message: str) -> tuple[str, str]:
+    """Squash `branch` into the main checkout's branch as one commit.
+
+    Runs in the human's terminal on purpose: signing config applies, so no
+    --no-gpg-sign. Returns ("merged", sha), ("conflict", detail) with the message
+    left in .git/SQUASH_MSG for the human's own `git commit`, or ("error", detail).
+    """
+    try:
+        repo = git.Repo(project)
+        try:
+            repo.git.merge("--squash", branch)
+        except git.GitCommandError as e:
+            detail = (e.stdout or "") + (e.stderr or "")
+            if repo.git.ls_files("--unmerged").strip():
+                (Path(repo.git_dir) / "SQUASH_MSG").write_text(message)
+                return "conflict", detail.strip().splitlines()[0] if detail.strip() else "conflict"
+            return "error", detail.strip() or str(e)
+        if not repo.git.status("--porcelain", "--untracked-files=no").strip():
+            return "error", f"{branch} has nothing to merge into the current branch"
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+            f.write(message)
+        try:
+            try:
+                repo.git.commit("-F", f.name)
+            except git.GitCommandError as e:
+                return "error", ((e.stdout or "") + (e.stderr or "")).strip() or str(e)
+        finally:
+            os.unlink(f.name)
+        return "merged", repo.head.commit.hexsha
+    except Exception as e:
+        return "error", str(e)
 
 
 def list_worktrees(project: Path) -> list[dict]:

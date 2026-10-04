@@ -533,7 +533,9 @@ def register(app, ctx) -> None:
                      if Path(wt["path"]).resolve() == path.resolve()),
                     None,
                 )
-            if not branch or not worktree.is_branch_merged(root, branch, base, task.get("worktree_base_sha")):
+            if not branch or not worktree.is_branch_merged(
+                root, branch, base, task.get("worktree_base_sha"), task_id
+            ):
                 return rows(f"{branch or 'branch'} is not merged into {base} yet", unconfirmed=task_id)
         try:
             transition(db(), task_id, "merged")
@@ -579,7 +581,9 @@ def register(app, ctx) -> None:
             None,
         )
 
-        if task_branch and task_branch not in worktree.merged_branches(root, base):
+        if task_branch and task_branch not in worktree.merged_branches(root, base) and not (
+            worktree.is_branch_merged(root, task_branch, base, task.get("worktree_base_sha"), task_id)
+        ):
             return rows("Branch is not merged - cannot prune")
 
         success, msg = worktree.remove_worktree(root, path, task_branch)
