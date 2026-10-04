@@ -269,3 +269,26 @@ def validate_doc_content(content: str) -> str | None:
     if len(content) > MAX_DOC_CONTENT_LEN:
         return f"Content is too long (max {MAX_DOC_CONTENT_LEN} characters)"
     return None
+
+
+def task_filters(args) -> dict[str, Any]:
+    """The task filter fields in `args` (a query string or a posted form).
+
+    One parser for everything that filters tasks - the Tasks page, its bulk
+    move and the board - so they all take the same parameter names.
+    """
+    return {
+        "search": args.get("search", "").strip(),
+        "status": args.getlist("status"),
+        "agent": args.getlist("agent"),
+        "feature": args.getlist("feature"),
+        "tag": args.getlist("tag"),
+        "sort": args.get("sort") or None,
+        "direction": args.get("direction", "asc"),
+    }
+
+
+def board_cols(args) -> int:
+    """The board's sub-columns per column: 1-4, anything else is 2."""
+    value = args.get("cols", "")
+    return int(value) if value in ("1", "2", "3", "4") else 2

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from flask import g, render_template, request, session
 from markupsafe import escape
 from peewee import SqliteDatabase
+from werkzeug.datastructures import MultiDict
 
 from .. import eventfmt, worktree
 from .. import tables as tbl
@@ -40,8 +41,7 @@ from ..store import (
     task_messages,
     task_reviews,
 )
-from .helpers import _activity_qs, _ago, _clock, _group_runs
-
+from .helpers import _activity_qs, _ago, _clock, _group_runs, task_filters
 
 _initialised: set[str] = set()
 _init_lock = threading.Lock()
@@ -129,29 +129,23 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
             sort_dir=sort_dir,
         )
 
-    def task_facets(
-        search: str,
-        status_list: list[str],
-        agent_list: list[str],
-        tag_list: list[str],
-        feature_list: list[str],
-    ) -> tuple[list[dict], int]:
+    def task_facets(filters: dict) -> tuple[list[dict], int]:
         """The filter facets, each option with how many tasks it would show.
 
-        A facet's counts come from the tasks that pass every *other* active
-        filter, so ticking a second status never zeroes the other statuses -
-        the counts say what ticking that option would add. Facets are
-        recomputed from the same filter_tasks the table uses, so a count
-        always matches the rows you get.
+        `filters` is what helpers.task_filters parsed. A facet's counts come
+        from the tasks that pass every *other* active filter, so ticking a
+        second status never zeroes the other statuses - the counts say what
+        ticking that option would add. Facets are recomputed from the same
+        filter_tasks the table uses, so a count always matches the rows you get.
 
         Returns (facets, number of tasks overall).
         """
-        selected = {"status": status_list, "agent": agent_list, "feature": feature_list, "tag": tag_list}
+        selected = {k: filters[k] for k in ("status", "agent", "feature", "tag")}
 
         def passing(omit: str | None) -> list[dict]:
             use = {k: (v or None) if k != omit else None for k, v in selected.items()}
             return filter_tasks(
-                db(), search, status=use["status"], agent=use["agent"],
+                db(), filters["search"], status=use["status"], agent=use["agent"],
                 feature=use["feature"], tags=use["tag"],
             )
 
@@ -190,41 +184,30 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
         ]
         return facets, len(list_tasks(db()))
 
-    def tasks_container(
-        tasks: list[dict] | None = None,
-        search: str = "",
-        status_list: list[str] | None = None,
-        agent_list: list[str] | None = None,
-        tag_list: list[str] | None = None,
-        sort_by: str | None = None,
-        sort_dir: str = "asc",
-        feature_list: list[str] | None = None,
-    ) -> str:
+    def task_filters_context(filters: dict, shown: int) -> dict:
+        """Template variables for _task_filters.html, shared by Tasks and Board."""
+        facets, total = task_facets(filters)
+        return {"facets": facets, "shown": shown, "total": total, "search": filters["search"]}
+
+    def tasks_container(tasks: list[dict] | None = None, filters: dict | None = None) -> str:
         """Render the task table together with its filter/sort controls.
 
         The controls are plain htmx-driven form fields that GET /tasks
-        themselves (see tasks_container.html) - the server is the only place
+        themselves (see _task_filters.html) - the server is the only place
         that knows the current filter/sort state, and re-renders it into the
         form on every response so there is no client-side state to keep in
         sync.
         """
-        facets, total = task_facets(
-            search, status_list or [], agent_list or [], tag_list or [], feature_list or []
-        )
+        filters = filters or task_filters(MultiDict())
+        sort_by = filters["sort"]
+        shown = len(tasks) if tasks is not None else len(list_tasks(db()))
         return render_template(
             "tasks_container.html",
-            tasks_table=tasks_table(tasks, sort_by, sort_dir),
-            facets=facets,
-            shown=len(tasks) if tasks is not None else total,
-            total=total,
+            tasks_table=tasks_table(tasks, sort_by, filters["direction"]),
             bulk_statuses=[s for s in TASK_STATUSES if s != "in_progress"],
-            feature_list=feature_list or [],
-            search=search,
-            status_list=status_list or [],
-            agent_list=agent_list or [],
-            tag_list=tag_list or [],
             sort_by=sort_by or "",
-            sort_dir=sort_dir,
+            sort_dir=filters["direction"],
+            **task_filters_context(filters, shown),
         )
 
     def dependency_candidates(task: dict, query: str = "", limit: int = 20) -> list[dict]:
@@ -561,6 +544,7 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
         project=project,
         task_activity=task_activity,
         task_panel=task_panel,
+        task_filters_context=task_filters_context,
         tasks_container=tasks_container,
         tasks_table=tasks_table,
     )

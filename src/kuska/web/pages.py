@@ -6,6 +6,7 @@ from pathlib import Path
 
 from flask import render_template, request, session
 from peewee import PeeweeException
+from werkzeug.datastructures import MultiDict
 
 from .. import worktree
 from ..db import HUMAN, TASK_STATUSES
@@ -34,6 +35,8 @@ from ..store import (
 )
 from .helpers import (
     _bad_request,
+    board_cols,
+    task_filters,
     validate_task_assigned_to,
     validate_task_description,
     validate_task_title,
@@ -49,6 +52,7 @@ def register(app, ctx) -> None:
     merge_queue_rows = ctx.merge_queue_rows
     render_row = ctx.render_row
     project = ctx.project
+    task_filters_context = ctx.task_filters_context
     task_panel = ctx.task_panel
     tasks_container = ctx.tasks_container
 
@@ -77,26 +81,18 @@ def register(app, ctx) -> None:
         move, which re-sends the filter form so the table comes back showing
         the same view.
         """
-        search = args.get("search", "").strip()
-        status_list = args.getlist("status")
-        agent_list = args.getlist("agent")
-        tag_list = args.getlist("tag")
-        feature_list = args.getlist("feature")
-        sort_by = args.get("sort") or None
-        sort_dir = args.get("direction", "asc")
+        filters = task_filters(args)
         filtered = filter_tasks(
             db(),
-            search,
-            status=status_list or None,
-            agent=agent_list or None,
-            feature=feature_list or None,
-            tags=tag_list or None,
-            sort_by=sort_by,
-            sort_dir=sort_dir,
+            filters["search"],
+            status=filters["status"] or None,
+            agent=filters["agent"] or None,
+            feature=filters["feature"] or None,
+            tags=filters["tag"] or None,
+            sort_by=filters["sort"],
+            sort_dir=filters["direction"],
         )
-        return tasks_container(
-            filtered, search, status_list, agent_list, tag_list, sort_by, sort_dir, feature_list
-        )
+        return tasks_container(filtered, filters)
 
     @app.get("/tasks")
     def tasks_page() -> str:
@@ -395,15 +391,25 @@ def register(app, ctx) -> None:
     waiting_statuses = ("needs_approval", "ready_to_merge", "blocked")
     done_shown = 20
 
-    def board_html(picker_id: int | None = None, toast: str | None = None, feature: str = "") -> str:
+    def board_html(picker_id: int | None = None, toast: str | None = None, args=None) -> str:
         """Render the whole #board (plus an optional toast).
 
         Every board response is the full board: there are only four short
         columns, and swapping all of it means a refused or completed move can
-        never leave the source and target columns out of step. `feature` limits
-        the cards to one feature ("" shows all).
+        never leave the source and target columns out of step. `args` is the
+        query string or posted form carrying the filter fields (as on /tasks)
+        and `cols`, so a move comes back showing the same view.
         """
-        tasks = list_tasks(db(), feature=feature or None)
+        args = args if args is not None else MultiDict()
+        filters = task_filters(args)
+        tasks = filter_tasks(
+            db(),
+            filters["search"],
+            status=filters["status"] or None,
+            agent=filters["agent"] or None,
+            feature=filters["feature"] or None,
+            tags=filters["tag"] or None,
+        )
         by_status: dict[str, list[dict]] = {}
         for t in tasks:
             by_status.setdefault(t["status"], []).append(t)
@@ -420,24 +426,18 @@ def register(app, ctx) -> None:
             columns=columns,
             picker_id=picker_id,
             agents=list_agents(db()),
-            feature=feature,
-            features=list_features(db()),
+            cols=board_cols(args),
+            **task_filters_context(filters, len(tasks)),
         )
         return html + _toast(toast) if toast else html
 
     @app.get("/board")
     def board_page() -> str:
         """GET /board - the Kanban board. An htmx request gets just #board."""
-        feature = request.args.get("feature", "")
+        board = board_html(args=request.args)
         if wants_fragment():
-            return board_html(feature=feature)
-        return render_template(
-            "board.html",
-            page="board",
-            board=board_html(feature=feature),
-            feature=feature,
-            features=list_features(db()),
-        )
+            return board
+        return render_template("board.html", page="board", board=board)
 
     @app.post("/tasks/<int:task_id>/move")
     def move_task(task_id: int) -> tuple[str, int] | str:
@@ -454,58 +454,57 @@ def register(app, ctx) -> None:
         if not task:
             return "", 404
         column = request.form.get("column", "")
-        feature = request.form.get("feature", "")
         status = task["status"]
 
         if status == "in_progress":
-            return board_html(toast=f"task {task_id} is in progress - only an agent moves it", feature=feature)
+            return board_html(toast=f"task {task_id} is in progress - only an agent moves it", args=request.form)
         if column not in ("todo", "ready", "finished"):
-            return board_html(toast="that column does not accept cards", feature=feature)
+            return board_html(toast="that column does not accept cards", args=request.form)
 
         def refused(exc: InvalidTransition) -> str:
-            return board_html(toast=str(exc), feature=feature)
+            return board_html(toast=str(exc), args=request.form)
 
         # a waiting card is already in Finished; dropping it there approves it
         if column == "finished":
             if status == "done":
-                return board_html(feature=feature)
+                return board_html(args=request.form)
             try:
                 transition(db(), task_id, "close")
             except InvalidTransition as exc:
                 if status == "ready_to_merge":
                     return board_html(
                         toast=f"task {task_id} is waiting to merge - merge its branch, then use the Merge queue",
-                        feature=feature,
+                        args=request.form,
                     )
                 return refused(exc)
-            return board_html(toast=f"task {task_id} marked done", feature=feature)
+            return board_html(toast=f"task {task_id} marked done", args=request.form)
         if column == status:
-            return board_html(feature=feature)
+            return board_html(args=request.form)
 
         if column == "todo":
             try:
                 transition(db(), task_id, "park")
             except InvalidTransition as exc:
                 return refused(exc)
-            return board_html(toast=f"task {task_id} moved to todo", feature=feature)
+            return board_html(toast=f"task {task_id} moved to todo", args=request.form)
 
         # column == "ready": needs an agent
         assigned_to = request.form.get("assigned_to", "").strip() or None
         if "assigned_to" in request.form:
             if not assigned_to:
-                return board_html(picker_id=task_id, toast="choose an agent first", feature=feature)
+                return board_html(picker_id=task_id, toast="choose an agent first", args=request.form)
             agent_error = validate_task_assigned_to(assigned_to, db())
             if agent_error:
-                return board_html(picker_id=task_id, toast=agent_error, feature=feature)
+                return board_html(picker_id=task_id, toast=agent_error, args=request.form)
             update_task(db(), task_id, assigned_to=assigned_to)
         elif not task["assigned_to"]:
-            return board_html(picker_id=task_id, toast="choose an agent to make it ready", feature=feature)
+            return board_html(picker_id=task_id, toast="choose an agent to make it ready", args=request.form)
         try:
             # a card from Finished is re-queued; one from todo is made ready
             transition(db(), task_id, "make_ready" if status == "todo" else "requeue")
         except InvalidTransition as exc:
             return refused(exc)
-        return board_html(toast=f"task {task_id} is ready", feature=feature)
+        return board_html(toast=f"task {task_id} is ready", args=request.form)
 
     @app.post("/tasks/<int:task_id>/merged")
     def mark_task_merged(task_id: int) -> str:

@@ -515,7 +515,7 @@ input.has-error:focus, textarea.has-error:focus, select.has-error:focus {
 
 /* Kanban board */
 .board { display:flex; gap:.9rem; align-items:flex-start; margin-top:.9rem; overflow-x:auto; }
-/* --sub (1-3) is how many sub-columns of cards the column shows: it takes that
+/* --sub (1-4, the board cols) is how many sub-columns of cards the column shows: it takes that
    share of the width and never less than that many card widths */
 .kcol { flex:var(--sub, 1) 1 calc(var(--sub, 1) * 12rem); min-width:calc(var(--sub, 1) * 12rem); background:var(--shade); border:1px solid var(--line); border-radius:8px; padding:.6rem; min-height:12rem; }
 .kcol h2 { font-size:.9rem; margin:.1rem .2rem .6rem; }
