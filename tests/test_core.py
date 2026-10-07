@@ -388,7 +388,7 @@ def test_docs_are_markdown(conn):
                  {"key": "handover", "content": '{"summary": "via the tool"}'})
     assert ac.docs_get(conn, "handover") == "## Summary\n\nvia the tool\n", "tool docs_set coerces"
     t7 = add_ready(conn, "context handover test", assigned_to="dev-agent")
-    ac.store_workflow_context(conn, "dev-agent", t7, '{"summary": "handover"}')
+    ac.set_handover(conn, "dev-agent", t7, '{"summary": "handover"}')
     doc_key = f"task_{t7}_dev-agent_context"
     stored = ac.docs_get(conn, doc_key)
     assert stored.startswith(f"# Task {t7}: dev-agent report"), "workflow context coerced"

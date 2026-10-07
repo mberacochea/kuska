@@ -20,7 +20,6 @@ from peewee import SqliteDatabase
 
 from .db import HUMAN, TASK_STATUSES
 from .markdown import as_markdown
-from .runtime import store_workflow_context
 from .store import (
     add_dependency,
     add_task,
@@ -38,6 +37,7 @@ from .store import (
     remove_task_tags,
     reply,
     send_message,
+    set_handover,
     set_run_result_message,
     transition,
     update_task,
@@ -107,7 +107,7 @@ def _reply_handler(db, agent, args):
 
 def _reply(db, agent, task_id, args, status):
     if args.get("handover"):
-        store_workflow_context(db, agent, task_id, args["handover"])
+        set_handover(db, agent, task_id, args["handover"])
     return {"id": reply(db, agent, task_id, args["payload"], status=status)}
 
 
@@ -123,7 +123,7 @@ def _operator_reply_handler(db, agent, args):
         return _reply(db, agent, args["task_id"], args, status)
     task_id = args["task_id"]
     if args.get("handover"):
-        store_workflow_context(db, agent, task_id, args["handover"])
+        set_handover(db, agent, task_id, args["handover"])
     msg_id = send_message(db, agent, HUMAN, task_id, "result", args["payload"])
     # a worktree task's "done" waits for its merge, as it does for an agent
     to = "ready_to_merge" if status == "done" and task["worktree_path"] else status

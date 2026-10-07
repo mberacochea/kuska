@@ -26,7 +26,7 @@ flowchart LR
       Codex["codex.py<br/>Codex SDK"]
       OAI["openai.py<br/>chat-completions loop"]
     end
-    Runtime["runtime.py<br/>compose_task_prompt · finish/fail_task · Monologue"]
+    Runtime["prompt.py · runtime.py<br/>compose_task_prompt · finish/fail_task · Monologue"]
     Guard["guardrails.py"]
     WT["worktree.py<br/>GitPython"]
     Supervisor["supervisor.py<br/>expire dead runs · detect merges"]
@@ -66,7 +66,8 @@ flowchart LR
 | `models.py`, `migrations/` | The schema. Models are bound to a database per call, so one process can hold several projects open; the binding is per thread. |
 | `store/` | Every read and write of project state, one module per kind of record. Returns plain dicts; nothing outside it touches the ORM (except `tables.py`, the read-only Data browser). |
 | `tools.py` | The agent tools, defined once. `toolset(cfg)` picks a caller's set by flavor; an operator (`kuska mcp --operator`) gets all of them, and an unconfigured name is refused. |
-| `runtime.py` | What goes into a run (`compose_task_prompt`) and what comes out of it (`finish_task`, `fail_task`, the `Monologue` event log). |
+| `prompt.py` | What goes into a run: `compose_task_prompt`, `estimate_token_count`. Reads the store only. |
+| `runtime.py` | What comes out of a run: `finish_task`, `fail_task`, `RunAborted`, `run_limits`, `estimate_cost`, the `Monologue` event log. |
 | `daemons/loop.py` | The loop every backend shares: claim a task, set up its worktree, run it, book the result and cost. |
 | `daemons/<backend>.py` | Only the model call: `make_runner()` returns `async run(prompt, workdir, mono) -> (text, usage)`. |
 | `worktree.py` | Every git operation: worktree per task, rebase, commit, merge detection. Branch commits and rebases are unsigned; `squash_merge` keeps the user's signing. |

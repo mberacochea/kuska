@@ -224,7 +224,7 @@ When building multi-agent workflows (planning → dev → review), agents pass a
 **Reports are Markdown, not JSON.** A doc is a document: the web UI renders it
 as Markdown and `export_markdown` folds it into `plan.md`, where a JSON dump
 reads as a wall of escaped quotes. `docs_set` (the agent tool) and
-`store_workflow_context` run their content through `markdown.as_markdown`,
+`set_handover` run their content through `markdown.as_markdown`,
 which rewrites a body that parses whole as JSON into headings and bullets and
 leaves prose untouched — a backstop, not a licence to emit JSON.
 
@@ -275,8 +275,8 @@ docs_set(db, f"task_{task_id}_dev-agent_context", dev_report)
 
 ### API Functions
 
-- `get_workflow_context(db, task, source_agent=None)` - Retrieve context from previous agent
-- `store_workflow_context(db, agent_name, task_id, context)` - Store context for next agent
+- `handover_sections(db, task)` - What the dependencies handed over, as prompt sections
+- `set_handover(db, agent, task_id, text)` - Store a handover report for the next agent
 
 Context is automatically included in agent prompts via `compose_task_prompt()`.
 

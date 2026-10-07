@@ -511,7 +511,7 @@ def cmd_worktree_prune(args: argparse.Namespace) -> None:
 
 def squash_message(db, task: dict) -> str:
     """Commit message for a squash merge: title, then the handover (else the
-    last result, as runtime.get_workflow_context does), then the trailer
+    last result, as store.handover_sections does), then the trailer
     that merge detection looks for."""
     subject = " ".join(task["title"].split())[:72]
     agent = task.get("assigned_to")

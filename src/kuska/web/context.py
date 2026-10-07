@@ -14,6 +14,7 @@ from werkzeug.datastructures import MultiDict
 from .. import eventfmt, worktree
 from .. import tables as tbl
 from ..db import EVENT_KINDS, TASK_STATUSES, connect, init_db
+from ..eventfmt import one_line
 from ..export import _fmt_ts
 from ..markdown import render as md
 from ..project import (
@@ -24,7 +25,6 @@ from ..project import (
     registry_load,
     sync_agents_from_config,
 )
-from ..runtime import one_line
 from ..store import (
     blocking_map,
     docs_list,

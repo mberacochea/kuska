@@ -53,7 +53,8 @@ src/kuska/
                  # record (agents, tasks, deps, messages, events, docs, stats, search)
   tables.py      # per-model presentation for the read-only Data browser
   project.py     # .agents/ layout, prompts, config.toml, project registry
-  runtime.py     # prompt composition, turn accounting, the agent monologue
+  prompt.py      # prompt composition for a fresh invocation
+  runtime.py     # run close-out, limits, the agent monologue
   markdown.py    # rendering agent prose, with embedded HTML escaped
   tools.py       # the shared agent tools, defined once; who gets which is toolset()
   guardrails.py  # refuse rm -rf, git reset --hard, sudo, etc. before they run

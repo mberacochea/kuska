@@ -37,6 +37,8 @@ from .docs import (
     docs_list,
     docs_set,
     docs_unlink,
+    handover_sections,
+    set_handover,
 )
 from .events import (
     get_event,
@@ -143,6 +145,8 @@ __all__ = [
     "docs_list",
     "docs_set",
     "docs_unlink",
+    "handover_sections",
+    "set_handover",
     "end_run",
     "ensure_feature",
     "filter_tasks",

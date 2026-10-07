@@ -1,7 +1,7 @@
 """Helpers shared by the per-backend daemons.
 
-The state-tracking half of running an agent: what goes into a fresh
-invocation's prompt, and what comes back out of it into the ledger."""
+The state-tracking half of running an agent: what comes back out of an
+invocation into the ledger (the prompt going in is built by prompt.py)."""
 
 from __future__ import annotations
 
@@ -12,218 +12,17 @@ import uuid
 from peewee import SqliteDatabase
 
 from .db import HUMAN
-from .eventfmt import (  # noqa: F401 - GLYPHS/TERMINAL_WIDTH/one_line re-exported for callers that reach them via runtime
-    GLYPHS,
-    TERMINAL_WIDTH,
-    glyph,
-    one_line,
-    summarize,
-)
-from .markdown import as_markdown
+from .eventfmt import glyph, summarize
 from .store import (
     check_cost_anomaly,
-    docs_get,
-    docs_set,
-    get_inbox,
     get_run,
     get_task,
     log_event,
     reply,
     send_message,
-    task_dependencies,
-    task_messages,
     transition,
 )
 from .store.lifecycle import InvalidTransition
-
-
-def estimate_token_count(text: str) -> int:
-    """Estimate token count from text using a simple heuristic.
-
-    Uses a rough approximation: ~1 token per 4 characters for English text.
-    This is a conservative estimate for most LLMs. For precise counting,
-    use the tokenizer of the specific model.
-
-    Args:
-        text: Text to estimate token count for.
-
-    Returns:
-        int: Estimated number of tokens.
-
-    Examples:
-        >>> estimate_token_count("hello world")
-        3
-        >>> estimate_token_count("a" * 400)
-        100
-    """
-    return max(1, len(text) // 4)
-
-
-def get_workflow_context(
-    db: SqliteDatabase,
-    task: dict,
-    source_agent: str | None = None,
-) -> str:
-    """What the tasks this one depends on handed over, as prompt sections.
-
-    For each dependency: the handover report its agent left (`reply`'s
-    `handover`, stored by store_workflow_context), or else that task's final
-    result - so a handoff never hinges on the agent having remembered to
-    write one. Every dependency contributes, not just the latest.
-
-    With `source_agent`, only that agent's report on this task itself.
-    """
-    if source_agent:
-        content = docs_get(db, f"task_{task['id']}_{source_agent}_context")
-        return f"## Context from {source_agent}\n\n{content}\n" if content else ""
-
-    sections = []
-    for dep in task_dependencies(db, task["id"]):
-        agent = dep.get("assigned_to")
-        content = docs_get(db, f"task_{dep['id']}_{agent}_context") if agent else None
-        if not content:
-            results = [m for m in task_messages(db, dep["id"]) if m["msg_type"] == "result" and m["payload"]]
-            content = results[-1]["payload"] if results else None
-        if content:
-            sections.append(f"## Context from {agent or 'a human'} (task {dep['id']}: {dep['title']})\n\n{content}\n")
-    return "\n".join(sections)
-
-
-def store_workflow_context(
-    db: SqliteDatabase,
-    agent_name: str,
-    task_id: int,
-    context: str,
-) -> None:
-    """Store a Markdown handover report for the next agent in the workflow.
-
-    Called when an agent completes with status="needs_approval" to pass
-    context forward to dependent tasks. This avoids token waste by letting
-    the next agent skip re-reading message history.
-
-    Context key format: task_{task_id}_{agent_name}_context
-    This allows multiple agents to store context for a single task.
-
-    The report is a document: the web UI renders it as Markdown and
-    `export_markdown` folds it into plan.md. A model that hands over a JSON
-    dump anyway gets it rewritten into sections by `as_markdown`.
-
-    Args:
-        db: SqliteDatabase instance for this project.
-        agent_name: Name of the agent storing context.
-        task_id: Associated task ID.
-        context: The handover report, in Markdown.
-
-    Examples:
-        >>> report = "## Summary\\n\\nSplit the cache token columns.\\n"
-        >>> store_workflow_context(db, "planning-agent", task_id, report)
-    """
-    doc_key = f"task_{task_id}_{agent_name}_context"
-    title = f"Task {task_id}: {agent_name} report"
-    docs_set(db, doc_key, as_markdown(context, title=title), updated_by=agent_name, task_id=task_id)
-
-
-def compose_task_prompt(
-    db: SqliteDatabase,
-    agent_name: str,
-    task: dict,
-    limit_history: bool = True,
-) -> tuple[str, list[int]]:
-    """Compose the prompt text for an agent invocation: task, context, and thread.
-
-    Each agent invocation starts with a blank slate, so all context must be
-    bundled into the initial prompt:
-    - The task title and description
-    - Task dependencies (what this task waits for)
-    - What each dependency handed over (see get_workflow_context) - including
-      the answer, when the dependency is an answer task this one asked for
-    - Message thread history (earlier attempts, questions, answers)
-    - Unread messages for this agent
-
-    Message history summarization (by default):
-    - Keeps the last 5 messages in full detail
-    - Summarizes older messages into a "Prior context" section
-    - Summary format: [sender]: [msg_type] - [payload_preview]
-
-    This prompt is small - a few hundred tokens - and is not where an
-    invocation's cost lives. What costs money is the agentic loop that follows:
-    every tool round-trip re-sends the whole conversation, so a large tool
-    result is paid for once per remaining round. Optimize there, not here.
-
-    Args:
-        db: SqliteDatabase instance for this project.
-        agent_name: Name of the agent being invoked.
-        task: Task dict (must include 'id', 'title', and optional 'description').
-        limit_history: If True (default), summarize old messages and keep last 5 in full.
-                      Set to False for full history.
-
-    Returns:
-        tuple[str, list[int]]: A tuple of (prompt_text, inbox_message_ids).
-            - prompt_text: Formatted prompt text, ready to prepend to the agent's input.
-            - inbox_message_ids: List of message IDs that were fetched from the inbox
-                                (should be marked as read after a successful run).
-
-    Examples:
-        >>> prompt, msg_ids = compose_task_prompt(db, "dev-agent", task)
-        >>> # Returns markdown like:
-        >>> # # Task 42: Fix bug in parser
-        >>> # Task description here...
-        >>> # ## This task depends on...
-        >>> # ## Context from planning-agent (task 41: Plan the parser)
-        >>> # ## Earlier on this task
-        >>> # ### Prior context (summarized)
-        >>> # - agent-1: result - Successfully implemented feature X...
-        >>> # ### Recent messages (last 5)
-        >>> # **agent-2 -> recipient** (question): ...
-    """
-    parts = [f"# Task {task['id']}: {task['title']}", ""]
-    if task.get("description"):
-        parts += [task["description"], ""]
-
-    deps = task_dependencies(db, task["id"])
-    if deps:
-        parts += ["## This task depends on", ""]
-        parts += [f"- task {d['id']} ({d['status']}): {d['title']}" for d in deps]
-        parts += [""]
-
-    # Include workflow context from previous agent if available
-    workflow_context = get_workflow_context(db, task)
-    if workflow_context:
-        parts += [workflow_context, ""]
-
-    # leave them unread for now: the daemon marks them read only once a run has
-    # succeeded, so a run that fails cannot swallow a message it never acted on
-    inbox = get_inbox(db, agent_name, mark_read=False, for_task=task["id"])
-    inbox_message_ids = [m["id"] for m in inbox]
-    all_history = [
-        m for m in task_messages(db, task["id"]) if m["id"] not in {i["id"] for i in inbox}
-    ]
-
-    if all_history:
-        parts += ["## Earlier on this task", ""]
-
-        if limit_history and len(all_history) > 5:
-            # older messages as one-line summaries, recent ones in full
-            parts += ["### Prior context (summarized)", ""]
-            for m in all_history[:-5]:
-                preview = " ".join(((m["payload"] or "(no content)")[:100]).split())
-                parts += [f"- **{m['sender']}**: {m['msg_type']} - {preview}"]
-            parts += ["", "### Recent messages (last 5)", ""]
-            recent = all_history[-5:]
-        else:
-            recent = all_history
-
-        for m in recent:
-            parts += [f"**{m['sender']} -> {m['recipient']}** ({m['msg_type']}):", m["payload"] or "", ""]
-
-        parts += [""]
-
-    if inbox:
-        parts += ["## New messages for you", ""]
-        for m in inbox:
-            parts += [f"**{m['sender']}** ({m['msg_type']}):", m["payload"] or "", ""]
-
-    return "\n".join(parts), inbox_message_ids
 
 
 def estimate_cost(cfg: dict, input_tokens: int, output_tokens: int) -> float:
@@ -358,14 +157,6 @@ def finish_task(
 # DB. Both daemons funnel their backend's stream through this, so the terminal
 # format and the audit trail are the same for every backend.
 # --------------------------------------------------------------------------
-
-# GLYPHS, TERMINAL_WIDTH and one_line() now live in eventfmt.py - that module
-# owns "how an event reads" for all three surfaces (terminal, web, export),
-# and this one needs eventfmt.summarize() below, so the shared primitives had
-# to move rather than the two modules importing each other. Re-exported here
-# (imported above) since callers - web.py, tests, __init__.py - reach them as
-# `runtime.GLYPHS` / `runtime.one_line`.
-
 
 class Monologue:
     """One agent invocation's narration - the thinking, tool calls, and results.

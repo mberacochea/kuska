@@ -5,8 +5,11 @@ from __future__ import annotations
 from peewee import SqliteDatabase
 
 from ..db import HUMAN, now
+from ..markdown import as_markdown
 from ..models import Doc, DocTask, row, rows
 from .common import bound
+from .deps import task_dependencies
+from .messages import task_messages
 
 _UNSET = object()  # docs_set's task_id sentinel: "leave the link as it is"
 
@@ -137,3 +140,38 @@ def docs_list(db: SqliteDatabase, task_id: int | None = None) -> list[dict]:
     for d in result:
         d["task_ids"] = links.get(d["key"], [])
     return result
+
+
+@bound
+def set_handover(db: SqliteDatabase, agent: str, task_id: int, text: str) -> None:
+    """Store an agent's Markdown handover report on a task, for what follows it.
+
+    Key format: task_{task_id}_{agent}_context, so several agents can each
+    leave one on the same task. The report is a document: the web UI renders
+    it as Markdown and `export_markdown` folds it into plan.md. A model that
+    hands over a JSON dump anyway gets it rewritten into sections by
+    `as_markdown`.
+    """
+    title = f"Task {task_id}: {agent} report"
+    docs_set(db, f"task_{task_id}_{agent}_context", as_markdown(text, title=title), updated_by=agent, task_id=task_id)
+
+
+@bound
+def handover_sections(db: SqliteDatabase, task: dict) -> str:
+    """What the tasks this one depends on handed over, as prompt sections.
+
+    For each dependency: the handover report its agent left (see
+    set_handover), or else that task's final result - so a handoff never
+    hinges on the agent having remembered to write one. Every dependency
+    contributes, not just the latest.
+    """
+    sections = []
+    for dep in task_dependencies(db, task["id"]):
+        agent = dep.get("assigned_to")
+        content = docs_get(db, f"task_{dep['id']}_{agent}_context") if agent else None
+        if not content:
+            results = [m for m in task_messages(db, dep["id"]) if m["msg_type"] == "result" and m["payload"]]
+            content = results[-1]["payload"] if results else None
+        if content:
+            sections.append(f"## Context from {agent or 'a human'} (task {dep['id']}: {dep['title']})\n\n{content}\n")
+    return "\n".join(sections)

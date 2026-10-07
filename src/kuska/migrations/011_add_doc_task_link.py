@@ -14,7 +14,7 @@ column added this way (existing rows get NULL, which foreign key
 enforcement always accepts).
 
 Existing docs already encode a task in their key by convention
-("task_<id>_<agent>_context" - see runtime.py's store_workflow_context), so
+("task_<id>_<agent>_context" - see store/docs.py's set_handover), so
 those rows are backfilled from that pattern rather than left unlinked.
 """
 from peewee import *
