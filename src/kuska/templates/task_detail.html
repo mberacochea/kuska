@@ -21,7 +21,7 @@
     <div style="margin-top:.5rem; display:flex; gap:.5rem; flex-wrap:wrap">
       <button class="primary" hx-post="/tasks/{{ t.id }}/approve"
               hx-target="#task-detail" hx-swap="outerHTML">Approve (mark done)</button>
-      <button hx-post="/tasks/{{ t.id }}/send-back" hx-target="#task-detail" hx-swap="outerHTML">
+      <button hx-post="/tasks/{{ t.id }}/requeue" hx-target="#task-detail" hx-swap="outerHTML">
         Send back (re-queue)</button>
     </div>
   </div>
@@ -104,7 +104,7 @@
   {% else %}
     <div class="muted small">No messages yet.</div>
   {% endfor %}
-  <form class="row-form" hx-post="/tasks/{{ t.id }}/message" hx-target="#task-detail" hx-swap="outerHTML" style="display:block">
+  <form class="row-form" hx-post="/tasks/{{ t.id }}/messages" hx-target="#task-detail" hx-swap="outerHTML" style="display:block">
     {{ markdown_field("payload", "", "task-reply-" ~ t.id, "Reply", "Reply to the assigned agent. Markdown.", attrs="required") }}
     <button type="submit">Send</button>
   </form>

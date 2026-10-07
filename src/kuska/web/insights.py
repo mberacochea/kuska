@@ -35,7 +35,7 @@ def register(app, ctx) -> None:
         """GET /search - Display search page with results."""
         query = request.args.get("q", "").strip()
         page = request.args.get("page", 1, type=int)
-        tables_filter = request.args.getlist("tables[]")
+        tables_filter = request.args.getlist("table")
 
         # Validate page number
         page = max(page, 1)

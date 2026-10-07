@@ -3,7 +3,7 @@
 <h2>Agents</h2>
 {{ agent_rows|safe }}
 <form class="row-form" hx-post="/agents" hx-target="#agent-rows" hx-swap="outerHTML"
-      hx-on::after-request="this.reset()">
+      hx-on::after-request="if (event.detail.successful) this.reset()">
   <input type="text" name="name" placeholder="Agent name" aria-label="Agent name" required>
   <select name="backend" aria-label="Backend" required>
     <option value="">Select backend...</option>

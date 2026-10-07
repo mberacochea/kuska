@@ -2,7 +2,8 @@
 {% block body %}
 <h2>Docs <span class="muted">- shared project knowledge, read by agents through docs_get</span></h2>
 {{ docs_table|safe }}
-<form class="row-form" hx-post="/docs" hx-target="#docs" hx-swap="outerHTML">
+<form class="row-form" hx-post="/docs" hx-target="#docs" hx-swap="outerHTML"
+      hx-on::after-request="if (event.detail.successful) this.reset()">
   <input type="text" name="key" placeholder="Doc key (alphanumeric, -, _)" aria-label="Doc key" required>
   <button class="primary" type="submit">Create</button>
 </form>

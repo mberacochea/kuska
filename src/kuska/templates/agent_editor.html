@@ -25,14 +25,14 @@
   </div>
   <div style="display:flex; gap:.5rem; margin-top:.9rem">
     <button class="primary" type="submit">Save settings</button>
-    <button type="button" class="link" hx-post="/agents/{{ name }}/delete"
+    <button type="button" class="link" hx-delete="/agents/{{ name }}"
             hx-confirm="Remove {{ name }}? Its tasks become unassigned and its prompt file stays on disk.">
       remove agent</button>
   </div>
 </form>
 
 <h2>{{ name }} - prompt <span class="muted">(.agents/prompts/{{ name }}.md)</span></h2>
-<form hx-post="/agents/{{ name }}/context" hx-target="#toast" hx-swap="innerHTML">
+<form hx-post="/agents/{{ name }}/prompt" hx-target="#toast" hx-swap="innerHTML">
   {{ markdown_field("content", content, "agent-prompt-" ~ name, "Prompt", attrs='style="min-height:16rem"') }}
   <button class="primary" type="submit">Save prompt</button>
 </form>

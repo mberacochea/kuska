@@ -57,11 +57,11 @@
   <div class="search-pagination">
     <span class="muted small">Page {{ current_page }}</span>
     {% if current_page > 1 %}
-    <a href="/search?q={{ query|urlencode }}&page={{ current_page - 1 }}{% for t in tables_selected %}&tables[]={{ t }}{% endfor %}"
+    <a href="/search?q={{ query|urlencode }}&page={{ current_page - 1 }}{% for t in tables_selected %}&table={{ t }}{% endfor %}"
        class="link">← Previous</a>
     {% endif %}
     {% if results|length >= limit %}
-    <a href="/search?q={{ query|urlencode }}&page={{ current_page + 1 }}{% for t in tables_selected %}&tables[]={{ t }}{% endfor %}"
+    <a href="/search?q={{ query|urlencode }}&page={{ current_page + 1 }}{% for t in tables_selected %}&table={{ t }}{% endfor %}"
        class="link">Next →</a>
     {% endif %}
   </div>

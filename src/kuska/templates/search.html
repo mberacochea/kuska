@@ -19,7 +19,7 @@
       <div class="search-filter-checkboxes">
         {% for table in all_tables %}
         <label class="search-filter-label">
-          <input type="checkbox" name="tables[]" value="{{ table }}"
+          <input type="checkbox" name="table" value="{{ table }}"
                  {% if table in tables_selected %}checked{% endif %}
                  class="search-filter-checkbox">
           <span>

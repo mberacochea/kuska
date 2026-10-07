@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import parse_qsl, urlsplit
 
-from flask import render_template, request, session
+from flask import redirect, render_template, request, session
 from peewee import PeeweeException
 from werkzeug.datastructures import MultiDict
 
@@ -129,12 +130,14 @@ def register(app, ctx) -> None:
         return "description saved"
 
     @app.post("/switch")
-    def switch_project() -> str:
-        """POST /switch - Switch to a different project."""
+    def switch_project():
+        """POST /switch - Switch to a different project, then 303 back to the
+        section the user was on (first segment of the Referer path, else /)."""
         target = registry_load().get(request.form.get("project", ""))
         if target:
             session["project"] = str(Path(target).resolve())
-        return index()
+        section = urlsplit(request.referrer or "").path.strip("/").split("/")[0]
+        return redirect(f"/{section}", 303)
 
     @app.post("/export")
     def do_export() -> str:
@@ -144,6 +147,15 @@ def register(app, ctx) -> None:
         return f"exported {len(written)} files to {out}"
 
     # ========== ROUTES: Tasks ==========
+
+    def _current_view() -> MultiDict:
+        """The query string of the page that sent this htmx request.
+
+        The quick-add form sits outside the filters and shares the `feature`
+        field name with them, so including the filter form would mix the two;
+        HX-Current-URL carries exactly the filters the page is showing.
+        """
+        return MultiDict(parse_qsl(urlsplit(request.headers.get("HX-Current-URL", "")).query))
 
     @app.post("/tasks")
     def create_task() -> tuple[str, int]:
@@ -156,24 +168,24 @@ def register(app, ctx) -> None:
         # Validate title
         title_error = validate_task_title(title, db())
         if title_error:
-            return _bad_request(tasks_container(), "title", title_error)
+            return _bad_request(filtered_container(_current_view()), "title", title_error)
 
         # Validate description
         desc_error = validate_task_description(description)
         if desc_error:
-            return _bad_request(tasks_container(), "description", desc_error)
+            return _bad_request(filtered_container(_current_view()), "description", desc_error)
 
         # Validate assigned_to
         agent_error = validate_task_assigned_to(assigned_to, db())
         if agent_error:
-            return _bad_request(tasks_container(), "assigned_to", agent_error)
+            return _bad_request(filtered_container(_current_view()), "assigned_to", agent_error)
 
         try:
             add_task(db(), title, description, assigned_to, feature=feature)
         except (ValueError, PeeweeException) as exc:
-            return _bad_request(tasks_container(), "form", f"Failed to create task: {exc}")
+            return _bad_request(filtered_container(_current_view()), "form", f"Failed to create task: {exc}")
 
-        return tasks_container(), 200
+        return filtered_container(_current_view()), 200
 
     @app.post("/tasks/bulk")
     def bulk_move_tasks() -> str:
@@ -277,11 +289,6 @@ def register(app, ctx) -> None:
         """POST /tasks/<id>/approve - Approve a task (set status to done)."""
         return _event_panel(task_id, "approve", f"task {task_id} approved")
 
-    @app.post("/tasks/<int:task_id>/send-back")
-    def send_back_task(task_id: int) -> str:
-        """POST /tasks/<id>/send-back - Send a task back (ready, or todo if unassigned)."""
-        return _event_panel(task_id, "requeue", f"task {task_id} sent back")
-
     @app.post("/tasks/<int:task_id>/deps")
     def add_task_dependency(task_id: int) -> tuple[str, int]:
         """POST /tasks/<id>/deps - Add a task dependency."""
@@ -340,15 +347,15 @@ def register(app, ctx) -> None:
         task = get_task(db(), task_id)
         return task_panel(task) if task else ""
 
-    @app.post("/tasks/<int:task_id>/delete")
+    @app.delete("/tasks/<int:task_id>")
     def remove_task(task_id: int) -> str:
-        """POST /tasks/<id>/delete - Delete a task."""
+        """DELETE /tasks/<id> - Delete a task; the table comes back as the page showed it."""
         delete_task(db(), task_id)
-        return tasks_container()
+        return filtered_container(_current_view())
 
-    @app.post("/tasks/<int:task_id>/message")
+    @app.post("/tasks/<int:task_id>/messages")
     def task_message(task_id: int) -> str:
-        """POST /tasks/<id>/message - Reply on a task thread.
+        """POST /tasks/<id>/messages - Reply on a task thread.
 
         Reopens the task for its assigned agent if it was done/holding, so
         the reply doesn't just sit unread - see reply_to_task().
@@ -364,9 +371,13 @@ def register(app, ctx) -> None:
 
     @app.get("/tasks/<int:task_id>/row")
     def task_row(task_id: int) -> str:
-        """GET /tasks/<id>/row - Get a single task row for the table."""
+        """GET /tasks/<id>/row - Get a single task row for the table.
+
+        ?edit=tags returns it with the tags cell as an input (click-to-edit);
+        the plain row is what Escape and a saved edit swap back in.
+        """
         task = get_task(db(), task_id)
-        return render_row(task) if task else ""
+        return render_row(task, edit=request.args.get("edit")) if task else ""
 
     @app.get("/tasks/<int:task_id>")
     def task_page(task_id: int) -> tuple[str, int] | str:
@@ -545,15 +556,11 @@ def register(app, ctx) -> None:
 
     @app.get("/merge-queue")
     def merge_queue_page() -> str:
-        """GET /merge-queue - Display tasks ready to merge."""
+        """GET /merge-queue - Display tasks ready to merge; htmx (the poll) gets just the rows."""
         tasks_ready = list_tasks(db(), status="ready_to_merge")
+        if wants_fragment():
+            return merge_queue_rows(tasks_ready)
         return render_template("merge_queue.html", page="merge-queue", **_merge_queue_context(tasks_ready))
-
-    @app.get("/merge-queue/rows")
-    def merge_queue_rows_fragment() -> str:
-        """GET /merge-queue/rows - Return merge queue rows fragment for polling."""
-        tasks_ready = list_tasks(db(), status="ready_to_merge")
-        return merge_queue_rows(tasks_ready)
 
     @app.post("/tasks/<int:task_id>/prune")
     def prune_task_worktree(task_id: int) -> str:

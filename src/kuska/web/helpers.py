@@ -114,7 +114,7 @@ def _activity_qs(agent: str, kind: str, show_system: bool) -> str:
     Rendered onto the tail's own `hx-get` so its 3s self-poll keeps re-asking
     with the same filters instead of silently resetting them - and, when no
     filter is set, this returns "" so the attribute stays the bare
-    `/agents/activity` the tests (and a plain first load) expect.
+    `/agents` the tests (and a plain first load) expect.
     """
     params = [(k, v) for k, v in (("agent", agent), ("kind", kind)) if v]
     if show_system:
@@ -136,19 +136,18 @@ MAX_DOC_CONTENT_LEN = 100000
 MAX_AGENT_ROLE_LEN = 500
 
 
-def _error_response(field: str, message: str) -> dict[str, Any]:
-    """Return a structured error response for form validation."""
-    return {"error": True, "field": field, "message": message}
-
-
-def _field_error_html(field: str, message: str) -> str:
-    """Return HTML for a form field error."""
-    return f'<div class="field-error" role="alert" aria-live="polite" data-field="{escape(field)}">{escape(message)}</div>'
+def toast_html(message: str) -> str:
+    """Out-of-band swap div that shows `message` in the page's #toast."""
+    return f'<div id="toast" hx-swap-oob="true">{escape(message)}</div>'
 
 
 def _bad_request(fragment: str, field: str, message: str):
-    """422 response: the fragment re-rendered as-is, plus a field error for htmx to display."""
-    return make_response(fragment + _field_error_html(field, message), 422)
+    """422 response: the fragment re-rendered as-is, plus the message as a toast.
+
+    htmx only swaps 422 because layout.html's htmx-config says so; any other
+    4xx stays an error. `field` names the offending input for callers and tests.
+    """
+    return make_response(fragment + toast_html(message), 422)
 
 
 def wants_fragment() -> bool:

@@ -39,7 +39,17 @@ def register(app, ctx) -> None:
 
     @app.get("/agents")
     def agents_page() -> str:
-        """GET /agents - Display the agents page with status and activity."""
+        """GET /agents - Display the agents page with status and activity.
+
+        Two fragments poll this URL; HX-Target says which one is wanted, so no
+        separate /rows or /activity path can shadow an agent of that name.
+        """
+        if wants_fragment():
+            target = request.headers.get("HX-Target")
+            if target == "agent-rows":
+                return agent_rows()
+            if target == "activity":
+                return activity_log()
         return render_template(
             "agents.html",
             page="agents",
@@ -63,16 +73,6 @@ def register(app, ctx) -> None:
         if wants_fragment():
             return panel
         return render_template("agent.html", page="agents", name=name, agent_panel=panel)
-
-    @app.get("/agents/rows")
-    def agents_rows() -> str:
-        """GET /agents/rows - Get the agent list rows fragment."""
-        return agent_rows()
-
-    @app.get("/agents/activity")
-    def agents_activity() -> str:
-        """GET /agents/activity - Get the activity log fragment (poll target and filter-change target)."""
-        return activity_log()
 
     @app.post("/agents")
     def create_agent() -> tuple[str, int]:
@@ -151,9 +151,9 @@ def register(app, ctx) -> None:
         sync_agents_from_config(db(), project())
         return editor(name) + _toast(f"{name} settings saved - restart its daemon to pick them up"), 200
 
-    @app.post("/agents/<name>/delete")
+    @app.delete("/agents/<name>")
     def remove_agent(name: str):
-        """POST /agents/<name>/delete - Delete an agent, unassign its tasks, and
+        """DELETE /agents/<name> - Delete an agent, unassign its tasks, and
         redirect back to the agents list (its own page no longer exists)."""
         remove_agent_config(project(), name)
         delete_agent(db(), name)
@@ -161,9 +161,9 @@ def register(app, ctx) -> None:
         resp.headers["HX-Redirect"] = "/agents"
         return resp
 
-    @app.post("/agents/<name>/context")
+    @app.post("/agents/<name>/prompt")
     def set_context(name: str) -> str:
-        """POST /agents/<name>/context - Save an agent's prompt content."""
+        """POST /agents/<name>/prompt - Save an agent's prompt content."""
         write_prompt(project(), name, request.form.get("content", ""))
         return f"{name} prompt saved"
 

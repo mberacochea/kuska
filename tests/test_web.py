@@ -5,6 +5,8 @@ tasks, agents and docs earlier ones created.
 """
 
 
+import json
+import re
 import subprocess
 
 import pytest
@@ -77,7 +79,7 @@ def test_tasks(c, conn):
     c.post("/tasks/1/requeue")
     assert ac.get_task(conn, 1)["status"] == "ready", "requeued"
 
-    thread = c.post("/tasks/1/message", data={"payload": "check the edge case"}).get_data(as_text=True)
+    thread = c.post("/tasks/1/messages", data={"payload": "check the edge case"}).get_data(as_text=True)
     assert "check the edge case" in thread, "human message posted"
     assert ac.get_inbox(conn, "dev-agent")[0]["payload"] == "check the edge case", "message is routed to assignee"
 
@@ -138,9 +140,9 @@ def test_approval_and_dependencies(c, conn):
     assert "Waiting for your approval." in detail, "approval prompt shown"
     assert "Approve (mark done)" in detail and "Send back (re-queue)" in detail, "both resolutions offered"
 
-    sent_back = c.post(f"/tasks/{first}/send-back").get_data(as_text=True)
+    sent_back = c.post(f"/tasks/{first}/requeue").get_data(as_text=True)
     assert ac.get_task(conn, first)["status"] == "ready", "send back re-queues"
-    assert "sent back" in sent_back, "said so"
+    assert "re-queued" in sent_back, "said so"
     assert ac.claim_task(conn, "dev-agent")["id"] == first, "dependent still waits"
     ac.update_task_status(conn, first, "needs_approval")
     c.post(f"/tasks/{first}/approve")
@@ -149,28 +151,28 @@ def test_approval_and_dependencies(c, conn):
     c.post(f"/tasks/{second}/deps/{first}/delete")
     assert ac.task_dependencies(conn, second) == [], "dependency removed"
     for tid in (first, second):
-        c.post(f"/tasks/{tid}/delete")
+        c.delete(f"/tasks/{tid}")
 
 
 def test_requeue_send_back_and_reply_on_tasks(c, conn):
     for st in ("done", "blocked", "needs_approval", "ready_to_merge"):
         rid = ac.add_task(conn, f"reply {st}", "", "dev-agent")
         ac.update_task_status(conn, rid, st)
-        c.post(f"/tasks/{rid}/message", data={"payload": "more please"})
+        c.post(f"/tasks/{rid}/messages", data={"payload": "more please"})
         assert ac.get_task(conn, rid)["status"] == "ready", f"web reply reopens {st}"
-        c.post(f"/tasks/{rid}/delete")
+        c.delete(f"/tasks/{rid}")
     for st in ("todo", "ready", "in_progress"):
         rid = ac.add_task(conn, f"reply {st}", "", "dev-agent")
         ac.update_task_status(conn, rid, st)
-        c.post(f"/tasks/{rid}/message", data={"payload": "fyi"})
+        c.post(f"/tasks/{rid}/messages", data={"payload": "fyi"})
         assert ac.get_task(conn, rid)["status"] == st, f"web reply leaves {st} alone"
-        c.post(f"/tasks/{rid}/delete")
-    for action in ("requeue", "send-back"):
+        c.delete(f"/tasks/{rid}")
+    for action in ("requeue",):
         uid = ac.add_task(conn, f"unassigned {action}", "")
         ac.update_task_status(conn, uid, "blocked")
         c.post(f"/tasks/{uid}/{action}")
         assert ac.get_task(conn, uid)["status"] == "todo", f"{action} of unassigned task gives todo"
-        c.post(f"/tasks/{uid}/delete")
+        c.delete(f"/tasks/{uid}")
 
 
 def test_markdown_rendering(c, conn):
@@ -203,9 +205,9 @@ def test_agents_page(c):
     assert "dev-agent" in html and "claude" in html, "agent listed"
     assert "claude-opus-5" in html, "model column"
     assert "$0.0100" in html, "spend shown"
-    assert 'hx-get="/agents/rows"' in html, "polls itself"
-    rows = c.get("/agents/rows").get_data(as_text=True)
-    assert "<table>" in rows, "rows fragment"
+    assert 'hx-get="/agents"' in html, "polls itself"
+    rows = c.get("/agents", headers={**HX, "HX-Target": "agent-rows"}).get_data(as_text=True)
+    assert "<table>" in rows and "<h2>Agents</h2>" not in rows, "rows fragment"
     assert '<a href="/agents/dev-agent">' in rows, "agent name links to its own page"
     assert 'id="agent-editor"' not in html, "list page has no embedded editor"
 
@@ -287,7 +289,7 @@ def test_adding_and_removing_agents(c, conn, project):
     assert "price_in_per_mtok must be a valid number" in bad_price.get_data(as_text=True), "bad price explained"
 
     t_id = ac.add_task(conn, "for bench", assigned_to="bench-1")
-    removed = c.post("/agents/bench-1/delete")
+    removed = c.delete("/agents/bench-1")
     assert "bench-1" not in ac.load_config(project)["agents"], "gone from config"
     assert ac.get_agent(conn, "bench-1") is None, "gone from db"
     assert ac.get_task(conn, t_id)["assigned_to"] is None, "its task survives, unassigned"
@@ -295,7 +297,7 @@ def test_adding_and_removing_agents(c, conn, project):
     assert c.get("/agents/bench-1").status_code == 404, "its own page is gone"
     assert ac.prompt_path(project, "bench-1").exists(), "prompt file kept"
 
-    c.post("/agents/dev-agent/context", data={"content": "be terse"})
+    c.post("/agents/dev-agent/prompt", data={"content": "be terse"})
     assert ac.prompt_path(project, "dev-agent").read_text() == "be terse", "prompt written to disk"
     assert "be terse" in c.get("/agents/dev-agent", headers=HX).get_data(as_text=True), "editor reloads it"
 
@@ -305,8 +307,8 @@ def test_activity(c, conn):
     mono = ac.Monologue(conn, "dev-agent", new_task_id, quiet=True)
     mono.record("prompt", f"Task {new_task_id}: Ship it")
     mono.tool_call("Edit", {"file_path": "src/app.py", "old_string": "a" * 500})
-    tail = c.get("/agents/activity").get_data(as_text=True)
-    assert 'hx-get="/agents/activity"' in tail, "tail polls itself"
+    tail = c.get("/agents", headers={**HX, "HX-Target": "activity"}).get_data(as_text=True)
+    assert 'hx-get="/agents"' in tail, "tail polls itself"
     assert "Edit" in tail and "dev-agent" in tail, "tail shows the tool"
     assert "a" * 400 not in tail, "tail truncates"
     # Regression: the poll target's own response used to include the filter
@@ -325,7 +327,7 @@ def test_activity(c, conn):
     stream = c.get(f"/tasks/{new_task_id}", headers=HX).get_data(as_text=True)
     assert "line 0" in stream and "line 49" in stream and "line 50" not in stream, "task view previews body inline"
     assert "70 more lines" in stream, "task view offers 'N more lines'"
-    agents_stream = c.get("/agents/activity").get_data(as_text=True)
+    agents_stream = c.get("/agents", headers={**HX, "HX-Target": "activity"}).get_data(as_text=True)
     assert "line 49" in agents_stream and "70 more lines" in agents_stream, "agents tail previews body inline"
     assert ".ev.expanded" in agents_stream and "details[open]" not in agents_stream, "poll pauses on expanded events"
     assert 'class="ev-more ev-less"' in agents_stream and "classList.remove('expanded')" in agents_stream, "expanded events can be collapsed to resume polling"
@@ -349,9 +351,9 @@ def test_live_polling_features_replaced_with_reload_button(c):
     assert 'aria-label="Reload task table"' in table_html, "reload button has aria label"
     assert "Reload" in table_html, "reload button text correct"
     # Test individual fragment endpoints
-    rows = c.get("/agents/rows").get_data(as_text=True)
+    rows = c.get("/agents", headers={**HX, "HX-Target": "agent-rows"}).get_data(as_text=True)
     assert "<table>" in rows, "agents rows fragment renders"
-    activity = c.get("/agents/activity").get_data(as_text=True)
+    activity = c.get("/agents", headers={**HX, "HX-Target": "activity"}).get_data(as_text=True)
     assert "activity" in activity.lower() or "hx-get" in activity, "activity fragment renders"
     # An htmx request to /tasks (as the filter/sort/reload controls issue) gets
     # just the tasks-container fragment, not the full page.
@@ -410,7 +412,7 @@ def test_faceted_filters(c, conn):
     assert "tick some tasks" in c.post("/tasks/bulk", data={"to_status": "todo"}).get_data(as_text=True), "bulk with nothing ticked says so"
     assert "1 moved to todo" in c.post("/tasks/bulk", data={"ids": ["x", str(fa)], "to_status": "todo"}).get_data(as_text=True), "bulk ignores junk ids"
     for tid in (fa, fb):
-        c.post(f"/tasks/{tid}/delete")
+        c.delete(f"/tasks/{tid}")
 
 
 def test_docs_page(c, conn):
@@ -570,7 +572,7 @@ def test_export_delete(c, conn, project):
     msg = c.post("/export").get_data(as_text=True)
     assert "exported" in msg and (project / ".agents-export" / "tasks.md").exists(), "export ran"
     for task in ac.list_tasks(conn):
-        last = c.post(f"/tasks/{task['id']}/delete").get_data(as_text=True)
+        last = c.delete(f"/tasks/{task['id']}").get_data(as_text=True)
     assert "No tasks yet." in last, "delete empties table"
     assert ac.list_tasks(conn) == [], "gone from db"
     assert c.get("/tasks/99").status_code == 404, "missing task 404s"
@@ -697,7 +699,7 @@ def test_sessions_pick_their_own_project(two_projects):
     app = ac.create_app(two_projects["alpha"])
     app.config.update(TESTING=True)
     c1, c2 = app.test_client(), app.test_client()
-    assert c1.post("/switch", data={"project": "beta"}).status_code == 200
+    assert c1.post("/switch", data={"project": "beta"}).status_code == 303
     assert "beta task" in c1.get("/tasks").get_data(as_text=True), "client 1 sees B"
     html2 = c2.get("/tasks").get_data(as_text=True)
     assert "alpha task" in html2 and "beta task" not in html2, "client 2 still sees A"
@@ -714,7 +716,7 @@ def test_threaded_requests_with_switching(two_projects):
         try:
             cl = app.test_client()
             for _ in range(20):
-                for url in ("/tasks", "/agents/rows"):
+                for url in ("/tasks", "/agents"):
                     r = cl.get(url)
                     if r.status_code >= 500:
                         failures.append((url, r.status_code))
@@ -784,3 +786,76 @@ def test_markdown_fields_render_tabs(c, conn):
             assert i in body, f"{url} renders the {i} tab"
         assert 'form="_none"' in body and "Write" in body and "View" in body
 
+
+
+def test_htmx_config_swaps_422_only(c):
+    html = c.get("/").get_data(as_text=True)
+    meta = re.search(r"<meta name=\"htmx-config\" content='([^']+)'>", html)
+    assert meta, "htmx-config meta present"
+    handling = json.loads(meta.group(1))["responseHandling"]
+    rule = next(r for r in handling if r["code"] == "422")
+    assert rule["swap"] and not rule["error"], "422 is swapped"
+    assert handling.index(rule) < next(i for i, r in enumerate(handling) if r["code"] == "[45].."), "422 wins over other 4xx"
+    assert "afterSwap" not in html and "editTags" not in html, "layout carries no custom error/tag JS"
+
+
+def test_refused_create_shows_toast(c):
+    c.post("/tasks", data={"title": "Dup title"})
+    r = c.post("/tasks", data={"title": "Dup title"}, headers=HX)
+    body = r.get_data(as_text=True)
+    assert r.status_code == 422, "duplicate refused"
+    assert 'id="toast" hx-swap-oob="true"' in body and "already exists" in body.lower(), "message shipped as a toast"
+    r = c.post("/agents", data={"name": "bad name!", "backend": "claude", "model": "m", "role": "r"}, headers=HX)
+    assert r.status_code == 422 and 'id="toast"' in r.get_data(as_text=True), "agent errors use the same toast"
+
+
+def test_quick_add_keeps_filters(c):
+    c.post("/tasks", data={"title": "Seen alpha"})
+    c.post("/tasks", data={"title": "Other beta"})
+    r = c.post("/tasks", data={"title": "Seen gamma"}, headers={**HX, "HX-Current-URL": "http://x/tasks?search=Seen"})
+    html = r.get_data(as_text=True)
+    assert "Seen gamma" in html and "Seen alpha" in html and "Other beta" not in html, "table stays filtered"
+    assert 'id="task-filters-container"' in html and 'value="Seen"' in html, "filter form comes back with the search"
+
+
+def test_agent_named_rows_has_its_own_page(c):
+    r = c.post("/agents", data={"name": "rows", "backend": "claude", "model": "m", "role": "r"}, headers=HX)
+    assert r.status_code == 200, "agent named rows is allowed"
+    page = c.get("/agents/rows")
+    assert page.status_code == 200 and "rows" in page.get_data(as_text=True), "its own page, not the rows fragment"
+    c.post("/agents", data={"name": "activity", "backend": "claude", "model": "m", "role": "r"}, headers=HX)
+    assert c.get("/agents/activity").status_code == 200, "same for activity"
+
+
+def test_tag_edit_is_click_to_edit(c, conn):
+    tid = ac.add_task(conn, "tag me", "")
+    plain = c.get(f"/tasks/{tid}/row").get_data(as_text=True)
+    assert f'hx-get="/tasks/{tid}/row?edit=tags"' in plain and "onclick" not in plain, "edit button is htmx"
+    edit = c.get(f"/tasks/{tid}/row?edit=tags").get_data(as_text=True)
+    assert 'name="tags"' in edit and "Escape" in edit, "input with Escape handler"
+    assert f'hx-get="/tasks/{tid}/row"' in edit, "Escape fetches the plain row"
+    c.post(f"/tasks/{tid}", data={"tags": "a,b"})
+    assert ac.get_task(conn, tid)["tags"] == "a,b", "tags saved"
+
+
+def test_switch_redirects_to_section(two_projects):
+    app = ac.create_app(two_projects["alpha"])
+    app.config.update(TESTING=True)
+    cl = app.test_client()
+    r = cl.post("/switch", data={"project": "beta"}, headers={"Referer": "http://localhost/tasks/42"})
+    assert r.status_code == 303 and r.headers["Location"] == "/tasks", "back to the section"
+    r = cl.post("/switch", data={"project": "alpha"})
+    assert r.status_code == 303 and r.headers["Location"] == "/", "falls back to /"
+
+
+def test_search_table_param(c):
+    html = c.get("/search?q=x&table=docs").get_data(as_text=True)
+    assert 'name="table"' in html and "tables[]" not in html, "search filters use table="
+
+
+def test_merge_queue_polls_its_own_url(c):
+    page = c.get("/merge-queue").get_data(as_text=True)
+    assert 'hx-get="/merge-queue"' in page and "<header>" in page, "full page polls /merge-queue"
+    frag = c.get("/merge-queue", headers=HX).get_data(as_text=True)
+    assert "<header>" not in frag and 'id="merge-queue"' in frag, "htmx gets only the rows"
+    assert c.get("/merge-queue/rows").status_code == 404, "old route is gone"

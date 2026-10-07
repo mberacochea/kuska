@@ -7,7 +7,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from flask import g, render_template, request, session
-from markupsafe import escape
 from peewee import SqliteDatabase
 from werkzeug.datastructures import MultiDict
 
@@ -41,7 +40,7 @@ from ..store import (
     task_messages,
     task_reviews,
 )
-from .helpers import _activity_qs, _ago, _clock, _group_runs, task_filters
+from .helpers import _activity_qs, _ago, _clock, _group_runs, task_filters, toast_html
 
 _initialised: set[str] = set()
 _init_lock = threading.Lock()
@@ -96,7 +95,7 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
 
     def _toast(message: str) -> str:
         """Return an out-of-band swap div for toast messages to display."""
-        return f'<div id="toast" hx-swap-oob="true">{escape(message)}</div>'
+        return toast_html(message)
 
     def rows_with_toast(message: str) -> str:
         """Swap agent rows table and display a toast message."""
@@ -104,11 +103,14 @@ def make_context(app, project_dir: Path) -> SimpleNamespace:
 
     # ========== Helper: Task Rendering ==========
 
-    def render_row(task: dict) -> str:
-        """Render a single task row - title links out to its own /tasks/<id> page."""
+    def render_row(task: dict, edit: str | None = None) -> str:
+        """Render a single task row - title links out to its own /tasks/<id> page.
+
+        `edit="tags"` swaps the tags cell for its input."""
         return render_template(
             "task_row.html",
             t=task,
+            edit=edit,
             agents=list_agents(db()),
             statuses=TASK_STATUSES,
             blocking=blocking_map(db()),

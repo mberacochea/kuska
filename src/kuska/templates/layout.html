@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{ project_name }} - kuska</title>
+{# htmx drops 4xx bodies by default. Swap 422 (a refused form; its toast carries the message) and keep every other 4xx/5xx an error. #}
+<meta name="htmx-config" content='{"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"422","swap":true,"error":false},{"code":"[45]..","swap":false,"error":true},{"code":"...","swap":true}]}'>
 <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.4/dist/htmx.min.js"></script>
 <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
 </head>
@@ -23,8 +25,8 @@
     <a href="/data" class="{{ 'on' if page == 'data' }}">Data</a>
   </nav>
   {% if projects|length > 1 %}
-  <form hx-post="/switch" hx-target="body" hx-swap="innerHTML" style="margin-left:auto">
-    <select name="project" onchange="this.form.requestSubmit()">
+  <form method="post" action="/switch" style="margin-left:auto">
+    <select name="project" onchange="this.form.submit()">
       {% for name in projects %}<option value="{{ name }}" {{ 'selected' if name == project_name }}>{{ name }}</option>{% endfor %}
     </select>
   </form>
@@ -32,93 +34,5 @@
 </header>
 <main>{% block body %}{% endblock %}</main>
 <div id="toast"></div>
-
-<script>
-// Handle form validation errors
-document.body.addEventListener('htmx:afterSwap', function(event) {
-  // Find any error messages in the swapped content
-  const errorMessages = event.detail.xhr.responseText.match(/<div class="field-error"[^>]*data-field="([^"]*)"[^>]*>([^<]*)<\/div>/g);
-
-  if (errorMessages && event.detail.xhr.status === 422) {
-    // Parse errors and apply to fields
-    const errors = {};
-    errorMessages.forEach(msg => {
-      const fieldMatch = msg.match(/data-field="([^"]*)"/);
-      const textMatch = msg.match(/>([^<]*)<\/div>/);
-      if (fieldMatch && textMatch) {
-        errors[fieldMatch[1]] = textMatch[1];
-      }
-    });
-
-    // Find form and apply error styling
-    const swappedElement = event.detail.xhr.responseXML ?
-      event.detail.xhr.responseXML.body.firstElementChild :
-      document.querySelector('[id="' + event.detail.target.id + '"]');
-
-    if (swappedElement) {
-      const form = swappedElement.closest('form');
-      if (form) {
-        // Clear previous errors
-        form.querySelectorAll('input.has-error, textarea.has-error, select.has-error')
-          .forEach(el => el.classList.remove('has-error'));
-
-        // Apply new errors
-        Object.entries(errors).forEach(([field, message]) => {
-          const input = form.querySelector('[name="' + field + '"]');
-          if (input) {
-            input.classList.add('has-error');
-            input.setAttribute('aria-invalid', 'true');
-          }
-        });
-      }
-    }
-  }
-});
-
-// Clear error styling when user starts editing
-document.body.addEventListener('input', function(event) {
-  if (event.target.classList.contains('has-error')) {
-    event.target.classList.remove('has-error');
-    event.target.setAttribute('aria-invalid', 'false');
-  }
-});
-
-// Inline tag editing functions
-function editTags(taskId) {
-  const display = document.getElementById('tags-display-' + taskId);
-  const input = document.getElementById('tags-input-' + taskId);
-  if (display && input) {
-    display.style.display = 'none';
-    input.style.display = 'block';
-    input.focus();
-    input.select();
-  }
-}
-
-function cancelEditTags(taskId) {
-  const display = document.getElementById('tags-display-' + taskId);
-  const input = document.getElementById('tags-input-' + taskId);
-  if (display && input) {
-    input.style.display = 'none';
-    display.style.display = 'flex';
-  }
-}
-
-// Reset tag editing UI after successful submission
-document.body.addEventListener('htmx:afterSwap', function(event) {
-  // Find any tag inputs that were just replaced and hide them
-  if (event.detail.target && event.detail.target.id && event.detail.target.id.startsWith('task-')) {
-    const taskId = event.detail.target.id.replace('task-', '');
-    const input = document.getElementById('tags-input-' + taskId);
-    if (input && input.style.display === 'block') {
-      input.style.display = 'none';
-      const display = document.getElementById('tags-display-' + taskId);
-      if (display) {
-        display.style.display = 'flex';
-      }
-    }
-  }
-});
-</script>
 </body>
 </html>

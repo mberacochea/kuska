@@ -19,23 +19,26 @@
     {% else %}<span class="muted">-</span>{% endif %}
   </td>
   <td class="tags-cell">
-    <div class="tags-display" id="tags-display-{{ t.id }}" style="display:flex; gap:.3rem; flex-wrap:wrap; align-items:center; min-height:1.5rem;">
+    {% if edit == 'tags' %}
+    {# Click-to-edit: Enter or blur saves, Escape (keyup bubbles to the div) swaps the plain row back. #}
+    <div hx-get="/tasks/{{ t.id }}/row" hx-trigger="keyup[key=='Escape']" hx-target="#task-{{ t.id }}" hx-swap="outerHTML">
+      <input type="text" name="tags" value="{{ t.tags or '' }}" placeholder="Comma-separated tags"
+             aria-label="Tags for task {{ t.id }}" style="width:100%;" autofocus
+             hx-post="/tasks/{{ t.id }}" hx-trigger="blur, keyup[key=='Enter']"
+             hx-target="#task-{{ t.id }}" hx-swap="outerHTML">
+    </div>
+    {% else %}
+    <div class="tags-display" style="display:flex; gap:.3rem; flex-wrap:wrap; align-items:center; min-height:1.5rem;">
       {% if t.tags %}
         {% for tag in t.tags.split(',') %}
           <span class="chip small">{{ tag }}</span>
         {% endfor %}
       {% else %}<span class="muted small">-</span>{% endif %}
-      <button type="button" class="link small" onclick="editTags({{ t.id }})" style="margin-left:auto; flex-shrink:0;">edit</button>
+      <button type="button" class="link small" hx-get="/tasks/{{ t.id }}/row?edit=tags"
+              hx-target="#task-{{ t.id }}" hx-swap="outerHTML"
+              style="margin-left:auto; flex-shrink:0;">edit</button>
     </div>
-    <input type="text" id="tags-input-{{ t.id }}" name="tags"
-           value="{{ t.tags or '' }}"
-           placeholder="Comma-separated tags"
-           style="display:none; width:100%;"
-           hx-post="/tasks/{{ t.id }}"
-           hx-target="#task-{{ t.id }}"
-           hx-swap="outerHTML"
-           hx-trigger="blur,keyup[key=='Enter']"
-           onkeydown="if(event.key==='Escape') cancelEditTags({{ t.id }})">
+    {% endif %}
   </td>
   <td class="small">
     {% for d in blocking.get(t.id, []) %}
@@ -44,6 +47,6 @@
   </td>
   <td class="muted small" title="Created {{ t.created_at }}">{{ ago(t.created_at) }}</td>
   <td class="muted small" title="Updated {{ t.updated_at }}">{{ ago(t.updated_at) }}</td>
-  <td><button class="link" hx-post="/tasks/{{ t.id }}/delete" hx-target="#tasks-container" hx-swap="outerHTML"
+  <td><button class="link" hx-delete="/tasks/{{ t.id }}" hx-target="#tasks-container" hx-swap="outerHTML"
               hx-confirm="Delete task {{ t.id }}?">delete</button></td>
 </tr>
