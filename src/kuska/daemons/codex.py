@@ -237,5 +237,6 @@ def run_daemon(
     max_tasks: int | None = None,
     quiet: bool = False,
     stop=None,
+    worker=None,
 ) -> None:
-    loop.run_daemon(project, agent_name, "codex", make_runner, poll_interval, max_tasks, quiet, stop=stop)
+    loop.run_daemon(project, agent_name, "codex", make_runner, poll_interval, max_tasks, quiet, stop=stop, worker=worker)

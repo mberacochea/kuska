@@ -65,7 +65,7 @@ def test_agents(project, conn):
     assert "dev-agent" in ac.read_prompt(project, "dev-agent"), "prompt readable"
     ac.write_prompt(project, "dev-agent", "custom prompt")
     assert ac.read_prompt(project, "dev-agent") == "custom prompt", "prompt round-trip"
-    ac.heartbeat(conn, "dev-agent", "idle")
+    ac.heartbeat(conn, "dev-agent")
     assert ac.get_agent(conn, "dev-agent")["status"] == "idle", "heartbeat"
     assert len(ac.list_agents(conn)) == 2, "registry idempotent"
 

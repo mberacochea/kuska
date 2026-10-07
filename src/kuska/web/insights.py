@@ -203,7 +203,7 @@ def register(app, ctx) -> None:
                 "name": agent["name"],
                 "backend": agent["backend"],
                 "status": agent["status"],
-                "current_task_id": agent["current_task_id"],
+                "running": agent["running"],
                 "completed_tasks": counts["completed_tasks"] if counts else 0,
                 "total_tasks": counts["total_tasks"] if counts else 0,
                 "turns": agent_usage["turns"] if agent_usage else 0,

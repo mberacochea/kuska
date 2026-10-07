@@ -63,7 +63,7 @@ TABLES: dict[str, dict[str, Any]] = {
         "label": "Agents",
         "model": Agent,
         "order": lambda m: m.name,
-        "note": "config.toml is the registry; this is the live state the daemons keep in the database",
+        "note": "config.toml is the registry; daemons keep only last_heartbeat here - the Agents page derives status from runs",
     },
     "messages": {
         "label": "Messages",

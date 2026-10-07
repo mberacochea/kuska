@@ -16,9 +16,7 @@ from .project import db_path
 from .store import (
     InvalidTransition,
     end_run,
-    get_agent,
     get_task,
-    heartbeat,
     list_tasks,
     send_message,
     stale_runs,
@@ -49,9 +47,6 @@ def expire_runs(db, stale_after_s: float = STALE_AFTER_S) -> list[str]:
                 transition(db, task_id, "block", actor=agent)
             except InvalidTransition:
                 pass
-        info = get_agent(db, agent)
-        if info and info["current_task_id"] == task_id:
-            heartbeat(db, agent, "offline")
     return expired
 
 

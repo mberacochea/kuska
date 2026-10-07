@@ -211,17 +211,14 @@ def test_agents_page(c):
 
 
 def test_agent_heartbeat_and_status(c, conn):
-    ac.heartbeat(conn, "dev-agent", "working")
+    assert ac.get_agent(conn, "dev-agent")["status"] == "offline", "never heard from"
+    ac.heartbeat(conn, "dev-agent")
     agent = ac.get_agent(conn, "dev-agent")
-    assert agent["status"] == "working", "heartbeat updates status"
+    assert agent["status"] == "idle", "fresh heartbeat reads as idle"
     assert agent["last_heartbeat"] is not None and agent["last_heartbeat"] > 0, "heartbeat records time"
-    agent_html = c.get("/agents").get_data(as_text=True)
-    assert "working" in agent_html or "dev-agent" in agent_html, "status shown on agents page"
-    ac.heartbeat(conn, "dev-agent", "idle")
-    agent = ac.get_agent(conn, "dev-agent")
-    assert agent["status"] == "idle", "status can change"
-    ac.heartbeat(conn, "dev-agent", "offline")
-    assert ac.get_agent(conn, "dev-agent")["status"] == "offline", "offline status visible"
+    assert "idle" in c.get("/agents").get_data(as_text=True), "status shown on agents page"
+    conn.execute_sql("UPDATE agents SET last_heartbeat = ? WHERE name = 'dev-agent'", (ac.now() - 120,))
+    assert ac.get_agent(conn, "dev-agent")["status"] == "offline", "old heartbeat reads as offline"
 
 
 def test_agent_settings(c, conn, project):
@@ -249,16 +246,18 @@ def test_agent_settings(c, conn, project):
     assert 'value="claude-sonnet-5"' in c.get("/agents/dev-agent", headers=HX).get_data(as_text=True), "editor reflects the change"
 
 
-def test_agent_current_task_display(c, conn):
-    new_task_id = ac.add_task(conn, "for the agent", "test", "dev-agent")
-    ac.heartbeat(conn, "dev-agent", "working", task_id=new_task_id)
+def test_agent_working_count(c, conn):
+    ac.heartbeat(conn, "dev-agent")
+    for run_id, title in (("run-a", "for the agent"), ("run-b", "second")):
+        task_id = ac.add_task(conn, title, "test", "dev-agent")
+        ac.start_run(conn, run_id, task_id, "dev-agent")
     agent = ac.get_agent(conn, "dev-agent")
-    assert agent.get("current_task_id") == new_task_id, "agent current_task_id stored"
-    agent_page = c.get("/agents").get_data(as_text=True)
-    # The agents page shows the task ID in the Task column, not the title
-    assert str(new_task_id) in agent_page, "current task shown on agents page"
-    ac.heartbeat(conn, "dev-agent", "idle", task_id=None)
-    assert ac.get_agent(conn, "dev-agent")["current_task_id"] is None, "current task can be cleared"
+    assert agent["status"] == "working" and agent["running"] == 2, "two running runs"
+    assert "working ×2" in c.get("/agents/rows").get_data(as_text=True), "count shown on the agents page"
+    ac.end_run(conn, "run-a", "finished")
+    assert ac.get_agent(conn, "dev-agent")["running"] == 1, "finished run no longer counts"
+    ac.end_run(conn, "run-b", "finished")
+    assert ac.get_agent(conn, "dev-agent")["status"] == "idle", "back to idle"
 
 
 def test_adding_and_removing_agents(c, conn, project):

@@ -91,6 +91,12 @@ def config_path(project_dir: str | os.PathLike) -> Path:
 # the single place a new option has to be named.
 AGENT_FIELDS = [
     {
+        "key": "replicas",
+        "label": "Replicas",
+        "type": "integer",
+        "help": "workers `kuska run-all` starts for this agent; blank means 1",
+    },
+    {
         "key": "backend",
         "label": "Backend",
         "type": "choice",

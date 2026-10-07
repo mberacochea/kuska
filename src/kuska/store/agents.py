@@ -5,7 +5,7 @@ from __future__ import annotations
 from peewee import SqliteDatabase
 
 from ..db import now
-from ..models import Agent, Task, row, rows
+from ..models import Agent, Run, Task, row, rows
 from .common import bound
 
 
@@ -28,22 +28,38 @@ def register_agent(db: SqliteDatabase, name: str, backend: str, role: str = "") 
     ).execute()
 
 
+# an agent whose last heartbeat is older than this is offline (workers beat every 30 s)
+IDLE_FOR_S = 60.0
+
+
 @bound
-def heartbeat(db: SqliteDatabase, name: str, status: str, task_id: int | None = None) -> None:
-    """Update an agent's status and last-seen timestamp.
+def heartbeat(db: SqliteDatabase, name: str) -> None:
+    """Record that one of the agent's workers is alive.
 
-    Called by the agent's daemon as it starts, picks up a task, finishes one
-    and stops, so the agents page shows who is doing what.
+    Status is not stored: several workers can serve one agent, so it is derived
+    from `runs` and this timestamp (see `_with_status`)."""
+    Agent.update(last_heartbeat=now()).where(Agent.name == name).execute()
 
-    Args:
-        db: SqliteDatabase instance for this project.
-        name: Agent identifier.
-        status: Current agent state (e.g., "idle", "working").
-        task_id: Optional ID of the task currently being worked on.
-    """
-    Agent.update(status=status, current_task_id=task_id, last_heartbeat=now()).where(
-        Agent.name == name
-    ).execute()
+
+def _with_status(db: SqliteDatabase, agents: list[dict]) -> list[dict]:
+    """Add `status` and `running` (a count) to each agent record.
+
+    working while the agent has `running` runs, else idle if its last heartbeat
+    is under IDLE_FOR_S old, else offline."""
+    counts: dict[str, int] = {}
+    for run in Run.select(Run.agent).where(Run.status == "running"):
+        counts[run.agent] = counts.get(run.agent, 0) + 1
+    current = now()
+    for agent in agents:
+        agent["running"] = counts.get(agent["name"], 0)
+        beat = agent.get("last_heartbeat")
+        if agent["running"]:
+            agent["status"] = "working"
+        elif beat and current - beat < IDLE_FOR_S:
+            agent["status"] = "idle"
+        else:
+            agent["status"] = "offline"
+    return agents
 
 
 @bound
@@ -55,14 +71,16 @@ def list_agents(db: SqliteDatabase) -> list[dict]:
 
     Returns:
         list[dict]: Agent records with keys: id, name, backend, role, status,
-                    current_task_id, last_heartbeat, created_at.
+                    running, last_heartbeat, created_at. `status` is derived
+                    (working / idle / offline) and `running` counts the agent's
+                    running runs.
     """
-    return rows(Agent.select().order_by(Agent.name))
+    return _with_status(db, rows(Agent.select().order_by(Agent.name)))
 
 
 @bound
 def get_agent(db: SqliteDatabase, name: str) -> dict | None:
-    """Fetch a single agent record by name.
+    """Fetch a single agent record by name, with derived `status` and `running`.
 
     Args:
         db: SqliteDatabase instance for this project.
@@ -71,7 +89,8 @@ def get_agent(db: SqliteDatabase, name: str) -> dict | None:
     Returns:
         dict: Agent record, or None if not found.
     """
-    return row(Agent.select().where(Agent.name == name))
+    agent = row(Agent.select().where(Agent.name == name))
+    return _with_status(db, [agent])[0] if agent else None
 
 
 @bound

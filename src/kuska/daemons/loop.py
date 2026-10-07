@@ -35,6 +35,8 @@ def log(line: str, error: bool = False) -> None:
 # how often a running run proves it is alive; a supervisor reads a much older
 # heartbeat_at as a dead daemon
 RUN_HEARTBEAT_S = 30.0
+# how often an idle worker touches agents.last_heartbeat (store.agents reads over 60 s as offline)
+AGENT_HEARTBEAT_S = 30.0
 
 
 class RunHeartbeat:
@@ -119,10 +121,17 @@ def prepare_workdir(db, project: Path, agent_name: str, task: dict, mono) -> tup
 
 
 def _next_task(db, agent_name: str, poll_interval: float, stop: threading.Event | None) -> dict | None:
-    """Claim the next ready task, polling until one turns up; None once `stop` is set."""
+    """Claim the next ready task, polling until one turns up; None once `stop` is set.
+
+    Touches the agent's last_heartbeat every AGENT_HEARTBEAT_S while polling: an
+    agent with no running run reads as idle only while that is under a minute old."""
+    last_beat = float("-inf")
     while True:
         if stop is not None and stop.is_set():
             return None
+        if time.monotonic() - last_beat >= AGENT_HEARTBEAT_S:
+            core.heartbeat(db, agent_name)
+            last_beat = time.monotonic()
         task = core.claim_task(db, agent_name)
         if task:
             return task
@@ -143,6 +152,7 @@ async def serve(
     quiet: bool = False,
     heartbeat_interval: float = RUN_HEARTBEAT_S,
     stop: threading.Event | None = None,
+    worker: int | None = None,
 ) -> None:
     db = core.connect(core.db_path(project))
     core.init_db(db)
@@ -153,8 +163,10 @@ async def serve(
         check_git(project, agent_name)
     run = make_runner(db, project, agent_name, cfg)
 
-    log(f"[{agent_name}] {backend} daemon up on {project} (model={cfg.get('model') or 'default'})")
-    core.heartbeat(db, agent_name, "idle")
+    # replicas of one agent share its config and name; the label only tells their log lines apart
+    tag = f"{agent_name}#{worker}" if worker else agent_name
+    log(f"[{tag}] {backend} daemon up on {project} (model={cfg.get('model') or 'default'})")
+    core.heartbeat(db, agent_name)
     handled = 0
     try:
         while max_tasks is None or handled < max_tasks:
@@ -162,8 +174,7 @@ async def serve(
             if task is None:
                 break
             handled += 1
-            log(f"[{agent_name}] task {task['id']}: {task['title']}")
-            core.heartbeat(db, agent_name, "working", task["id"])
+            log(f"[{tag}] task {task['id']}: {task['title']}")
             mono = core.Monologue(db, agent_name, task["id"], quiet=quiet)
             core.start_run(db, mono.run_id, task["id"], agent_name)
 
@@ -217,7 +228,7 @@ async def serve(
                     mono.record("error", f"run failed: {exc}")
                     core.fail_task(db, agent_name, task["id"], str(exc))
                     core.end_run(db, mono.run_id, "failed", exit_reason=str(exc), **getattr(exc, "usage", {}))
-                    log(f"[{agent_name}] task {task['id']} failed: {exc}", error=True)
+                    log(f"[{tag}] task {task['id']} failed: {exc}", error=True)
                 else:
                     commit_leftovers(True)
                     text = text.strip() or "(no output)"
@@ -248,13 +259,12 @@ async def serve(
                         f"{usage.get('output_tokens', 0)} tok"
                     )
                     mono.record("result", text, label=f"{final} - {summary}")
-                    log(f"[{agent_name}] task {task['id']} {final} ({summary})")
+                    log(f"[{tag}] task {task['id']} {final} ({summary})")
 
-            core.heartbeat(db, agent_name, "idle")
+            core.heartbeat(db, agent_name)
             if stop is not None and stop.is_set():
                 break
     finally:
-        core.heartbeat(db, agent_name, "offline")
         db.close()
 
 
@@ -268,7 +278,8 @@ def run_daemon(
     quiet: bool = False,
     heartbeat_interval: float = RUN_HEARTBEAT_S,
     stop: threading.Event | None = None,
+    worker: int | None = None,
 ) -> None:
     asyncio.run(serve(
-        project, agent_name, backend, make_runner, poll_interval, max_tasks, quiet, heartbeat_interval, stop
+        project, agent_name, backend, make_runner, poll_interval, max_tasks, quiet, heartbeat_interval, stop, worker
     ))

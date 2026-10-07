@@ -184,7 +184,7 @@ def test_loop(project):
     assert len(r2) == 1, "agent's own reply not duplicated"
     assert core.task_runs(conn, t2)[0]["cost_usd"] == 0.01, "usage booked on the run, not the message"
     assert core.get_inbox(conn, "codex-1")[0]["payload"] == "which scope?", "question delivered"
-    assert core.get_agent(conn, "dev-agent")["status"] == "offline", "agent left offline"
+    assert core.get_agent(conn, "dev-agent")["status"] == "idle", "agent idle once its work is done"
     spend = {u["agent"]: u["cost_usd"] for u in core.token_usage_by_agent(conn)}
     assert round(spend["dev-agent"], 4) == 0.04, "spend rolls up"
 
@@ -234,7 +234,7 @@ def test_tool_guard(project):
     db = core.connect(core.db_path(project))
     core.register_agent(db, "bench-agent", "codex", "benchmarks")
     for name in ("dev-agent", "bench-agent"):
-        core.heartbeat(db, name, "working")
+        core.heartbeat(db, name)
 
     current = {"mono": core.Monologue(db, "dev-agent", 1, quiet=True)}
     reads: dict = {}
@@ -412,8 +412,8 @@ def test_task_claiming_race(project):
     db = core.connect(core.db_path(project))
     core.register_agent(db, "racer-1", "claude", "builder")
     core.register_agent(db, "racer-2", "claude", "reviewer")
-    core.heartbeat(db, "racer-1", "working")
-    core.heartbeat(db, "racer-2", "working")
+    core.heartbeat(db, "racer-1")
+    core.heartbeat(db, "racer-2")
 
     # Create tasks for each agent
     r1_t1 = add_ready(db, "Racer1-A", "first", "racer-1")
@@ -437,8 +437,8 @@ def test_message_ordering(project):
     db = core.connect(core.db_path(project))
     core.register_agent(db, "msg-1", "claude", "builder")
     core.register_agent(db, "msg-2", "claude", "reviewer")
-    core.heartbeat(db, "msg-1", "working")
-    core.heartbeat(db, "msg-2", "working")
+    core.heartbeat(db, "msg-1")
+    core.heartbeat(db, "msg-2")
 
     task_id = add_ready(db, "collaboration", "", "msg-1")
 
@@ -488,8 +488,8 @@ def test_dependency_satisfaction(project):
     db = core.connect(core.db_path(project))
     core.register_agent(db, "dep-1", "claude", "builder")
     core.register_agent(db, "dep-2", "claude", "reviewer")
-    core.heartbeat(db, "dep-1", "working")
-    core.heartbeat(db, "dep-2", "working")
+    core.heartbeat(db, "dep-1")
+    core.heartbeat(db, "dep-2")
 
     # Create task A assigned to dep-1
     task_a = add_ready(db, "Design API", "", "dep-1")
@@ -547,7 +547,7 @@ def test_approval_workflow_race(project):
     # concurrent approval workflow race
     db = core.connect(core.db_path(project))
     core.register_agent(db, "approval-1", "claude", "builder")
-    core.heartbeat(db, "approval-1", "working")
+    core.heartbeat(db, "approval-1")
 
     task_id = add_ready(db, "Risky change", "", "approval-1")
     core.update_task_status(db, task_id, "needs_approval")
@@ -596,7 +596,7 @@ def test_lazy_load_history(project):
     # lazy-load message history
     db = core.connect(core.db_path(project))
     core.register_agent(db, "history-agent", "claude", "builder")
-    core.heartbeat(db, "history-agent", "working")
+    core.heartbeat(db, "history-agent")
 
     task_id = add_ready(db, "Multi-turn task", "requires multiple interactions", "history-agent")
 
@@ -660,8 +660,8 @@ def test_prompt_stays_small(project):
     db = core.connect(core.db_path(project))
     core.register_agent(db, "limit-agent", "claude", "builder")
     core.register_agent(db, "other-agent", "claude", "reviewer")
-    core.heartbeat(db, "limit-agent", "working")
-    core.heartbeat(db, "other-agent", "working")
+    core.heartbeat(db, "limit-agent")
+    core.heartbeat(db, "other-agent")
 
     task_id = add_ready(db, "Long-running task", "very long description with lots of content" * 50, "limit-agent")
 
@@ -1687,7 +1687,7 @@ def test_serve_stop_already_set(tmp_path):
     started = time.time()
     _serve(project, never, stop)
     assert time.time() - started < 1, "returned promptly"
-    assert core.get_agent(conn, "dev-agent")["status"] == "offline"
+    assert core.get_agent(conn, "dev-agent")["running"] == 0
     conn.close()
 
 
@@ -1848,4 +1848,52 @@ def test_leftovers_committed_before_ready_to_merge(tmp_path, monkeypatch):
         assert files == [f"out-task-{task_id}.md"], f"task {task_id}: branch tip holds the run's changes"
     assert core.get_task(conn, ok_id)["status"] == "ready_to_merge"
     assert core.get_task(conn, bad_id)["status"] == "blocked"
+    conn.close()
+
+
+def test_two_workers_one_agent(tmp_path):
+    """Replicas of one agent claim different tasks, run side by side, and the agents page counts them."""
+    project, conn = _stop_project(tmp_path)
+    t1 = add_ready(conn, "First", "", "dev-agent")
+    t2 = add_ready(conn, "Second", "", "dev-agent")
+    stop, release = threading.Event(), threading.Event()
+    started: list[str] = []
+
+    async def run(prompt, workdir, mono):
+        started.append(mono.run_id)
+        release.wait(10)  # holds this worker mid-run until both have a task
+        return "Done.", {}
+
+    workers = [
+        threading.Thread(
+            target=loop.run_daemon,
+            args=(project, "dev-agent", "fake", lambda db, project_, agent_name, cfg: run),
+            kwargs=dict(poll_interval=0.02, quiet=True, stop=stop, worker=n),
+        )
+        for n in (1, 2)
+    ]
+    for w in workers:
+        w.start()
+    try:
+        deadline = time.time() + 10
+        while len(started) < 2 and time.time() < deadline:
+            time.sleep(0.02)
+        assert len(started) == 2, "both workers claimed a task"
+        agent = core.get_agent(conn, "dev-agent")
+        assert agent["status"] == "working" and agent["running"] == 2
+        app = core.create_app(project)
+        app.config.update(TESTING=True)
+        assert "working ×2" in app.test_client().get("/agents/rows").get_data(as_text=True)
+        assert {r["agent"] for r in core.running_runs(conn)} == {"dev-agent"}
+        assert len({r["task_id"] for r in core.running_runs(conn)}) == 2, "different tasks"
+    finally:
+        stop.set()
+        release.set()
+        for w in workers:
+            w.join(15)
+    assert not any(w.is_alive() for w in workers)
+    for tid in (t1, t2):
+        assert core.get_task(conn, tid)["status"] != "ready", "task claimed"
+        assert [r["status"] for r in core.task_runs(conn, tid)] == ["finished"], "and finished"
+    assert core.get_agent(conn, "dev-agent")["running"] == 0
     conn.close()

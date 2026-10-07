@@ -109,8 +109,7 @@ erDiagram
     string name PK
     string backend
     string role
-    string status "idle, working, offline"
-    int current_task_id
+    string status "derived from runs and last_heartbeat"
     float last_heartbeat
   }
   FEATURES {

@@ -28,7 +28,7 @@ def _complete_task(conn, title, *, cost_usd, input_tokens, output_tokens,
 @pytest.fixture
 def baseline(conn):
     """Ten typical completions: mostly cache reads, one cent each."""
-    ac.heartbeat(conn, "dev-agent", "idle")
+    ac.heartbeat(conn, "dev-agent")
     for i in range(10):
         _complete_task(
             conn, f"Task {i}", cost_usd=0.01, input_tokens=1000,

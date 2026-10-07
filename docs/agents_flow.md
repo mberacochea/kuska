@@ -96,6 +96,11 @@ stateDiagram-v2
 A daemon that is stopped mid-run (Ctrl+C, or `kuska run-all` shutting down)
 blocks its in-flight task with an "interrupted" note.
 
+An agent's `replicas` setting (default 1) is how many workers `kuska run-all`
+starts for it. An agent's status is derived, not stored: `working ×N` while it
+has N `running` runs, else `idle` if its last heartbeat is under 60 s old, else
+`offline`.
+
 Every status change goes through `store/lifecycle.transition()`, which holds
 the one table of allowed moves. The events behind the arrows: `make_ready`
 (todo to ready), `claim` (ready to in_progress, done inline by `claim_task` to
