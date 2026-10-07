@@ -33,6 +33,7 @@ from peewee import SqliteDatabase
 
 import kuska as core
 
+from .. import worktree
 from . import loop
 from .loop import log
 
@@ -227,6 +228,10 @@ def build_options(project: Path, workdir: Path, agent_name: str, cfg: dict, tool
     `project` and `workdir` are separate: `project` is the database location,
     `workdir` is where the agent runs (the worktree for worktree agents, the
     project root otherwise).
+
+    `env` turns commit/tag signing off for every git call in the run: the SDK
+    merges it over the CLI's environment and Bash (incl. unsandboxed git)
+    inherits it, so `git commit` doesn't fail on the user's signing setup.
     """
     hooks = {"PreToolUse": [HookMatcher(hooks=[pretooluse_hook])]} if pretooluse_hook else None
     limits = core.run_limits(cfg)
@@ -238,6 +243,7 @@ def build_options(project: Path, workdir: Path, agent_name: str, cfg: dict, tool
         allowed_tools=[f"mcp__kuska__{t.name}" for t in tools],
         system_prompt={"type": "file", "path": str(core.prompt_path(project, agent_name))},
         cwd=str(workdir),
+        env=worktree.unsigned_git_env(),
         model=cfg.get("model"),
         permission_mode=cfg.get("permission_mode", "acceptEdits"),
         sandbox=sandbox_settings(cfg),

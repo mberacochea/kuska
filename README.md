@@ -283,6 +283,8 @@ This enforcement catches mistakes, not a determined agent — `sh -c "rm -rf bui
 
 One gap remains in the claude sandbox: `git` is in `excludedCommands`, so it runs outside the OS sandbox and only the guardrails cover it. They refuse `git -c`, `--config-env`, `--exec-path` and any `git config` that is not a read, and refuse Write/Edit outside the run's workdir (so no planting hooks in `.git/`); kuska's own git calls run with `core.hooksPath=/dev/null`. This is pattern matching, not a boundary — a git call the patterns miss is unsandboxed.
 
+Commits on `kuska/*` branches are unsigned by design, so an agent's first `git commit` doesn't fail on your signing setup. Claude and codex runs get `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n` environment variables setting `commit.gpgsign=false` and `tag.gpgsign=false` (for codex through `shell_environment_policy.set`), and kuska's own `commit_all` / `rebase_onto` pass the same as `-c` options. Your global git config is not touched. `kuska merge` runs in your terminal with your own signing config, so the one commit that lands on the base branch is signed; branch commits never reach it.
+
 The boundary is the sandbox. Unless an agent sets `sandbox = "full-access"`, its shell commands can only write inside the task's working directory (its worktree, or the project): bubblewrap on Linux (needs `bwrap` and `socat`), Seatbelt on macOS, and codex's own `workspace-write` mode. The model cannot ask its way out of it. `git` runs outside the claude sandbox, because a worktree commits into the main checkout's `.git`. Commands that need to write elsewhere - a package manager's cache, say - fail under the sandbox; set `full-access` for an agent that genuinely needs them.
 
 ## Building a binary

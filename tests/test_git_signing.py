@@ -7,6 +7,7 @@ import subprocess
 import pytest
 
 from kuska import worktree
+from kuska.daemons import claude as daemon_claude
 
 
 def _gpg_script(tmp_path, ok):
@@ -153,3 +154,19 @@ def test_unsigned_git_env_appends_to_existing_count():
     assert env["GIT_CONFIG_KEY_2"] == "tag.gpgsign"
     assert env["GIT_CONFIG_VALUE_2"] == "false"
     assert "GIT_CONFIG_KEY_0" not in env and "GIT_CONFIG_VALUE_0" not in env
+
+
+def test_claude_run_env_commits_unsigned(signing, tmp_path):
+    """The env build_options hands the SDK is what makes the agent's commit work."""
+    marker = signing(False)
+    options = daemon_claude.build_options(tmp_path, tmp_path, "dev-agent", {}, [])
+    env = {**os.environ, **options.env}
+    d = tmp_path / "r"
+    d.mkdir()
+    _git(d, "init", "-b", "main", env=env)
+    (d / "a").write_text("a")
+    _git(d, "add", "-A", env=env)
+    r = _git(d, "commit", "-m", "x", env=env)
+    assert r.returncode == 0, r.stderr
+    assert not marker.exists()
+    assert not _has_gpgsig(d)

@@ -22,6 +22,7 @@ from openai_codex.models import (
 
 import kuska as core
 
+from .. import worktree
 from . import loop
 
 
@@ -42,6 +43,20 @@ def mcp_config(project: Path, agent_name: str) -> dict:
                 "args": [*head, "--project", str(project), "mcp", "--agent", agent_name],
             }
         }
+    }
+
+
+def thread_config(project: Path, agent_name: str) -> dict:
+    """mcp_config plus unsigned-commit git settings for the shell tool.
+
+    They go under `shell_environment_policy.set`, not `CodexConfig.env`: codex
+    builds each command's environment by dropping names containing KEY/SECRET/
+    TOKEN, which would strip GIT_CONFIG_KEY_n but keep GIT_CONFIG_COUNT and make
+    git fail every command. `set` is applied after those excludes.
+    """
+    return {
+        **mcp_config(project, agent_name),
+        "shell_environment_policy": {"set": worktree.unsigned_git_env()},
     }
 
 
@@ -104,7 +119,7 @@ def run_agent(codex, project: Path, workdir: Path, agent_name: str, cfg: dict, p
     thread = codex.thread_start(
         cwd=str(workdir),
         model=cfg.get("model"),
-        config=mcp_config(project, agent_name),
+        config=thread_config(project, agent_name),
         developer_instructions=core.read_prompt(project, agent_name),
         # workspace-write unless config says otherwise: the shell's writes
         # stay inside the workdir, the same default the claude backend uses

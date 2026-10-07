@@ -136,6 +136,9 @@ def test_tools_in_process(project):
 
     options = daemon_claude.build_options(project, project, "dev-agent", {"model": "claude-opus-5"}, tools)
     assert "kuska" in options.mcp_servers, "mcp server registered"
+    unsigned = worktree.unsigned_git_env()
+    assert (options.env.get("GIT_CONFIG_COUNT") == unsigned["GIT_CONFIG_COUNT"]
+            and all(options.env.get(k) == v for k, v in unsigned.items())), "claude run env turns signing off"
     assert "mcp__kuska__send_message" in options.allowed_tools, "tools allow-listed"
     assert "mcp__kuska__claim_task" not in options.allowed_tools, "claim_task tool removed"
     assert options.system_prompt["path"].endswith("prompts/dev-agent.md"), "prompt file wired"
@@ -1425,9 +1428,11 @@ def test_codex_run():
                 yield tokens(50, 5)
                 yield completed("interrupted")
 
+    started = []
+
     def codex_for(handle):
         thread = SimpleNamespace(turn=lambda prompt: handle)
-        return SimpleNamespace(thread_start=lambda **kw: thread)
+        return SimpleNamespace(thread_start=lambda **kw: started.append(kw) or thread)
 
     class Mono:
         def __init__(self):
@@ -1454,6 +1459,9 @@ def test_codex_run():
               and used["cost_usd"] == (1000 * 1.0 + 100 * 10.0) / 1e6), "usage in ledger terms, rounds counted"
 
         assert used["output_tokens"] == 100, "booked from total, not the last call"
+        conf = started[0]["config"]
+        assert "kuska" in conf["mcp_servers"], "thread config keeps the mcp server"
+        assert conf["shell_environment_policy"]["set"] == worktree.unsigned_git_env(), "codex shell env turns signing off"
 
         pricey = Handle([item(type="command_execution", command="a"), tokens(500_000, 0),
                          item(type="command_execution", command="b"), completed()])
